@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.server.json",
+  "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.vitest.tsbuildinfo",
+    "types": ["vitest/globals", "node", "@cloudflare/workers-types"]
+  },
+  "include": ["tests/**/*.ts", "server/**/*.ts", "shared/**/*.ts"]
+}
+

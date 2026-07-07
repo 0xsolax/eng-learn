@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.wrangler/
+.pnpm-store/
+.dev.vars*
+test-results/
+*.tsbuildinfo
+*.cpuprofile
