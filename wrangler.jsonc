@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "eng-learn",
+  "account_id": "c7ca52deb3d8d683f242d58b95c928b9",
   "main": "server/index.ts",
   "compatibility_date": "2026-07-06",
   "compatibility_flags": ["nodejs_compat"],
@@ -15,10 +16,9 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "eng-learn-local",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_name": "eng-learn-prod",
+      "database_id": "851f7eb3-e88e-40dc-bc83-37f327774067",
       "migrations_dir": "./migrations"
     }
   ]
 }
-
