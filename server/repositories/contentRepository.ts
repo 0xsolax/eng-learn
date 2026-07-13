@@ -1,9 +1,11 @@
 import type {
   ExerciseItemStatus,
+  SourceVersionSummary,
   SourceVersionStatus,
   TaskType,
   WordStage,
 } from '../../shared/domain/content'
+import type { CreateSourceAdminOperation } from './adminOperationLedger'
 
 export type SourceRecord = {
   id: string
@@ -15,6 +17,7 @@ export type SourceVersionRecord = {
   id: string
   sourceId: string
   versionNo: number
+  contentRevision: number
   status: SourceVersionStatus
   createdAt: string
   publishedAt?: string
@@ -69,16 +72,35 @@ export type SourceVersionSnapshot = {
 }
 
 export type CreateSourceVersionInput = {
-  source: SourceRecord
+  source?: SourceRecord
   version: SourceVersionRecord
   words: WordRecord[]
   groups: WordGroupRecord[]
+  adminOperation?: CreateSourceAdminOperation
 }
 
 export type ContentRepository = {
   createSourceVersion(input: CreateSourceVersionInput): Promise<SourceVersionSnapshot>
+  getSource(sourceId: string): Promise<SourceRecord | undefined>
+  listSourceVersions(): Promise<SourceVersionSummary[]>
+  listSourceVersionsBySource(sourceId: string): Promise<SourceVersionRecord[]>
   getSourceVersion(versionId: string): Promise<SourceVersionSnapshot | undefined>
-  replaceExerciseItems(versionId: string, items: ExerciseItemRecord[]): Promise<void>
-  publishSourceVersion(versionId: string, publishedAt: string): Promise<SourceVersionRecord>
+  addExerciseItems(
+    versionId: string,
+    items: ExerciseItemRecord[],
+    expectedRevision: number,
+  ): Promise<number>
+  getExerciseItem(itemId: string): Promise<ExerciseItemRecord | undefined>
+  getExerciseItems(itemIds: string[]): Promise<ExerciseItemRecord[]>
+  updateExerciseItems(
+    versionId: string,
+    items: ExerciseItemRecord[],
+    expectedRevision: number,
+  ): Promise<number>
+  publishSourceVersion(
+    versionId: string,
+    publishedAt: string,
+    expectedRevision: number,
+  ): Promise<SourceVersionRecord>
+  archiveDraftVersion(versionId: string, expectedRevision: number): Promise<SourceVersionRecord>
 }
-

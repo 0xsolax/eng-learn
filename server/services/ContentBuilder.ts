@@ -1,11 +1,24 @@
 import type {
+  ArchivedSourceVersion,
   BuildCoverage,
+  CoverageBlockReason,
+  CoverageCell,
+  ExerciseItemView,
   ImportedSourceVersion,
   ImportWordInput,
   PublishedSourceVersion,
+  SourceVersionDetail,
+  SourceVersionSummary,
   TaskType,
   WordStage,
 } from '../../shared/domain/content'
+import { exerciseItemContentSchema } from '../../shared/api/taskSchemas'
+import {
+  canonicalizeLearningText,
+  containsNormalizedTaskText,
+  containsUnicodeWholeToken,
+  learnerPromptRevealsAnswer,
+} from '../../shared/api/taskContentSafety'
 import type {
   ContentRepository,
   ExerciseItemRecord,
@@ -14,6 +27,12 @@ import type {
   WordGroupRecord,
   WordRecord,
 } from '../repositories/contentRepository'
+import { DomainError } from '../errors/DomainError'
+import type {
+  AdminOperationLedgerReader,
+  CreateSourceAdminOperation,
+} from '../repositories/adminOperationLedger'
+import { findExactAdminOperation, prepareAdminOperation } from './adminOperation'
 
 const GROUP_SIZE = 5
 
@@ -35,62 +54,264 @@ export type ContentBuilder = {
     sourceName: string
     words: ImportWordInput[]
   }): Promise<ImportedSourceVersion>
+  importNewSourceIdempotently(input: {
+    operationToken: string
+    sourceName: string
+    words: ImportWordInput[]
+  }): Promise<ImportedSourceVersion>
+  importNextVersion(input: {
+    sourceId: string
+    words: ImportWordInput[]
+  }): Promise<ImportedSourceVersion>
   buildExerciseItems(sourceVersionId: string): Promise<BuildCoverage>
+  listSourceVersions(): Promise<SourceVersionSummary[]>
+  getSourceVersionDetail(sourceVersionId: string): Promise<SourceVersionDetail>
+  getCoverage(sourceVersionId: string): Promise<BuildCoverage>
+  listExerciseItems(sourceVersionId: string): Promise<ExerciseItemView[]>
+  getExerciseItem(itemId: string): Promise<ExerciseItemView>
+  editExerciseItem(itemId: string, input: { prompt: unknown; answer: unknown }): Promise<ExerciseItemView>
+  approveExerciseItem(itemId: string): Promise<void>
+  approveExerciseItems(itemIds: string[]): Promise<void>
+  disableExerciseItem(itemId: string): Promise<void>
+  discardDraft(sourceVersionId: string): Promise<ArchivedSourceVersion>
   publishVersion(sourceVersionId: string): Promise<PublishedSourceVersion>
 }
 
 export type CreateContentBuilderInput = {
   repository: ContentRepository
   now: () => Date
+  operationLedger?: AdminOperationLedgerReader
 }
 
 export const createContentBuilder = ({
   repository,
   now,
+  operationLedger,
 }: CreateContentBuilderInput): ContentBuilder => {
   const timestamp = () => now().toISOString()
+
+  const createImportedVersion = async (input: {
+    source: SourceRecord
+    versionNo: number
+    words: ImportWordInput[]
+    createSource: boolean
+    versionId?: string
+    adminOperation?: CreateSourceAdminOperation
+  }): Promise<ImportedSourceVersion> => {
+    const createdAt = timestamp()
+    const importedWords = normalizeImportedWords(input.words)
+    const version: SourceVersionRecord = {
+      id: input.versionId ?? crypto.randomUUID(),
+      sourceId: input.source.id,
+      versionNo: input.versionNo,
+      contentRevision: 0,
+      status: 'draft',
+      createdAt,
+    }
+    const words = importedWords.map<WordRecord>((word, index) => ({
+      id: crypto.randomUUID(),
+      sourceVersionId: version.id,
+      orderIndex: index + 1,
+      word: word.word,
+      meaning: word.meaning,
+      exampleSentence: word.exampleSentence,
+      ...(word.partOfSpeech ? { partOfSpeech: word.partOfSpeech } : {}),
+      createdAt,
+    }))
+    const groups = createWordGroups(version.id, words.length, createdAt)
+
+    await repository.createSourceVersion({
+      ...(input.createSource ? { source: input.source } : {}),
+      version,
+      words,
+      groups,
+      ...(input.adminOperation ? { adminOperation: input.adminOperation } : {}),
+    })
+
+    return {
+      sourceId: input.source.id,
+      versionId: version.id,
+      versionNo: version.versionNo,
+      status: version.status,
+      wordCount: words.length,
+      groupCount: groups.length,
+    }
+  }
+
+  const getExerciseItemView = async (itemId: string): Promise<ExerciseItemView> => {
+    const item = await requireExerciseItem(repository, itemId)
+    const snapshot = await requireSourceVersion(repository, item.sourceVersionId)
+
+    return toExerciseItemView(snapshot, item)
+  }
+
+  const approveExerciseItems = async (itemIds: string[]): Promise<void> => {
+    if (itemIds.length === 0) {
+      throw validationError('itemIds', 'At least one exercise item is required')
+    }
+
+    const uniqueItemIds = Array.from(new Set(itemIds))
+    const storedItems = await repository.getExerciseItems(uniqueItemIds)
+    const itemsById = new Map(storedItems.map((item) => [item.id, item]))
+    const items = uniqueItemIds.map((itemId) => {
+      const item = itemsById.get(itemId)
+
+      if (!item) {
+        throw new DomainError('not_found', `Exercise item ${itemId} is missing`)
+      }
+
+      return item
+    })
+    const sourceVersionIds = new Set(items.map((item) => item.sourceVersionId))
+
+    if (sourceVersionIds.size !== 1) {
+      throw validationError('itemIds', 'Batch approval requires one source version')
+    }
+
+    const sourceVersionId = items[0]?.sourceVersionId
+
+    if (!sourceVersionId) {
+      throw validationError('itemIds', 'At least one exercise item is required')
+    }
+
+    const snapshot = await requireSourceVersion(repository, sourceVersionId)
+
+    requireDraft(snapshot.version.status)
+
+    for (const item of items) {
+      if (item.status !== 'draft') {
+        throw new DomainError('conflict', `Exercise item ${item.id} is not a draft`)
+      }
+
+      const word = snapshot.words.find((candidate) => candidate.id === item.wordId)
+
+      if (!word) {
+        throw new Error(`Word ${item.wordId} is missing`)
+      }
+
+      parseExerciseContent(item, word, snapshot.words)
+    }
+
+    await repository.updateExerciseItems(
+      sourceVersionId,
+      items.map((item) => ({
+        ...item,
+        status: 'approved',
+      })),
+      snapshot.version.contentRevision,
+    )
+  }
 
   return {
     async importWords(input) {
       const createdAt = timestamp()
-      const importedWords = normalizeImportedWords(input.words)
       const source: SourceRecord = {
         id: crypto.randomUUID(),
         name: input.sourceName,
         createdAt,
       }
-      const version: SourceVersionRecord = {
-        id: crypto.randomUUID(),
-        sourceId: source.id,
+
+      return createImportedVersion({
+        source,
         versionNo: 1,
-        status: 'draft',
+        words: input.words,
+        createSource: true,
+      })
+    },
+
+    async importNewSourceIdempotently(input) {
+      if (!operationLedger) {
+        throw new Error('Admin operation ledger is required')
+      }
+
+      const normalizedWords = normalizeImportedWords(input.words)
+      const request = {
+        kind: 'create_source' as const,
+        sourceName: input.sourceName,
+        words: normalizedWords,
+      }
+      const prepared = await prepareAdminOperation(input.operationToken, request)
+      const expected = { kind: 'create_source' as const, targetId: 'new-source' }
+      const existing = await findExactAdminOperation(operationLedger, prepared, expected)
+
+      if (existing) {
+        if (existing.kind !== 'create_source') {
+          throw new Error('Matched create-source operation has an invalid kind')
+        }
+
+        return replayImportedSource(repository, existing)
+      }
+
+      const createdAt = timestamp()
+      const source: SourceRecord = {
+        id: crypto.randomUUID(),
+        name: input.sourceName,
         createdAt,
       }
-      const words = importedWords.map<WordRecord>((word, index) => ({
-        id: crypto.randomUUID(),
-        sourceVersionId: version.id,
-        orderIndex: index + 1,
-        word: word.word,
-        meaning: word.meaning,
-        exampleSentence: word.exampleSentence,
-        ...(word.partOfSpeech ? { partOfSpeech: word.partOfSpeech } : {}),
+      const versionId = crypto.randomUUID()
+      const adminOperation: CreateSourceAdminOperation = {
+        operationHash: prepared.operationHash,
+        kind: 'create_source',
+        targetId: 'new-source',
+        requestFingerprint: prepared.requestFingerprint,
+        outcomeSourceId: source.id,
+        outcomeSourceVersionId: versionId,
         createdAt,
-      }))
-      const groups = createWordGroups(version.id, words.length, createdAt)
+      }
 
-      await repository.createSourceVersion({
-        source,
-        version,
-        words,
-        groups,
-      })
+      try {
+        return await createImportedVersion({
+          source,
+          versionNo: 1,
+          words: normalizedWords,
+          createSource: true,
+          versionId,
+          adminOperation,
+        })
+      } catch (error) {
+        const raced = await findExactAdminOperation(operationLedger, prepared, expected)
 
-      return {
-        sourceId: source.id,
-        versionId: version.id,
-        status: version.status,
-        wordCount: words.length,
-        groupCount: groups.length,
+        if (raced?.kind === 'create_source') {
+          return replayImportedSource(repository, raced)
+        }
+
+        throw error
+      }
+    },
+
+    async importNextVersion(input) {
+      const source = await repository.getSource(input.sourceId)
+
+      if (!source) {
+        throw new DomainError('not_found', `Source ${input.sourceId} is missing`)
+      }
+
+      const versions = await repository.listSourceVersionsBySource(input.sourceId)
+
+      if (versions.some((version) => version.status === 'draft')) {
+        throw new DomainError('source_draft_exists', 'Source already has a draft version')
+      }
+
+      const versionNo = versions.reduce(
+        (highest, version) => Math.max(highest, version.versionNo),
+        0,
+      ) + 1
+
+      try {
+        return await createImportedVersion({
+          source,
+          versionNo,
+          words: input.words,
+          createSource: false,
+        })
+      } catch (error) {
+        const currentVersions = await repository.listSourceVersionsBySource(input.sourceId)
+
+        if (currentVersions.some((version) => version.status === 'draft')) {
+          throw new DomainError('source_draft_exists', 'Source already has a draft version')
+        }
+
+        throw error
       }
     },
 
@@ -101,19 +322,149 @@ export const createContentBuilder = ({
 
       const createdAt = timestamp()
       const exerciseItems = snapshot.words.flatMap((word) =>
-        MVP_STAGE_TASKS.filter((task) => canBuildStage(word, task.requiresExampleSentence)).map(
-          (task) => createExerciseItem(sourceVersionId, word, task.stage, task.taskType, createdAt),
+        MVP_STAGE_TASKS.filter((task) => canBuildTask(word, task, snapshot.words)).map(
+          (task) =>
+            createExerciseItem(
+              sourceVersionId,
+              word,
+              task.stage,
+              task.taskType,
+              snapshot.words,
+              createdAt,
+            ),
+        ).filter(
+          (item) =>
+            !hasExerciseItem(
+              snapshot.exerciseItems,
+              item.wordId,
+              item.stage,
+              item.taskType,
+            ),
         ),
       )
-      const missingItems = findMissingCoverage(snapshot.words, exerciseItems)
 
-      await repository.replaceExerciseItems(sourceVersionId, exerciseItems)
+      await repository.addExerciseItems(
+        sourceVersionId,
+        exerciseItems,
+        snapshot.version.contentRevision,
+      )
+
+      const updatedSnapshot = await requireSourceVersion(repository, sourceVersionId)
+
+      requireDraft(updatedSnapshot.version.status)
+
+      return toCoverage(updatedSnapshot)
+    },
+
+    async getCoverage(sourceVersionId) {
+      return toCoverage(await requireSourceVersion(repository, sourceVersionId))
+    },
+
+    async listSourceVersions() {
+      return repository.listSourceVersions()
+    },
+
+    async getSourceVersionDetail(sourceVersionId) {
+      const snapshot = await requireSourceVersion(repository, sourceVersionId)
+      const coverage = toCoverage(snapshot)
 
       return {
+        ...toSourceVersionSummary(snapshot),
+        readyToPublish: coverage.readyToPublish,
+        missingItems: coverage.missingItems,
+      }
+    },
+
+    async listExerciseItems(sourceVersionId) {
+      const snapshot = await requireSourceVersion(repository, sourceVersionId)
+
+      return snapshot.exerciseItems.map((item) => toExerciseItemView(snapshot, item))
+    },
+
+    async getExerciseItem(itemId) {
+      return getExerciseItemView(itemId)
+    },
+
+    async editExerciseItem(itemId, input) {
+      const item = await requireExerciseItem(repository, itemId)
+      const snapshot = await requireSourceVersion(repository, item.sourceVersionId)
+
+      requireDraft(snapshot.version.status)
+
+      const word = snapshot.words.find((candidate) => candidate.id === item.wordId)
+
+      if (!word) {
+        throw new Error(`Word ${item.wordId} is missing`)
+      }
+
+      const content = parseExerciseContent(
+        {
+          ...item,
+          prompt: input.prompt,
+          answer: input.answer,
+        },
+        word,
+        snapshot.words,
+      )
+
+      const edited: ExerciseItemRecord = {
+        ...item,
+        prompt: content.prompt,
+        answer: content.answer,
+        status: 'draft',
+      }
+
+      await repository.updateExerciseItems(
+        item.sourceVersionId,
+        [edited],
+        snapshot.version.contentRevision,
+      )
+
+      return toExerciseItemView(snapshot, edited)
+    },
+
+    async approveExerciseItem(itemId) {
+      await approveExerciseItems([itemId])
+    },
+
+    async approveExerciseItems(itemIds) {
+      await approveExerciseItems(itemIds)
+    },
+
+    async disableExerciseItem(itemId) {
+      const item = await requireExerciseItem(repository, itemId)
+      const snapshot = await requireSourceVersion(repository, item.sourceVersionId)
+
+      requireDraft(snapshot.version.status)
+
+      if (item.status === 'disabled') {
+        throw new DomainError('conflict', `Exercise item ${item.id} is already disabled`)
+      }
+
+      await repository.updateExerciseItems(
+        item.sourceVersionId,
+        [{
+          ...item,
+          status: 'disabled',
+        }],
+        snapshot.version.contentRevision,
+      )
+    },
+
+    async discardDraft(sourceVersionId) {
+      const snapshot = await requireSourceVersion(repository, sourceVersionId)
+
+      requireDraft(snapshot.version.status)
+
+      const archived = await repository.archiveDraftVersion(
         sourceVersionId,
-        wordCount: snapshot.words.length,
-        readyToPublish: missingItems.length === 0,
-        missingItems,
+        snapshot.version.contentRevision,
+      )
+
+      return {
+        sourceVersionId: archived.id,
+        sourceId: archived.sourceId,
+        status: 'archived',
       }
     },
 
@@ -122,13 +473,19 @@ export const createContentBuilder = ({
 
       requireDraft(snapshot.version.status)
 
-      const missingItems = findMissingCoverage(snapshot.words, snapshot.exerciseItems)
+      const missingItems = toCoverage(snapshot).missingItems
 
       if (missingItems.length > 0) {
-        throw new Error('Source version coverage is incomplete')
+        throw new DomainError('coverage_incomplete', 'Source version coverage is incomplete', {
+          missingItems,
+        })
       }
 
-      const published = await repository.publishSourceVersion(sourceVersionId, timestamp())
+      const published = await repository.publishSourceVersion(
+        sourceVersionId,
+        timestamp(),
+        snapshot.version.contentRevision,
+      )
 
       return {
         sourceVersionId: published.id,
@@ -140,25 +497,27 @@ export const createContentBuilder = ({
 
 const requireDraft = (status: string): void => {
   if (status !== 'draft') {
-    throw new Error('Published source versions are immutable')
+    throw new DomainError('source_version_immutable', 'Published source versions are immutable')
   }
 }
 
 const normalizeImportedWords = (words: ImportWordInput[]): ImportWordInput[] => {
   const seen = new Set<string>()
 
-  return words.map((word) => {
+  return words.map((word, index) => {
     const normalizedWord = word.word.trim()
     const normalizedMeaning = word.meaning.trim()
 
     if (!normalizedWord || !normalizedMeaning) {
-      throw new Error('Imported word and meaning are required')
+      const field = normalizedWord ? 'meaning' : 'word'
+
+      throw validationError(`words.${String(index)}.${field}`, 'Imported word and meaning are required')
     }
 
-    const duplicateKey = normalizedWord.toLocaleLowerCase()
+    const duplicateKey = canonicalizeLearningText(normalizedWord)
 
     if (seen.has(duplicateKey)) {
-      throw new Error('Duplicate imported word')
+      throw validationError(`words.${String(index)}.word`, 'Duplicate imported word')
     }
 
     seen.add(duplicateKey)
@@ -172,38 +531,185 @@ const normalizeImportedWords = (words: ImportWordInput[]): ImportWordInput[] => 
   })
 }
 
-const canBuildStage = (word: WordRecord, requiresExampleSentence: boolean): boolean => {
-  if (!requiresExampleSentence) {
-    return true
+const canBuildTask = (
+  word: WordRecord,
+  task: (typeof MVP_STAGE_TASKS)[number],
+  words: WordRecord[],
+): boolean => {
+  if (
+    (task.taskType === 'recall_word' || task.taskType === 'multiple_choice') &&
+    containsUnicodeWholeToken(word.meaning, word.word)
+  ) {
+    return false
   }
 
-  return word.exampleSentence.trim().length > 0
+  if (task.requiresExampleSentence && word.exampleSentence.trim().length === 0) {
+    return false
+  }
+
+  if (
+    (task.taskType === 'sentence_build' || task.taskType === 'sentence_output') &&
+    !containsUnicodeWholeToken(word.exampleSentence, word.word)
+  ) {
+    return false
+  }
+
+  if (
+    task.taskType === 'sentence_output' &&
+    containsNormalizedTaskText(word.meaning, word.exampleSentence)
+  ) {
+    return false
+  }
+
+  if (task.taskType === 'multiple_choice' && words.length < 3) {
+    return false
+  }
+
+  if (task.taskType === 'fill_blank' && !createFillBlankSentence(word)) {
+    return false
+  }
+
+  if (task.taskType === 'sentence_build' && !hasVisibleSentenceShuffle(word)) {
+    return false
+  }
+
+  return true
 }
 
-const findMissingCoverage = (
+const createCoverageCells = (
   words: WordRecord[],
   exerciseItems: ExerciseItemRecord[],
-): BuildCoverage['missingItems'] =>
+): CoverageCell[] =>
   words.flatMap((word) =>
-    MVP_STAGE_TASKS.filter((task) => !hasApprovedItem(exerciseItems, word.id, task.stage)).map(
-      (task) => ({
+    MVP_STAGE_TASKS.map((task) => {
+      const item = exerciseItems.find(
+        (candidate) =>
+          candidate.wordId === word.id &&
+          candidate.stage === task.stage &&
+          candidate.taskType === task.taskType,
+      )
+      const base = {
+        wordId: word.id,
         word: word.word,
         stage: task.stage,
-        reason: task.requiresExampleSentence
+        taskType: task.taskType,
+      }
+
+      if (item) {
+        const isValid = isExerciseContentValid(item, word, words)
+        const reason: CoverageBlockReason | undefined = !isValid
+          ? 'exercise_item_invalid'
+          : item.status === 'approved'
+            ? undefined
+            : item.status === 'disabled'
+              ? 'exercise_item_disabled'
+              : 'exercise_item_draft'
+
+        return {
+          ...base,
+          status: item.status,
+          itemId: item.id,
+          ...(reason ? { reason } : {}),
+        }
+      }
+
+      const reason: CoverageBlockReason =
+        (task.taskType === 'recall_word' || task.taskType === 'multiple_choice') &&
+        containsUnicodeWholeToken(word.meaning, word.word)
+          ? 'exercise_item_invalid'
+          : task.taskType === 'sentence_output' &&
+              containsNormalizedTaskText(word.meaning, word.exampleSentence)
+            ? 'exercise_item_invalid'
+          : task.requiresExampleSentence &&
+        (word.exampleSentence.trim().length === 0 ||
+          !containsUnicodeWholeToken(word.exampleSentence, word.word))
+        ? 'example_sentence_required'
+        : task.taskType === 'fill_blank' && !createFillBlankSentence(word)
           ? 'example_sentence_required'
-          : 'exercise_item_required',
-      }),
-    ),
+        : task.taskType === 'multiple_choice' && words.length < 3
+          ? 'distractors_required'
+          : task.taskType === 'sentence_build' && !hasVisibleSentenceShuffle(word)
+            ? 'sentence_pieces_required'
+            : 'exercise_item_required'
+
+      return {
+        ...base,
+        status: 'missing',
+        reason,
+      }
+    }),
   )
 
-const hasApprovedItem = (
+const hasExerciseItem = (
   exerciseItems: ExerciseItemRecord[],
   wordId: string,
   stage: WordStage,
+  taskType: TaskType,
 ): boolean =>
   exerciseItems.some(
-    (item) => item.wordId === wordId && item.stage === stage && item.status === 'approved',
+    (item) => item.wordId === wordId && item.stage === stage && item.taskType === taskType,
   )
+
+const toCoverage = (snapshot: Awaited<ReturnType<typeof requireSourceVersion>>): BuildCoverage => {
+  const cells = createCoverageCells(snapshot.words, snapshot.exerciseItems)
+  const missingItems = cells.flatMap((cell) =>
+    cell.reason
+      ? [{
+          word: cell.word,
+          stage: cell.stage,
+          taskType: cell.taskType,
+          reason: cell.reason,
+        }]
+      : [],
+  )
+
+  return {
+    sourceVersionId: snapshot.version.id,
+    wordCount: snapshot.words.length,
+    readyToPublish: missingItems.length === 0,
+    cells,
+    missingItems,
+  }
+}
+
+const toExerciseItemView = (
+  snapshot: Awaited<ReturnType<typeof requireSourceVersion>>,
+  item: ExerciseItemRecord,
+): ExerciseItemView => {
+  const word = snapshot.words.find((candidate) => candidate.id === item.wordId)
+
+  if (!word) {
+    throw new Error(`Word ${item.wordId} is missing`)
+  }
+
+  return {
+    id: item.id,
+    sourceVersionId: item.sourceVersionId,
+    wordId: item.wordId,
+    word: word.word,
+    stage: item.stage,
+    taskType: item.taskType,
+    prompt: item.prompt,
+    answer: item.answer,
+    status: item.status,
+  }
+}
+
+const toSourceVersionSummary = (
+  snapshot: Awaited<ReturnType<typeof requireSourceVersion>>,
+): SourceVersionSummary => ({
+  sourceId: snapshot.source.id,
+  sourceName: snapshot.source.name,
+  versionId: snapshot.version.id,
+  versionNo: snapshot.version.versionNo,
+  status: snapshot.version.status,
+  wordCount: snapshot.words.length,
+  groupCount: snapshot.groups.length,
+  exerciseItemCount: snapshot.exerciseItems.length,
+  approvedItemCount: snapshot.exerciseItems.filter((item) => item.status === 'approved').length,
+  createdAt: snapshot.version.createdAt,
+  ...(snapshot.version.publishedAt ? { publishedAt: snapshot.version.publishedAt } : {}),
+})
 
 const createWordGroups = (
   sourceVersionId: string,
@@ -233,23 +739,58 @@ const createExerciseItem = (
   word: WordRecord,
   stage: WordStage,
   taskType: TaskType,
+  words: WordRecord[],
   createdAt: string,
-): ExerciseItemRecord => ({
-  id: crypto.randomUUID(),
-  sourceVersionId,
-  wordId: word.id,
-  stage,
-  taskType,
-  prompt: createPrompt(word, stage),
-  answer: {
-    word: word.word,
-    meaning: word.meaning,
-  },
-  status: 'approved',
-  createdAt,
-})
+): ExerciseItemRecord => {
+  const generatedContent = createExerciseContent(word, stage, taskType, words)
+  const content = parseExerciseContent(
+    generatedContent,
+    word,
+    words,
+  )
 
-const createPrompt = (word: WordRecord, stage: WordStage): unknown => {
+  return {
+    id: crypto.randomUUID(),
+    sourceVersionId,
+    wordId: word.id,
+    stage: content.stage,
+    taskType: content.taskType,
+    prompt: content.prompt,
+    answer: content.answer,
+    status: 'draft',
+    createdAt,
+  }
+}
+
+const createExerciseContent = (
+  word: WordRecord,
+  stage: WordStage,
+  taskType: TaskType,
+  words: WordRecord[],
+): Pick<ExerciseItemRecord, 'stage' | 'taskType' | 'prompt' | 'answer'> => {
+  if (stage === 'S4' && taskType === 'sentence_build') {
+    const pieces = createSentencePieces(word, () => crypto.randomUUID())
+
+    return {
+      stage,
+      taskType,
+      prompt: { pieces: [...pieces].reverse() },
+      answer: {
+        pieceIds: pieces.map((piece) => piece.id),
+        referenceSentence: word.exampleSentence,
+      },
+    }
+  }
+
+  return {
+    stage,
+    taskType,
+    prompt: createPrompt(word, stage, words),
+    answer: createAnswer(word, stage),
+  }
+}
+
+const createPrompt = (word: WordRecord, stage: WordStage, words: WordRecord[]): unknown => {
   if (stage === 'S0') {
     return {
       word: word.word,
@@ -265,26 +806,231 @@ const createPrompt = (word: WordRecord, stage: WordStage): unknown => {
   }
 
   if (stage === 'S2') {
+    const options = [
+      word.word,
+      ...words
+        .filter((candidate) => candidate.id !== word.id)
+        .slice(0, 2)
+        .map((candidate) => candidate.word),
+    ]
+    const rotation = word.orderIndex % options.length
+
     return {
       meaning: word.meaning,
-      options: [word.word, `${word.word}-option-a`, `${word.word}-option-b`],
+      options: [...options.slice(rotation), ...options.slice(0, rotation)],
     }
   }
 
   if (stage === 'S3') {
     return {
-      sentence: word.exampleSentence.replace(word.word, '____'),
-    }
-  }
-
-  if (stage === 'S4') {
-    return {
-      pieces: word.exampleSentence.split(' '),
+      sentence: createFillBlankSentence(word) ?? '',
     }
   }
 
   return {
     meaning: word.meaning,
+    instruction: 'Write one complete English sentence.',
+  }
+}
+
+const createAnswer = (word: WordRecord, stage: WordStage): unknown => {
+  if (stage === 'S0') {
+    return {
+      word: word.word,
+      expectedResponse: 'known',
+    }
+  }
+
+  if (stage === 'S5') {
+    return {
+      referenceSentence: word.exampleSentence,
+    }
+  }
+
+  return {
+    word: word.word,
+  }
+}
+
+const createSentencePieces = (
+  word: WordRecord,
+  createId: (index: number) => string = (index) => String(index + 1),
+): Array<{ id: string; text: string }> =>
+  word.exampleSentence.trim().split(/\s+/).map((text, index) => ({
+    id: createId(index),
+    text,
+  }))
+
+const createFillBlankSentence = (word: WordRecord): string | undefined => {
+  const sentence = word.exampleSentence
+  const target = word.word.trim()
+
+  if (!target) {
+    return undefined
+  }
+
+  const targetPattern = new RegExp(
+    `(^|[^\\p{L}\\p{M}\\p{N}_])(${escapeRegularExpression(target)})(?=$|[^\\p{L}\\p{M}\\p{N}_])`,
+    'giu',
+  )
+  const blanked = sentence.replace(
+    targetPattern,
+    (_match, leadingBoundary: string) => `${leadingBoundary}____`,
+  )
+
+  return blanked === sentence ? undefined : blanked
+}
+
+const escapeRegularExpression = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+
+const hasVisibleSentenceShuffle = (word: WordRecord): boolean => {
+  const pieces = createSentencePieces(word)
+
+  if (pieces.length < 2) {
+    return false
+  }
+
+  const reversedPieces = [...pieces].reverse()
+
+  return pieces.some((piece, index) => piece.text !== reversedPieces[index]?.text)
+}
+
+const parseExerciseContent = (
+  item: Pick<ExerciseItemRecord, 'stage' | 'taskType' | 'prompt' | 'answer'>,
+  word: WordRecord,
+  words: WordRecord[],
+) => {
+  const content = exerciseItemContentSchema.parse({
+    stage: item.stage,
+    taskType: item.taskType,
+    prompt: item.prompt,
+    answer: item.answer,
+  })
+
+  if (
+    'word' in content.answer &&
+    normalizeTaskText(content.answer.word) !== normalizeTaskText(word.word)
+  ) {
+    throw validationError('content.answer.word', 'Task answer must match the exercise word')
+  }
+
+  if (
+    content.taskType === 'recognize_meaning' &&
+    normalizeTaskText(content.prompt.word) !== normalizeTaskText(word.word)
+  ) {
+    throw validationError('content.prompt.word', 'Task prompt must match the exercise word')
+  }
+
+  if (
+    (content.taskType === 'recall_word' || content.taskType === 'multiple_choice') &&
+    containsUnicodeWholeToken(content.prompt.meaning, word.word)
+  ) {
+    throw validationError(
+      'content.prompt.meaning',
+      'Task prompt must not reveal the exercise word',
+    )
+  }
+
+  if (content.taskType === 'sentence_output' && learnerPromptRevealsAnswer(content, word.word)) {
+    throw validationError(
+      'content.prompt',
+      'Task prompt must not reveal the reference sentence',
+    )
+  }
+
+  if (
+    content.taskType === 'fill_blank' &&
+    containsUnicodeWholeToken(content.prompt.sentence, word.word)
+  ) {
+    throw validationError(
+      'content.prompt.sentence',
+      'Fill-blank prompt must not reveal the exercise word',
+    )
+  }
+
+  if (content.taskType === 'multiple_choice') {
+    const sourceWords = new Set(words.map((candidate) => normalizeTaskText(candidate.word)))
+
+    if (content.prompt.options.some((option) => !sourceWords.has(normalizeTaskText(option)))) {
+      throw validationError('content.prompt.options', 'Multiple-choice options must come from source words')
+    }
+  }
+
+  if (
+    (content.taskType === 'sentence_build' || content.taskType === 'sentence_output') &&
+    !containsUnicodeWholeToken(content.answer.referenceSentence, word.word)
+  ) {
+    throw validationError(
+      'content.answer.referenceSentence',
+      'Reference sentence must contain the exercise word',
+    )
+  }
+
+  if (content.taskType === 'sentence_build') {
+    const piecesById = new Map(
+      content.prompt.pieces.map((piece) => [piece.id, piece.text] as const),
+    )
+    const reconstructed = content.answer.pieceIds
+      .map((pieceId) => piecesById.get(pieceId) ?? '')
+      .join(' ')
+
+    if (
+      normalizeSentenceText(reconstructed) !==
+      normalizeSentenceText(content.answer.referenceSentence)
+    ) {
+      throw validationError(
+        'content.answer.referenceSentence',
+        'Sentence-build answer must reconstruct its reference sentence',
+      )
+    }
+  }
+
+  return content
+}
+
+const isExerciseContentValid = (
+  item: ExerciseItemRecord,
+  word: WordRecord,
+  words: WordRecord[],
+): boolean => {
+  try {
+    parseExerciseContent(item, word, words)
+
+    return true
+  } catch {
+    return false
+  }
+}
+
+const normalizeTaskText = canonicalizeLearningText
+
+const normalizeSentenceText = canonicalizeLearningText
+
+const replayImportedSource = async (
+  repository: ContentRepository,
+  operation: CreateSourceAdminOperation,
+): Promise<ImportedSourceVersion> => {
+  const snapshot = await repository.getSourceVersion(operation.outcomeSourceVersionId)
+
+  if (
+    !snapshot ||
+    snapshot.source.id !== operation.outcomeSourceId ||
+    snapshot.version.sourceId !== operation.outcomeSourceId
+  ) {
+    throw new DomainError(
+      'dependency_failure',
+      'Committed source import outcome is unavailable',
+    )
+  }
+
+  return {
+    sourceId: snapshot.source.id,
+    versionId: snapshot.version.id,
+    versionNo: snapshot.version.versionNo,
+    status: snapshot.version.status,
+    wordCount: snapshot.words.length,
+    groupCount: snapshot.groups.length,
   }
 }
 
@@ -295,8 +1041,26 @@ const requireSourceVersion = async (
   const snapshot = await repository.getSourceVersion(sourceVersionId)
 
   if (!snapshot) {
-    throw new Error(`Source version ${sourceVersionId} is missing`)
+    throw new DomainError('not_found', `Source version ${sourceVersionId} is missing`)
   }
 
   return snapshot
 }
+
+const requireExerciseItem = async (
+  repository: ContentRepository,
+  itemId: string,
+): Promise<ExerciseItemRecord> => {
+  const item = await repository.getExerciseItem(itemId)
+
+  if (!item) {
+    throw new DomainError('not_found', `Exercise item ${itemId} is missing`)
+  }
+
+  return item
+}
+
+const validationError = (path: string, message: string): DomainError =>
+  new DomainError('validation_error', message, {
+    fields: [{ path, message }],
+  })

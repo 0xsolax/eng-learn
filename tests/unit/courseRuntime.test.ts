@@ -2,8 +2,14 @@ import { describe, expect, it } from 'vitest'
 import { createInMemoryContentRepository } from '../../server/repositories/inMemoryContentRepository'
 import { createInMemoryCourseRepository } from '../../server/repositories/inMemoryCourseRepository'
 import { createContentBuilder } from '../../server/services/ContentBuilder'
-import { createCourseRuntime } from '../../server/services/CourseRuntime'
+import {
+  createCourseRuntime,
+  type CourseRuntime,
+} from '../../server/services/CourseRuntime'
+import type { SourceVersionSnapshot } from '../../server/repositories/contentRepository'
+import { exerciseItemContentSchema } from '../../shared/api/taskSchemas'
 import type { ImportWordInput } from '../../shared/domain/content'
+import type { StartedLesson } from '../../shared/domain/course'
 
 const createWords = (count: number): ImportWordInput[] =>
   Array.from({ length: count }, (_, index) => {
@@ -13,7 +19,7 @@ const createWords = (count: number): ImportWordInput[] =>
     return {
       word: `word-${label}`,
       meaning: `meaning-${label}`,
-      exampleSentence: `I can use word ${label}.`,
+      exampleSentence: `I can use word-${label}.`,
     }
   })
 
@@ -41,8 +47,7 @@ describe('course runtime workflow', () => {
       }),
     ).rejects.toThrow('Courses can only bind published source versions')
 
-    await contentBuilder.buildExerciseItems(draft.versionId)
-    await contentBuilder.publishVersion(draft.versionId)
+    await buildApproveAndPublish(contentBuilder, draft.versionId)
 
     const created = await courseRuntime.createCourse({
       learnerName: 'Alice',
@@ -74,8 +79,7 @@ describe('course runtime workflow', () => {
       words: createWords(10),
     })
 
-    await contentBuilder.buildExerciseItems(draft.versionId)
-    await contentBuilder.publishVersion(draft.versionId)
+    await buildApproveAndPublish(contentBuilder, draft.versionId)
 
     const created = await courseRuntime.createCourse({
       learnerName: 'Alice',
@@ -96,6 +100,37 @@ describe('course runtime workflow', () => {
     expect(secondStart).toEqual(firstStart)
   })
 
+  it('returns one lesson snapshot when start is double-submitted concurrently', async () => {
+    const contentRepository = createInMemoryContentRepository()
+    const contentBuilder = createContentBuilder({
+      repository: contentRepository,
+      now: () => new Date('2026-07-06T00:00:00.000Z'),
+    })
+    const courseRuntime = createCourseRuntime({
+      contentRepository,
+      courseRepository: createInMemoryCourseRepository(),
+      now: () => new Date('2026-07-06T00:00:00.000Z'),
+    })
+    const draft = await contentBuilder.importWords({
+      sourceName: 'Concurrent lesson source',
+      words: createWords(5),
+    })
+
+    await buildApproveAndPublish(contentBuilder, draft.versionId)
+
+    const created = await courseRuntime.createCourse({
+      learnerName: 'Alice',
+      sourceVersionId: draft.versionId,
+    })
+    const [firstStart, secondStart] = await Promise.all([
+      courseRuntime.startLesson(created.course.id),
+      courseRuntime.startLesson(created.course.id),
+    ])
+
+    expect(secondStart).toEqual(firstStart)
+    expect(secondStart.session.id).toBe(firstStart.session.id)
+  })
+
   it('submits an answer once and advances an S0 word by lesson number', async () => {
     const contentRepository = createInMemoryContentRepository()
     const contentBuilder = createContentBuilder({
@@ -113,8 +148,7 @@ describe('course runtime workflow', () => {
       words: createWords(5),
     })
 
-    await contentBuilder.buildExerciseItems(draft.versionId)
-    await contentBuilder.publishVersion(draft.versionId)
+    await buildApproveAndPublish(contentBuilder, draft.versionId)
 
     const created = await courseRuntime.createCourse({
       learnerName: 'Alice',
@@ -130,12 +164,12 @@ describe('course runtime workflow', () => {
     const firstSubmit = await courseRuntime.submitAnswer({
       sessionId: lesson.session.id,
       taskId: firstTask.id,
-      userAnswer: 'word-1',
+      submission: { taskType: 'recognize_meaning', response: 'known' },
     })
     const secondSubmit = await courseRuntime.submitAnswer({
       sessionId: lesson.session.id,
       taskId: firstTask.id,
-      userAnswer: 'wrong-answer',
+      submission: { taskType: 'recognize_meaning', response: 'learning' },
     })
 
     expect(firstSubmit.wordState).toMatchObject({
@@ -173,8 +207,7 @@ describe('course runtime workflow', () => {
       words: createWords(5),
     })
 
-    await contentBuilder.buildExerciseItems(draft.versionId)
-    await contentBuilder.publishVersion(draft.versionId)
+    await buildApproveAndPublish(contentBuilder, draft.versionId)
 
     const created = await courseRuntime.createCourse({
       learnerName: 'Alice',
@@ -185,7 +218,7 @@ describe('course runtime workflow', () => {
     const submitted = await courseRuntime.submitAnswer({
       sessionId: lesson.session.id,
       taskId: firstTask.id,
-      userAnswer: 'wrong-answer',
+      submission: { taskType: 'recognize_meaning', response: 'learning' },
     })
 
     expect(submitted.wordState).toMatchObject({
@@ -197,7 +230,7 @@ describe('course runtime workflow', () => {
     })
     expect(submitted.reviewLog).toMatchObject({
       score: 0,
-      userAnswer: 'wrong-answer',
+      userAnswer: JSON.stringify({ taskType: 'recognize_meaning', response: 'learning' }),
     })
   })
 
@@ -217,8 +250,7 @@ describe('course runtime workflow', () => {
       words: createWords(5),
     })
 
-    await contentBuilder.buildExerciseItems(draft.versionId)
-    await contentBuilder.publishVersion(draft.versionId)
+    await buildApproveAndPublish(contentBuilder, draft.versionId)
 
     const created = await courseRuntime.createCourse({
       learnerName: 'Alice',
@@ -230,43 +262,63 @@ describe('course runtime workflow', () => {
     await courseRuntime.submitAnswer({
       sessionId: lesson.session.id,
       taskId: wrongTask.id,
-      userAnswer: 'wrong-answer',
+      submission: { taskType: 'recognize_meaning', response: 'learning' },
     })
 
     for (const task of lesson.tasks.slice(1, 4)) {
       await courseRuntime.submitAnswer({
         sessionId: lesson.session.id,
         taskId: task.id,
-        userAnswer: `word-${String(task.orderIndex)}`,
+        submission: { taskType: 'recognize_meaning', response: 'known' },
       })
     }
 
-    await expect(courseRuntime.completeLesson(lesson.session.id)).rejects.toThrow(
-      'Lesson completion requires at least eighty percent completed tasks',
-    )
+    await expect(courseRuntime.completeLesson(lesson.session.id)).rejects.toMatchObject({
+      code: 'lesson_incomplete',
+    })
 
     const resumedLesson = await courseRuntime.startLesson(created.course.id)
-    const refluxTask = getRequiredTask(resumedLesson.tasks, 5)
+    const refluxTask = resumedLesson.tasks.find((task) => task.role === 'reflux')
 
-    expect(resumedLesson.tasks).toHaveLength(6)
+    expect(resumedLesson.tasks.length).toBeGreaterThanOrEqual(7)
+    expect(resumedLesson.tasks.length).toBeLessThanOrEqual(10)
     expect(refluxTask).toMatchObject({
       wordId: wrongTask.wordId,
       status: 'pending',
-      orderIndex: 6,
     })
+    expect(refluxTask?.orderIndex).toBeGreaterThanOrEqual(7)
+    expect(refluxTask?.orderIndex).toBeLessThanOrEqual(10)
+
+    if (!refluxTask) {
+      throw new Error('Expected a reflux task')
+    }
+
+    let currentTask = (await courseRuntime.getLesson(lesson.session.id)).tasks.find(
+      (task) => task.status === 'pending',
+    )
+    while (currentTask && currentTask.id !== refluxTask.id) {
+      await courseRuntime.submitAnswer({
+        sessionId: lesson.session.id,
+        taskId: currentTask.id,
+        submission: { taskType: 'recognize_meaning', response: 'known' },
+      })
+      currentTask = (await courseRuntime.getLesson(lesson.session.id)).tasks.find(
+        (task) => task.status === 'pending',
+      )
+    }
 
     await courseRuntime.submitAnswer({
       sessionId: resumedLesson.session.id,
       taskId: refluxTask.id,
-      userAnswer: 'word-1',
+      submission: { taskType: 'recognize_meaning', response: 'known' },
     })
 
     const completed = await courseRuntime.completeLesson(lesson.session.id)
 
     expect(completed.course.currentLessonNo).toBe(2)
     expect(completed.session).toMatchObject({
-      taskCount: 6,
-      completedTaskCount: 5,
+      taskCount: resumedLesson.tasks.length,
+      completedTaskCount: resumedLesson.tasks.length,
       status: 'completed',
     })
   })
@@ -287,8 +339,7 @@ describe('course runtime workflow', () => {
       words: createWords(5),
     })
 
-    await contentBuilder.buildExerciseItems(draft.versionId)
-    await contentBuilder.publishVersion(draft.versionId)
+    await buildApproveAndPublish(contentBuilder, draft.versionId)
 
     const created = await courseRuntime.createCourse({
       learnerName: 'Alice',
@@ -300,18 +351,18 @@ describe('course runtime workflow', () => {
       await courseRuntime.submitAnswer({
         sessionId: lesson.session.id,
         taskId: task.id,
-        userAnswer: `word-${String(task.orderIndex)}`,
+        submission: { taskType: 'recognize_meaning', response: 'known' },
       })
     }
 
-    await expect(courseRuntime.completeLesson(lesson.session.id)).rejects.toThrow(
-      'Lesson completion requires at least eighty percent completed tasks',
-    )
+    await expect(courseRuntime.completeLesson(lesson.session.id)).rejects.toMatchObject({
+      code: 'lesson_incomplete',
+    })
 
     await courseRuntime.submitAnswer({
       sessionId: lesson.session.id,
       taskId: getRequiredTask(lesson.tasks, 3).id,
-      userAnswer: 'word-4',
+      submission: { taskType: 'recognize_meaning', response: 'known' },
     })
 
     const firstComplete = await courseRuntime.completeLesson(lesson.session.id)
@@ -342,8 +393,7 @@ describe('course runtime workflow', () => {
       words: createWords(10),
     })
 
-    await contentBuilder.buildExerciseItems(draft.versionId)
-    await contentBuilder.publishVersion(draft.versionId)
+    await buildApproveAndPublish(contentBuilder, draft.versionId)
 
     const created = await courseRuntime.createCourse({
       learnerName: 'Alice',
@@ -355,7 +405,7 @@ describe('course runtime workflow', () => {
       await courseRuntime.submitAnswer({
         sessionId: lessonOne.session.id,
         taskId: task.id,
-        userAnswer: `word-${String(task.orderIndex)}`,
+        submission: { taskType: 'recognize_meaning', response: 'known' },
       })
     }
 
@@ -382,6 +432,109 @@ describe('course runtime workflow', () => {
       'S0',
     ])
   })
+
+  it('skips a lesson-number gap instead of persisting an empty lesson', async () => {
+    const contentRepository = createInMemoryContentRepository()
+    const contentBuilder = createContentBuilder({
+      repository: contentRepository,
+      now: () => new Date('2026-07-06T00:00:00.000Z'),
+    })
+    const courseRepository = createInMemoryCourseRepository()
+    const courseRuntime = createCourseRuntime({
+      contentRepository,
+      courseRepository,
+      now: () => new Date('2026-07-06T00:00:00.000Z'),
+    })
+    const draft = await contentBuilder.importWords({
+      sourceName: 'Lesson gap source',
+      words: createWords(5),
+    })
+
+    await buildApproveAndPublish(contentBuilder, draft.versionId)
+
+    const created = await courseRuntime.createCourse({
+      learnerName: 'Alice',
+      sourceVersionId: draft.versionId,
+    })
+    const lessonOne = await courseRuntime.startLesson(created.course.id)
+
+    for (const task of lessonOne.tasks) {
+      await courseRuntime.submitAnswer({
+        sessionId: lessonOne.session.id,
+        taskId: task.id,
+        submission: { taskType: 'recognize_meaning', response: 'known' },
+      })
+    }
+    await courseRuntime.completeLesson(lessonOne.session.id)
+
+    const lessonTwo = await courseRuntime.startLesson(created.course.id)
+
+    for (const [index, task] of lessonTwo.tasks.entries()) {
+      await courseRuntime.submitAnswer({
+        sessionId: lessonTwo.session.id,
+        taskId: task.id,
+        submission: { taskType: 'recall_word', answer: `word-${String(index + 1)}` },
+      })
+    }
+    const lessonTwoCompletion = await courseRuntime.completeLesson(lessonTwo.session.id)
+
+    const nextLesson = await courseRuntime.startLesson(created.course.id)
+    const advancedCourse = await courseRepository.getCourse(created.course.id)
+
+    expect(lessonTwoCompletion.course.currentLessonNo).toBe(4)
+    expect(nextLesson.session.lessonNo).toBe(4)
+    expect(nextLesson.tasks).toHaveLength(5)
+    expect(nextLesson.tasks.every((task) => task.stage === 'S2')).toBe(true)
+    expect(advancedCourse?.currentLessonNo).toBe(4)
+  })
+
+  it('keeps a twenty-word course moving after every source group is activated', async () => {
+    const contentRepository = createInMemoryContentRepository()
+    const contentBuilder = createContentBuilder({
+      repository: contentRepository,
+      now: () => new Date('2026-07-06T00:00:00.000Z'),
+    })
+    const courseRepository = createInMemoryCourseRepository()
+    const courseRuntime = createCourseRuntime({
+      contentRepository,
+      courseRepository,
+      now: () => new Date('2026-07-06T00:00:00.000Z'),
+    })
+    const draft = await contentBuilder.importWords({
+      sourceName: 'Twenty-word lesson gap source',
+      words: createWords(20),
+    })
+
+    await buildApproveAndPublish(contentBuilder, draft.versionId)
+    const sourceVersion = await contentRepository.getSourceVersion(draft.versionId)
+
+    if (!sourceVersion) {
+      throw new Error('Expected the published source-version snapshot')
+    }
+
+    const created = await courseRuntime.createCourse({
+      learnerName: 'Alice',
+      sourceVersionId: draft.versionId,
+    })
+    const startedLessonNos: number[] = []
+
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      const lesson = await courseRuntime.startLesson(created.course.id)
+      startedLessonNos.push(lesson.session.lessonNo)
+      expect(lesson.tasks.length).toBeGreaterThan(0)
+
+      await submitSnapshotCorrectAnswers(courseRuntime, sourceVersion, lesson)
+      await courseRuntime.completeLesson(lesson.session.id)
+
+      if (lesson.session.lessonNo >= 12) break
+    }
+
+    expect(startedLessonNos).toContain(12)
+    expect(startedLessonNos).not.toContain(11)
+    await expect(
+      courseRepository.getStartedLesson(created.course.id, 11),
+    ).resolves.toBeUndefined()
+  })
 })
 
 const getRequiredTask = <T>(tasks: T[], index: number): T => {
@@ -392,4 +545,82 @@ const getRequiredTask = <T>(tasks: T[], index: number): T => {
   }
 
   return task
+}
+
+const submitSnapshotCorrectAnswers = async (
+  runtime: CourseRuntime,
+  sourceVersion: SourceVersionSnapshot,
+  lesson: StartedLesson,
+): Promise<void> => {
+  for (const task of lesson.tasks) {
+    const record = sourceVersion.exerciseItems.find(
+      (candidate) =>
+        candidate.wordId === task.wordId &&
+        candidate.stage === task.stage &&
+        candidate.status === 'approved',
+    )
+
+    if (!record) {
+      throw new Error(`Expected approved content for ${task.wordId}/${task.stage}`)
+    }
+
+    const content = exerciseItemContentSchema.parse({
+      stage: record.stage,
+      taskType: record.taskType,
+      prompt: record.prompt,
+      answer: record.answer,
+    })
+
+    switch (content.taskType) {
+      case 'recognize_meaning':
+        await runtime.submitAnswer({
+          sessionId: lesson.session.id,
+          taskId: task.id,
+          submission: { taskType: content.taskType, response: 'known' },
+        })
+        break
+      case 'recall_word':
+      case 'multiple_choice':
+      case 'fill_blank':
+        await runtime.submitAnswer({
+          sessionId: lesson.session.id,
+          taskId: task.id,
+          submission: { taskType: content.taskType, answer: content.answer.word },
+        })
+        break
+      case 'sentence_build':
+        await runtime.submitAnswer({
+          sessionId: lesson.session.id,
+          taskId: task.id,
+          submission: { taskType: content.taskType, pieceIds: content.answer.pieceIds },
+        })
+        break
+      case 'sentence_output': {
+        const draft = content.answer.referenceSentence
+        await runtime.previewSentenceOutput({
+          sessionId: lesson.session.id,
+          taskId: task.id,
+          preview: { taskType: content.taskType, draft },
+        })
+        await runtime.submitAnswer({
+          sessionId: lesson.session.id,
+          taskId: task.id,
+          submission: { taskType: content.taskType, draft, selfScore: 3 },
+        })
+        break
+      }
+    }
+  }
+}
+
+const buildApproveAndPublish = async (
+  contentBuilder: ReturnType<typeof createContentBuilder>,
+  sourceVersionId: string,
+): Promise<void> => {
+  await contentBuilder.buildExerciseItems(sourceVersionId)
+
+  const items = await contentBuilder.listExerciseItems(sourceVersionId)
+
+  await contentBuilder.approveExerciseItems(items.map((item) => item.id))
+  await contentBuilder.publishVersion(sourceVersionId)
 }

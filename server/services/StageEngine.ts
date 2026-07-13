@@ -1,4 +1,8 @@
-import type { ReviewScore, UserWordStateView } from '../../shared/domain/course'
+import {
+  isPassingReviewScore,
+  type ReviewScore,
+  type UserWordStateView,
+} from '../../shared/domain/course'
 import type { WordStage } from '../../shared/domain/content'
 import type { UserWordStateRecord } from '../repositories/courseRepository'
 
@@ -21,7 +25,7 @@ export const applyAnswerScore = (
     updatedAt: string
   },
 ): UserWordStateRecord => {
-  const isCorrect = input.score >= 2
+  const isCorrect = isPassingReviewScore(input.score)
   const wrongStreak = isCorrect ? 0 : state.wrongStreak + 1
   const stage = isCorrect
     ? upgradeStage(state.stage)

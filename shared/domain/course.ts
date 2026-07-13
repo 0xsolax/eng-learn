@@ -1,4 +1,8 @@
 import type { WordStage } from './content'
+import type {
+  LessonTaskDto,
+  TaskAnswerFeedback,
+} from '../api/taskSchemas'
 
 export type CourseStatus = 'active' | 'paused' | 'completed'
 
@@ -34,17 +38,7 @@ export type LessonSessionView = {
   completedTaskCount: number
 }
 
-export type LessonTaskView = {
-  id: string
-  sessionId: string
-  courseId: string
-  wordId: string
-  stage: string
-  taskType: string
-  prompt: unknown
-  orderIndex: number
-  status: LessonTaskStatus
-}
+export type LessonTaskView = LessonTaskDto
 
 export type StartedLesson = {
   session: LessonSessionView
@@ -52,6 +46,8 @@ export type StartedLesson = {
 }
 
 export type ReviewScore = 0 | 1 | 2 | 3
+
+export const isPassingReviewScore = (score: ReviewScore): boolean => score >= 2
 
 export type UserWordStateView = {
   id: string
@@ -90,6 +86,10 @@ export type ReviewLogView = {
 export type SubmittedAnswer = {
   wordState: UserWordStateView
   reviewLog: ReviewLogView
+}
+
+export type SubmittedTaskAnswer = SubmittedAnswer & {
+  feedback: TaskAnswerFeedback
 }
 
 export type CompletedLesson = {

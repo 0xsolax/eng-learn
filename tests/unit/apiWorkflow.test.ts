@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { createTestWorkerApp } from '../../server/app'
-import type { BuildCoverage, ImportedSourceVersion, PublishedSourceVersion } from '../../shared/domain/content'
-import type { CompletedLesson, CreatedCourse, StartedLesson, SubmittedAnswer } from '../../shared/domain/course'
+import type {
+  BuildCoverage,
+  ExerciseItemView,
+  ImportedSourceVersion,
+  PublishedSourceVersion,
+} from '../../shared/domain/content'
+import type { CompletedLesson, CreatedCourse, StartedLesson } from '../../shared/domain/course'
+import type { TaskAnswerFeedback } from '../../shared/api/taskSchemas'
 import type { ImportWordInput } from '../../shared/domain/content'
+import { generateAdminOperationToken } from '../../shared/security/adminOperationToken'
 
 const ADMIN_TOKEN = 'test-admin-token'
 
@@ -26,18 +33,29 @@ const createWords = (count: number): ImportWordInput[] =>
     return {
       word: `word-${label}`,
       meaning: `meaning-${label}`,
-      exampleSentence: `I can use word ${label}.`,
+      exampleSentence: `I can use word-${label}.`,
     }
   })
 
-const postJson = (path: string, body: unknown, adminToken?: string): Request =>
+const postJson = (
+  path: string,
+  body: unknown,
+  input: { adminToken?: string; cookie?: string; origin?: string } = {},
+): Request =>
   new Request(`https://eng-learn.test${path}`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      ...(adminToken ? { 'x-admin-token': adminToken } : {}),
+      ...(input.adminToken ? { 'x-admin-token': input.adminToken } : {}),
+      ...(input.cookie ? { cookie: input.cookie } : {}),
+      ...(input.origin ? { origin: input.origin } : {}),
     },
     body: JSON.stringify(body),
+  })
+
+const get = (path: string, adminToken?: string): Request =>
+  new Request(`https://eng-learn.test${path}`, {
+    headers: adminToken ? { 'x-admin-token': adminToken } : {},
   })
 
 const readSuccess = async <T>(response: Response): Promise<T> => {
@@ -63,9 +81,11 @@ describe('worker api workflow', () => {
     const imported = await readSuccess<ImportedSourceVersion>(
       await app.fetch(
         postJson('/api/admin/source-versions/import', {
+          mode: 'new_source',
+          operationToken: generateAdminOperationToken(),
           sourceName: 'HTTP source',
           words: createWords(10),
-        }, ADMIN_TOKEN),
+        }, { adminToken: ADMIN_TOKEN }),
       ),
     )
 
@@ -77,19 +97,36 @@ describe('worker api workflow', () => {
 
     const coverage = await readSuccess<BuildCoverage>(
       await app.fetch(
-        postJson(`/api/admin/source-versions/${imported.versionId}/build`, {}, ADMIN_TOKEN),
+        postJson(`/api/admin/source-versions/${imported.versionId}/build`, {}, {
+          adminToken: ADMIN_TOKEN,
+        }),
       ),
     )
 
     expect(coverage).toMatchObject({
       sourceVersionId: imported.versionId,
-      readyToPublish: true,
-      missingItems: [],
+      readyToPublish: false,
     })
+    expect(coverage.missingItems.every((item) => item.reason === 'exercise_item_draft')).toBe(true)
+
+    const exercises = await readSuccess<ExerciseItemView[]>(
+      await app.fetch(
+        get(`/api/admin/source-versions/${imported.versionId}/exercises`, ADMIN_TOKEN),
+      ),
+    )
+    await readSuccess(
+      await app.fetch(
+        postJson('/api/admin/exercise-items/batch-approve', {
+          itemIds: exercises.map((item) => item.id),
+        }, { adminToken: ADMIN_TOKEN }),
+      ),
+    )
 
     const published = await readSuccess<PublishedSourceVersion>(
       await app.fetch(
-        postJson(`/api/admin/source-versions/${imported.versionId}/publish`, {}, ADMIN_TOKEN),
+        postJson(`/api/admin/source-versions/${imported.versionId}/publish`, {}, {
+          adminToken: ADMIN_TOKEN,
+        }),
       ),
     )
 
@@ -101,21 +138,29 @@ describe('worker api workflow', () => {
     const createdCourse = await readSuccess<CreatedCourse>(
       await app.fetch(
         postJson('/api/admin/courses', {
+          operationToken: generateAdminOperationToken(),
           learnerName: 'Alice',
           sourceVersionId: imported.versionId,
-        }, ADMIN_TOKEN),
+        }, { adminToken: ADMIN_TOKEN }),
       ),
     )
-    const enteredCourse = await readSuccess<CreatedCourse>(
-      await app.fetch(
+    const exchangeResponse = await app.fetch(
         postJson('/api/app/session/by-code', {
           accessCode: createdCourse.learner.accessCode,
-        }),
-      ),
+        }, { origin: 'https://eng-learn.test' }),
     )
+    const enteredCourse = await readSuccess<Omit<CreatedCourse, 'learner'> & {
+      learner: { id: string; name: string }
+    }>(exchangeResponse)
+    const cookie = exchangeResponse.headers.get('set-cookie')?.split(';')[0]
+
+    if (!cookie) throw new Error('Expected learner session cookie')
     const lesson = await readSuccess<StartedLesson>(
       await app.fetch(
-        postJson(`/api/app/courses/${enteredCourse.course.id}/lessons/start`, {}),
+        postJson(`/api/app/courses/${enteredCourse.course.id}/lessons/start`, {}, {
+          origin: 'https://eng-learn.test',
+          cookie,
+        }),
       ),
     )
 
@@ -129,32 +174,45 @@ describe('worker api workflow', () => {
 
     const firstTask = getRequiredTask(lesson.tasks, 0)
     expect(Object.prototype.hasOwnProperty.call(firstTask, 'answer')).toBe(false)
-    const submitted = await readSuccess<SubmittedAnswer>(
+    const submitted = await readSuccess<{
+      taskId: string
+      score: 0 | 1 | 2 | 3
+      correct: boolean
+      feedback: TaskAnswerFeedback
+    }>(
       await app.fetch(
         postJson(`/api/app/lessons/${lesson.session.id}/tasks/${firstTask.id}/answer`, {
-          userAnswer: 'word-1',
-        }),
+          taskType: 'recognize_meaning',
+          response: 'known',
+        }, { origin: 'https://eng-learn.test', cookie }),
       ),
     )
 
-    expect(submitted.wordState).toMatchObject({
-      wordId: firstTask.wordId,
-      stage: 'S1',
-      nextDueLessonNo: 2,
+    expect(submitted).toMatchObject({
+      taskId: firstTask.id,
+      score: 2,
+      correct: true,
+      feedback: { taskType: 'recognize_meaning', response: 'known' },
     })
 
     for (const task of lesson.tasks.slice(1, 4)) {
-      await readSuccess<SubmittedAnswer>(
+      await readSuccess(
         await app.fetch(
           postJson(`/api/app/lessons/${lesson.session.id}/tasks/${task.id}/answer`, {
-            userAnswer: `word-${String(task.orderIndex)}`,
-          }),
+            taskType: 'recognize_meaning',
+            response: 'known',
+          }, { origin: 'https://eng-learn.test', cookie }),
         ),
       )
     }
 
     const completed = await readSuccess<CompletedLesson>(
-      await app.fetch(postJson(`/api/app/lessons/${lesson.session.id}/complete`, {})),
+      await app.fetch(
+        postJson(`/api/app/lessons/${lesson.session.id}/complete`, {}, {
+          origin: 'https://eng-learn.test',
+          cookie,
+        }),
+      ),
     )
 
     expect(completed.course.currentLessonNo).toBe(2)
@@ -168,20 +226,24 @@ describe('worker api workflow', () => {
     const app = createTestWorkerApp({ adminToken: ADMIN_TOKEN })
     const response = await app.fetch(
       postJson('/api/admin/source-versions/import', {
+        mode: 'new_source',
+        operationToken: generateAdminOperationToken(),
         sourceName: '',
         words: [],
-      }, ADMIN_TOKEN),
+      }, { adminToken: ADMIN_TOKEN }),
     )
     const failure = await readFailure(response)
 
     expect(response.status).toBe(400)
-    expect(failure.error.code).toBe('bad_request')
+    expect(failure.error.code).toBe('validation_error')
   })
 
   it('rejects admin mutations without the admin token', async () => {
     const app = createTestWorkerApp({ adminToken: ADMIN_TOKEN })
     const response = await app.fetch(
       postJson('/api/admin/source-versions/import', {
+        mode: 'new_source',
+        operationToken: generateAdminOperationToken(),
         sourceName: 'Blocked source',
         words: createWords(1),
       }),

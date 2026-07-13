@@ -1,0 +1,531 @@
+import { expect, test, type APIRequestContext, type APIResponse } from '@playwright/test'
+import { z } from 'zod'
+import {
+  adminExerciseItemListSchema,
+  batchApprovalResultSchema,
+  buildCoverageSchema,
+  importedSourceVersionSchema,
+  publishedSourceVersionSchema,
+} from '../../../shared/api/contentSchemas'
+import {
+  completedLessonSchema,
+  createdCourseSchema,
+  adminCourseListSchema,
+  establishedLearnerSessionSchema,
+  rotatedAccessCodeSchema,
+  restoredLearnerSessionSchema,
+  startedLessonSchema,
+} from '../../../shared/api/courseSchemas'
+import { apiErrorSchema } from '../../../shared/api/schemas'
+import { taskAnswerResultSchema } from '../../../shared/api/taskSchemas'
+import { generateAdminOperationToken } from '../../../shared/security/adminOperationToken'
+
+const expectedSentinel = process.env.STACK_DB_SENTINEL
+
+if (!expectedSentinel) throw new Error('STACK_DB_SENTINEL is required')
+
+test('uses only the isolated Worker and D1 identity', async ({ request }) => {
+  const response = await request.get('/api/e2e/identity')
+  const body: unknown = await response.json()
+
+  expect(response.status()).toBe(200)
+  expect(body).toEqual({
+    ok: true,
+    data: {
+      workerName: 'eng-learn-e2e-local',
+      environment: 'local-e2e',
+      dbSentinel: expectedSentinel,
+    },
+  })
+})
+
+test('enforces response-loss replay, token boundaries, and one-winner rotation in D1', async ({
+  request,
+  baseURL,
+}) => {
+  if (!baseURL) throw new Error('Expected stack base URL')
+  const originHeaders = { origin: new URL(baseURL).origin }
+  const sourceName = `Lost response ${generateAdminOperationToken().slice(0, 8)}`
+  const importCommand = {
+    mode: 'new_source' as const,
+    operationToken: generateAdminOperationToken(),
+    sourceName,
+    words: Array.from({ length: 5 }, (_, index) => ({
+      word: `lost-word-${String(index + 1)}`,
+      meaning: `lost-meaning-${String(index + 1)}`,
+      exampleSentence: `I use lost-word-${String(index + 1)} here.`,
+    })),
+  }
+
+  await request.post('/api/admin/source-versions/import', {
+    headers: originHeaders,
+    data: importCommand,
+  })
+  const imported = await success(
+    await request.post('/api/admin/source-versions/import', {
+      headers: originHeaders,
+      data: importCommand,
+    }),
+    importedSourceVersionSchema,
+  )
+  const versions = await success(
+    await request.get('/api/admin/source-versions'),
+    z.array(
+      z.looseObject({
+        sourceId: z.string(),
+        sourceName: z.string(),
+        versionId: z.string(),
+      }),
+    ),
+  )
+  expect(versions.filter((version) => version.sourceName === sourceName)).toHaveLength(1)
+
+  const payloadConflict = await request.post('/api/admin/source-versions/import', {
+    headers: originHeaders,
+    data: { ...importCommand, sourceName: `${sourceName} changed` },
+  })
+  expect(payloadConflict.status()).toBe(409)
+  expect(await failureCode(payloadConflict)).toBe('idempotency_conflict')
+
+  await success(
+    await request.post(`/api/admin/source-versions/${imported.versionId}/build`, {
+      headers: originHeaders,
+    }),
+    buildCoverageSchema,
+  )
+  const items = await success(
+    await request.get(`/api/admin/source-versions/${imported.versionId}/exercises`),
+    adminExerciseItemListSchema,
+  )
+  await success(
+    await request.post('/api/admin/exercise-items/batch-approve', {
+      headers: originHeaders,
+      data: { itemIds: items.map((item) => item.id) },
+    }),
+    batchApprovalResultSchema,
+  )
+  await success(
+    await request.post(`/api/admin/source-versions/${imported.versionId}/publish`, {
+      headers: originHeaders,
+    }),
+    publishedSourceVersionSchema,
+  )
+
+  const crossKindConflict = await request.post('/api/admin/courses', {
+    headers: originHeaders,
+    data: {
+      operationToken: importCommand.operationToken,
+      learnerName: 'Cross-kind learner',
+      sourceVersionId: imported.versionId,
+    },
+  })
+  expect(crossKindConflict.status()).toBe(409)
+  expect(await failureCode(crossKindConflict)).toBe('idempotency_conflict')
+
+  const courseCommand = {
+    operationToken: generateAdminOperationToken(),
+    learnerName: `Lost learner ${sourceName.slice(-8)}`,
+    sourceVersionId: imported.versionId,
+  }
+  await request.post('/api/admin/courses', {
+    headers: originHeaders,
+    data: courseCommand,
+  })
+  const created = await success(
+    await request.post('/api/admin/courses', {
+      headers: originHeaders,
+      data: courseCommand,
+    }),
+    createdCourseSchema,
+  )
+  await success(
+    await request.post('/api/app/session/by-code', {
+      headers: originHeaders,
+      data: { accessCode: created.learner.accessCode },
+    }),
+    establishedLearnerSessionSchema,
+  )
+
+  const rotateCommand = {
+    operationToken: generateAdminOperationToken(),
+    expectedCredentialVersion: 1,
+  }
+  const rotatePath = `/api/admin/learners/${created.learner.id}/access-code/rotate`
+  await request.post(rotatePath, { headers: originHeaders, data: rotateCommand })
+  const rotated = await success(
+    await request.post(rotatePath, { headers: originHeaders, data: rotateCommand }),
+    rotatedAccessCodeSchema,
+  )
+  expect(rotated).toMatchObject({ credentialVersion: 2, revokedSessionCount: 1 })
+
+  const concurrentRotations = await Promise.all(
+    [generateAdminOperationToken(), generateAdminOperationToken()].map(
+      (operationToken) =>
+        request.post(rotatePath, {
+          headers: originHeaders,
+          data: { operationToken, expectedCredentialVersion: 2 },
+        }),
+    ),
+  )
+  const winningRotations = concurrentRotations.filter(
+    (response) => response.status() === 200,
+  )
+  const losingRotations = concurrentRotations.filter(
+    (response) => response.status() === 409,
+  )
+  expect(winningRotations).toHaveLength(1)
+  expect(losingRotations).toHaveLength(1)
+  const winningRotation = winningRotations[0]
+  const losingRotation = losingRotations[0]
+
+  if (!winningRotation || !losingRotation) {
+    throw new Error('Expected exactly one credential rotation winner and loser')
+  }
+
+  const concurrentWinner = await success(winningRotation, rotatedAccessCodeSchema)
+  expect(concurrentWinner.credentialVersion).toBe(3)
+  expect(await failureCode(losingRotation)).toBe('credential_conflict')
+
+  const courses = await success(
+    await request.get('/api/admin/courses'),
+    adminCourseListSchema,
+  )
+  expect(
+    courses.courses.filter((entry) => entry.learner.id === created.learner.id),
+  ).toEqual([
+    expect.objectContaining({
+      credentialVersion: 3,
+      course: expect.objectContaining({ id: created.course.id }),
+    }),
+  ])
+  const revokedSession = await request.get('/api/app/session')
+  expect(revokedSession.status()).toBe(401)
+  expect(await failureCode(revokedSession)).toBe('learner_session_revoked')
+})
+
+test('production Vue browser preserves an unknown create and closes learner S0 against Worker and D1', async ({
+  page,
+  request,
+  baseURL,
+}) => {
+  if (!baseURL) throw new Error('Expected stack base URL')
+  const originHeaders = { origin: new URL(baseURL).origin }
+  const fixture = await prepareBrowserWalkingSkeleton(request, originHeaders)
+
+  await page.goto('/admin/source-versions')
+  await expect(page.getByRole('heading', { level: 1, name: '词库版本' })).toBeVisible()
+  await expect(page.getByRole('row').filter({ hasText: fixture.sourceName })).toBeVisible()
+
+  const createCommands: unknown[] = []
+  let createAttempt = 0
+  await page.route('**/api/admin/courses', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue()
+      return
+    }
+
+    createAttempt += 1
+    createCommands.push(route.request().postDataJSON())
+
+    if (createAttempt === 1) {
+      const committed = await route.fetch()
+      expect(committed.status()).toBe(200)
+      await route.abort('failed')
+      return
+    }
+
+    await route.continue()
+  })
+  await page.goto('/admin/courses')
+  const existingCourse = page.getByRole('row').filter({ hasText: 'Browser learner' })
+  await existingCourse.getByRole('button', { name: '轮换学习码' }).click()
+  await expect(page.locator('[data-rotate-confirmation]')).toBeVisible()
+  await page.getByLabel('学习者姓名').fill('Lost browser learner')
+  await page.getByRole('button', { name: '创建课程并生成学习码' }).click()
+  await expect(page.locator('[data-unknown-result]')).toContainText('课程可能已经创建')
+  await expect(page.locator('[data-rotate-confirmation]')).toHaveCount(0)
+  await page.getByRole('button', { name: '安全重试同一次操作' }).click()
+  await expect(page.locator('[data-one-time-code]')).toContainText('Lost browser learner')
+  expect(createCommands).toHaveLength(2)
+  expect(createCommands[1]).toEqual(createCommands[0])
+  await page.unroute('**/api/admin/courses')
+
+  await page.goto('/app')
+  const accessCodeInput = page.getByLabel('10 位学习码')
+  await expect(accessCodeInput).toBeVisible()
+  await accessCodeInput.fill(fixture.accessCode)
+  await page.getByRole('button', { name: '进入课程' }).click()
+  await expect(page).toHaveURL(/\/app\/course$/u)
+  await expect(page.getByRole('heading', { level: 1, name: '第 1 课' })).toBeVisible()
+
+  await page.evaluate(() => {
+    localStorage.clear()
+    sessionStorage.clear()
+  })
+  await page.goto('/app')
+  await expect(page).toHaveURL(/\/app\/course$/u)
+  await expect(page.getByLabel('10 位学习码')).toHaveCount(0)
+  await expect(page.getByRole('heading', { level: 1, name: '第 1 课' })).toBeVisible()
+
+  await page.getByRole('button', { name: '开始第 1 课' }).click()
+  await expect(page).toHaveURL(/\/app\/lesson\/[^/]+$/u)
+  await expect(page.getByRole('heading', { level: 2, name: 'browser-word-1' })).toBeVisible()
+  await page.getByRole('button', { name: '我认识' }).click()
+  await expect(page.getByRole('status')).toContainText('答对了')
+  await expect(page.getByRole('status')).toContainText('服务端已记录这次判断')
+})
+
+test('runs admin lifecycle, learner isolation, reflux, recovery, and idempotent completion', async ({
+  request,
+  baseURL,
+}) => {
+  if (!baseURL) throw new Error('Expected stack base URL')
+  const originHeaders = { origin: new URL(baseURL).origin }
+  const imported = await success(
+    await request.post('/api/admin/source-versions/import', {
+      headers: originHeaders,
+      data: {
+        mode: 'new_source',
+        operationToken: generateAdminOperationToken(),
+        sourceName: 'Stack E2E source',
+        words: Array.from({ length: 5 }, (_, index) => ({
+          word: `word-${String(index + 1)}`,
+          meaning: `meaning-${String(index + 1)}`,
+          exampleSentence: `I use word-${String(index + 1)} here.`,
+        })),
+      },
+    }),
+    importedSourceVersionSchema,
+  )
+  const built = await success(
+    await request.post(`/api/admin/source-versions/${imported.versionId}/build`, {
+      headers: originHeaders,
+    }),
+    buildCoverageSchema,
+  )
+  expect(built.readyToPublish).toBe(false)
+
+  const items = await success(
+    await request.get(`/api/admin/source-versions/${imported.versionId}/exercises`),
+    adminExerciseItemListSchema,
+  )
+  expect(items).toHaveLength(30)
+  await success(
+    await request.post('/api/admin/exercise-items/batch-approve', {
+      headers: originHeaders,
+      data: { itemIds: items.map((item) => item.id) },
+    }),
+    batchApprovalResultSchema,
+  )
+  const coverage = await success(
+    await request.get(`/api/admin/source-versions/${imported.versionId}/coverage`),
+    buildCoverageSchema,
+  )
+  expect(coverage.readyToPublish).toBe(true)
+  await success(
+    await request.post(`/api/admin/source-versions/${imported.versionId}/publish`, {
+      headers: originHeaders,
+    }),
+    publishedSourceVersionSchema,
+  )
+
+  const firstCourse = await success(
+    await request.post('/api/admin/courses', {
+      headers: originHeaders,
+      data: {
+        operationToken: generateAdminOperationToken(),
+        learnerName: 'Alice',
+        sourceVersionId: imported.versionId,
+      },
+    }),
+    createdCourseSchema,
+  )
+  const secondCourse = await success(
+    await request.post('/api/admin/courses', {
+      headers: originHeaders,
+      data: {
+        operationToken: generateAdminOperationToken(),
+        learnerName: 'Bob',
+        sourceVersionId: imported.versionId,
+      },
+    }),
+    createdCourseSchema,
+  )
+  const established = await success(
+    await request.post('/api/app/session/by-code', {
+      headers: originHeaders,
+      data: { accessCode: firstCourse.learner.accessCode },
+    }),
+    establishedLearnerSessionSchema,
+  )
+  expect(established.course.id).toBe(firstCourse.course.id)
+  const restored = await success(
+    await request.get('/api/app/session'),
+    restoredLearnerSessionSchema,
+  )
+  expect(restored.course.id).toBe(firstCourse.course.id)
+
+  const crossCourse = await request.post(
+    `/api/app/courses/${secondCourse.course.id}/lessons/start`,
+    { headers: originHeaders },
+  )
+  expect(crossCourse.status()).toBe(403)
+  expect(await failureCode(crossCourse)).toBe('forbidden_resource')
+
+  const lesson = await success(
+    await request.post(`/api/app/courses/${firstCourse.course.id}/lessons/start`, {
+      headers: originHeaders,
+    }),
+    startedLessonSchema,
+  )
+  expect(lesson.tasks).toHaveLength(5)
+
+  for (const task of lesson.tasks.slice(0, 4)) {
+    const result = await answerKnown(request, originHeaders, lesson.session.id, task.id)
+    expect(result.correct).toBe(true)
+  }
+  const lastPrimary = lesson.tasks[4]
+
+  if (!lastPrimary) throw new Error('Expected the fifth primary task')
+  const wrong = await success(
+    await request.post(
+      `/api/app/lessons/${lesson.session.id}/tasks/${lastPrimary.id}/answer`,
+      {
+        headers: originHeaders,
+        data: { taskType: 'recognize_meaning', response: 'learning' },
+      },
+    ),
+    taskAnswerResultSchema,
+  )
+  expect(wrong.correct).toBe(false)
+
+  const recovered = await success(
+    await request.get(`/api/app/lessons/${lesson.session.id}`),
+    startedLessonSchema,
+  )
+  const bridges = recovered.tasks.filter((task) => task.role === 'bridge')
+  const reflux = recovered.tasks.find((task) => task.role === 'reflux')
+  expect(bridges.length).toBeGreaterThanOrEqual(5)
+  expect(bridges.length).toBeLessThanOrEqual(8)
+  expect(reflux?.orderIndex).toBe(lastPrimary.orderIndex + bridges.length + 1)
+
+  const blocked = await request.post(`/api/app/lessons/${lesson.session.id}/complete`, {
+    headers: originHeaders,
+  })
+  expect(blocked.status()).toBe(409)
+  expect(await failureCode(blocked)).toBe('lesson_incomplete')
+
+  for (const task of recovered.tasks.filter((candidate) => candidate.status === 'pending')) {
+    await answerKnown(request, originHeaders, lesson.session.id, task.id)
+  }
+
+  const completed = await success(
+    await request.post(`/api/app/lessons/${lesson.session.id}/complete`, {
+      headers: originHeaders,
+    }),
+    completedLessonSchema,
+  )
+  const completionRetry = await success(
+    await request.post(`/api/app/lessons/${lesson.session.id}/complete`, {
+      headers: originHeaders,
+    }),
+    completedLessonSchema,
+  )
+  expect(completed.course.currentLessonNo).toBe(2)
+  expect(completionRetry).toEqual(completed)
+})
+
+const answerKnown = (
+  request: APIRequestContext,
+  headers: Record<string, string>,
+  sessionId: string,
+  taskId: string,
+) =>
+  request
+    .post(`/api/app/lessons/${sessionId}/tasks/${taskId}/answer`, {
+      headers,
+      data: { taskType: 'recognize_meaning', response: 'known' },
+    })
+    .then((response) => success(response, taskAnswerResultSchema))
+
+const prepareBrowserWalkingSkeleton = async (
+  request: APIRequestContext,
+  originHeaders: Record<string, string>,
+): Promise<{ accessCode: string; sourceName: string }> => {
+  const sourceName = 'Browser stack source'
+  const imported = await success(
+    await request.post('/api/admin/source-versions/import', {
+      headers: originHeaders,
+      data: {
+        mode: 'new_source',
+        operationToken: generateAdminOperationToken(),
+        sourceName,
+        words: Array.from({ length: 5 }, (_, index) => ({
+          word: `browser-word-${String(index + 1)}`,
+          meaning: `browser-meaning-${String(index + 1)}`,
+          exampleSentence: `I use browser-word-${String(index + 1)} here.`,
+        })),
+      },
+    }),
+    importedSourceVersionSchema,
+  )
+  await success(
+    await request.post(`/api/admin/source-versions/${imported.versionId}/build`, {
+      headers: originHeaders,
+    }),
+    buildCoverageSchema,
+  )
+  const items = await success(
+    await request.get(`/api/admin/source-versions/${imported.versionId}/exercises`),
+    adminExerciseItemListSchema,
+  )
+  await success(
+    await request.post('/api/admin/exercise-items/batch-approve', {
+      headers: originHeaders,
+      data: { itemIds: items.map((item) => item.id) },
+    }),
+    batchApprovalResultSchema,
+  )
+  await success(
+    await request.post(`/api/admin/source-versions/${imported.versionId}/publish`, {
+      headers: originHeaders,
+    }),
+    publishedSourceVersionSchema,
+  )
+  const course = await success(
+    await request.post('/api/admin/courses', {
+      headers: originHeaders,
+      data: {
+        operationToken: generateAdminOperationToken(),
+        learnerName: 'Browser learner',
+        sourceVersionId: imported.versionId,
+      },
+    }),
+    createdCourseSchema,
+  )
+
+  return { accessCode: course.learner.accessCode, sourceName }
+}
+
+const success = async <TSchema extends z.ZodType>(
+  response: APIResponse,
+  schema: TSchema,
+): Promise<z.output<TSchema>> => {
+  expect(response.status()).toBe(200)
+  const envelope = z
+    .object({ ok: z.literal(true), data: z.unknown() })
+    .strict()
+    .parse(await response.json())
+  const data: z.output<TSchema> = schema.parse(envelope.data)
+
+  return data
+}
+
+const failureCode = async (response: APIResponse): Promise<string> => {
+  const envelope = z
+    .object({ ok: z.literal(false), error: apiErrorSchema })
+    .strict()
+    .parse(await response.json())
+
+  return envelope.error.code
+}

@@ -1,5 +1,6 @@
 import type {
   CourseStatus,
+  CourseView,
   CreatedCourse,
   CompletedLesson,
   LessonSessionStatus,
@@ -10,6 +11,13 @@ import type {
   UserWordStateView,
 } from '../../shared/domain/course'
 import type { WordStage } from '../../shared/domain/content'
+import type {
+  ExerciseItemContent,
+  LessonTaskRole,
+  SentenceOutputPreview,
+} from '../../shared/api/taskSchemas'
+import type { CreateCourseAdminOperation } from './adminOperationLedger'
+import type { AccessCodeHash } from '../security/credentialCrypto'
 
 export type LearnerRecord = {
   id: string
@@ -40,19 +48,22 @@ export type LessonSessionRecord = {
   completedAt?: string
 }
 
-export type LessonTaskRecord = {
+type LessonTaskRecordBase = {
   id: string
   sessionId: string
   courseId: string
   wordId: string
-  stage: string
-  taskType: string
-  prompt: unknown
-  answer: unknown
   orderIndex: number
   status: LessonTaskStatus
+  role: LessonTaskRole
+  required: boolean
+  refluxSourceTaskId?: string
+  draftAnswer?: string
+  referenceRevealedAt?: string
   createdAt: string
 }
+
+export type LessonTaskRecord = LessonTaskRecordBase & ExerciseItemContent
 
 export type UserWordStateRecord = {
   id: string
@@ -94,6 +105,40 @@ export type ReviewLogRecord = {
 export type CreateCourseInput = {
   learner: LearnerRecord
   course: CourseRecord
+  adminOperation?: CreateCourseAdminOperation
+}
+
+export type CourseAccessIdentity = {
+  learner: {
+    id: string
+    name: string
+  }
+  course: CourseView
+}
+
+export type CourseCredentialMatch = {
+  identity: CourseAccessIdentity
+  credentialVersion: number
+}
+
+export type AdminCourseReadRecord = {
+  learner: {
+    id: string
+    name: string
+  }
+  course: CourseRecord
+  credentialVersion: number
+}
+
+export type AdminLearnerCredential = {
+  accessCodeHash: AccessCodeHash
+  credentialVersion: number
+}
+
+export type LessonReportSnapshot = {
+  session: LessonSessionRecord
+  tasks: LessonTaskRecord[]
+  reviewLogs: ReviewLogRecord[]
 }
 
 export type CreateLessonInput = {
@@ -102,25 +147,78 @@ export type CreateLessonInput = {
   wordStates: UserWordStateRecord[]
 }
 
+export type AdvanceCourseLessonNoInput = {
+  courseId: string
+  expectedLessonNo: number
+  nextLessonNo: number
+}
+
 export type RecordAnswerInput = {
   task: LessonTaskRecord
   wordState: UserWordStateRecord
   reviewLog: ReviewLogRecord
-  newTasks?: LessonTaskRecord[]
+  tasks: LessonTaskRecord[]
+  advanceWordState: boolean
+}
+
+export type SaveSentenceOutputPreviewInput = {
+  sessionId: string
+  courseId: string
+  taskId: string
+  draft: string
+  revealedAt: string
+}
+
+export type CompleteLessonInput = {
+  sessionId: string
+  completedAt: string
+  nextLessonNo: number
+  skippablePrimaryTaskIds: string[]
 }
 
 export type CourseRepository = {
   createCourse(input: CreateCourseInput): Promise<CreatedCourse>
   getCourse(courseId: string): Promise<CourseRecord | undefined>
+  getCourseForLearner(input: {
+    courseId: string
+    learnerId: string
+  }): Promise<CourseRecord | undefined>
+  getCourseCredentialByAccessCode(accessCode: string): Promise<CourseCredentialMatch | undefined>
+  getCourseIdentityByAccessCode(accessCode: string): Promise<CourseAccessIdentity | undefined>
   getCourseByAccessCode(accessCode: string): Promise<CreatedCourse | undefined>
+  getAdminLearnerCredential(learnerId: string): Promise<AdminLearnerCredential | undefined>
+  listAdminCourses(): Promise<AdminCourseReadRecord[]>
+  advanceCourseLessonNo(
+    input: AdvanceCourseLessonNoInput,
+  ): Promise<CourseRecord | undefined>
   getStartedLesson(courseId: string, lessonNo: number): Promise<StartedLesson | undefined>
+  getLatestCompletedLessonBefore(input: {
+    courseId: string
+    beforeLessonNo: number
+  }): Promise<LessonSessionRecord | undefined>
   createLesson(input: CreateLessonInput): Promise<StartedLesson>
+  getLessonSessionForCourse(input: {
+    sessionId: string
+    courseId: string
+  }): Promise<LessonSessionRecord | undefined>
+  getLessonTaskForResource(input: {
+    taskId: string
+    sessionId: string
+    courseId: string
+  }): Promise<LessonTaskRecord | undefined>
   getLessonTask(sessionId: string, taskId: string): Promise<LessonTaskRecord | undefined>
   getLessonTasks(sessionId: string): Promise<LessonTaskRecord[]>
   getLessonSession(sessionId: string): Promise<LessonSessionRecord | undefined>
+  getLessonReportSnapshot(input: {
+    sessionId: string
+    courseId: string
+  }): Promise<LessonReportSnapshot | undefined>
+  saveSentenceOutputPreview(
+    input: SaveSentenceOutputPreviewInput,
+  ): Promise<SentenceOutputPreview | undefined>
   getWordStates(courseId: string): Promise<UserWordStateRecord[]>
   getWordState(courseId: string, wordId: string): Promise<UserWordStateRecord | undefined>
   getSubmittedAnswer(sessionId: string, taskId: string): Promise<SubmittedAnswer | undefined>
   recordAnswer(input: RecordAnswerInput): Promise<SubmittedAnswer>
-  completeLesson(sessionId: string, completedAt: string): Promise<CompletedLesson>
+  completeLesson(input: CompleteLessonInput): Promise<CompletedLesson | undefined>
 }

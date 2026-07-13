@@ -3,15 +3,29 @@
   "compilerOptions": {
     "composite": true,
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.eslint.tsbuildinfo",
-    "types": ["vitest/globals", "node", "@cloudflare/workers-types"]
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "types": ["vitest/globals", "node", "@cloudflare/workers-types"],
+    "paths": {
+      "@/*": ["src/*"],
+      "@shared/*": ["shared/*"],
+      "@server/*": ["server/*"]
+    },
+    "skipLibCheck": true
   },
   "include": [
     "server/**/*.ts",
     "shared/**/*.ts",
     "src/**/*.ts",
+    "src/**/*.vue",
     "tests/**/*.ts",
+    "tests/**/*.vue",
     "vite.config.ts",
+    "vite.client.config.ts",
+    "vite.ui.config.ts",
     "vitest.config.ts",
-    "playwright.config.ts"
+    "vitest.component.config.ts",
+    "playwright.config.ts",
+    "playwright.stack.config.ts",
+    "playwright.ui.config.ts"
   ]
 }

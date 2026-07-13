@@ -1,0 +1,271 @@
+import { spawn } from 'node:child_process'
+import { cp, mkdir, mkdtemp, rm, symlink } from 'node:fs/promises'
+import { createServer } from 'node:net'
+import { get as httpsGet } from 'node:https'
+import { homedir, tmpdir } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import process from 'node:process'
+import { randomUUID } from 'node:crypto'
+
+const scriptDirectory = dirname(fileURLToPath(import.meta.url))
+const repositoryRoot = resolve(scriptDirectory, '..')
+const temporaryRoot = await mkdtemp(join(tmpdir(), 'eng-learn-stack-e2e-'))
+const projectRoot = join(temporaryRoot, 'project')
+const stateRoot = join(temporaryRoot, 'state')
+const outputRoot = join(temporaryRoot, 'test-results')
+const dbSentinel = randomUUID()
+let worker
+
+const playwrightBrowsersPath =
+  process.env.PLAYWRIGHT_BROWSERS_PATH ??
+  (process.platform === 'darwin'
+    ? join(homedir(), 'Library', 'Caches', 'ms-playwright')
+    : process.platform === 'win32'
+      ? join(homedir(), 'AppData', 'Local', 'ms-playwright')
+      : join(homedir(), '.cache', 'ms-playwright'))
+
+const copiedEntries = [
+  'index.html',
+  'migrations',
+  'package.json',
+  'playwright.stack.config.ts',
+  'server',
+  'shared',
+  'src',
+  'tests/e2e/stack',
+  'tsconfig.app.json',
+  'tsconfig.component.json',
+  'tsconfig.json',
+  'tsconfig.server.json',
+  'tsconfig.vitest.json',
+  'vite.client.config.ts',
+  'worker-configuration.d.ts',
+  'wrangler.e2e.jsonc',
+]
+
+const environment = { ...process.env }
+for (const name of [
+  'ADMIN_API_TOKEN',
+  'CF_API_KEY',
+  'CF_API_TOKEN',
+  'CF_ACCESS_CLIENT_SECRET',
+  'CLOUDFLARE_ACCOUNT_ID',
+  'CLOUDFLARE_API_KEY',
+  'CLOUDFLARE_API_TOKEN',
+  'CLOUDFLARE_ACCESS_CLIENT_SECRET',
+  'CLOUDFLARE_EMAIL',
+  'WRANGLER_API_TOKEN',
+]) {
+  delete environment[name]
+}
+environment.CI = '1'
+environment.CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV = 'false'
+environment.PLAYWRIGHT_BROWSERS_PATH = playwrightBrowsersPath
+environment.WRANGLER_SEND_METRICS = 'false'
+environment.HOME = join(temporaryRoot, 'home')
+environment.XDG_CONFIG_HOME = join(temporaryRoot, 'config')
+
+const run = (command, args, options = {}) =>
+  new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(command, args, {
+      cwd: projectRoot,
+      env: environment,
+      stdio: 'inherit',
+      ...options,
+    })
+
+    child.once('error', rejectPromise)
+    child.once('exit', (code, signal) => {
+      if (code === 0) {
+        resolvePromise()
+      } else {
+        rejectPromise(
+          new Error(
+            `${basename(command)} failed (${signal ? `signal ${signal}` : `exit ${String(code)}`})`,
+          ),
+        )
+      }
+    })
+  })
+
+const reservePort = () =>
+  new Promise((resolvePromise, rejectPromise) => {
+    const server = createServer()
+    server.once('error', rejectPromise)
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address()
+      const port = typeof address === 'object' && address ? address.port : undefined
+
+      server.close((error) => {
+        if (error) rejectPromise(error)
+        else if (port) resolvePromise(port)
+        else rejectPromise(new Error('Could not reserve a local port'))
+      })
+    })
+  })
+
+const waitForIdentity = async (baseURL, expectedSentinel) => {
+  const deadline = Date.now() + 30_000
+
+  while (Date.now() < deadline) {
+    try {
+      const response = await readLocalJson(`${baseURL}/api/e2e/identity`)
+      const body = response.body
+
+      if (
+        response.status === 200 &&
+        body?.data?.workerName === 'eng-learn-e2e-local' &&
+        body?.data?.environment === 'local-e2e' &&
+        body?.data?.dbSentinel === expectedSentinel
+      ) {
+        return
+      }
+    } catch {
+      // The local Worker may still be starting.
+    }
+
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100))
+  }
+
+  throw new Error('Local E2E Worker identity did not become ready')
+}
+
+const readLocalJson = (url) =>
+  new Promise((resolvePromise, rejectPromise) => {
+    const request = httpsGet(url, { rejectUnauthorized: false }, (response) => {
+      let body = ''
+      response.setEncoding('utf8')
+      response.on('data', (chunk) => {
+        body += chunk
+      })
+      response.on('end', () => {
+        try {
+          resolvePromise({ status: response.statusCode, body: JSON.parse(body) })
+        } catch (error) {
+          rejectPromise(error)
+        }
+      })
+    })
+    request.setTimeout(1_000, () => request.destroy(new Error('Local E2E health timed out')))
+    request.once('error', rejectPromise)
+  })
+
+const stopWorker = async () => {
+  if (!worker || worker.exitCode !== null) return
+
+  worker.kill('SIGTERM')
+  await Promise.race([
+    new Promise((resolvePromise) => worker.once('exit', resolvePromise)),
+    new Promise((resolvePromise) =>
+      setTimeout(() => {
+        if (worker.exitCode === null) worker.kill('SIGKILL')
+        resolvePromise()
+      }, 5_000),
+    ),
+  ])
+}
+
+try {
+  await mkdir(projectRoot, { recursive: true })
+  await mkdir(environment.HOME, { recursive: true })
+  await mkdir(environment.XDG_CONFIG_HOME, { recursive: true })
+
+  for (const entry of copiedEntries) {
+    await mkdir(dirname(join(projectRoot, entry)), { recursive: true })
+    await cp(join(repositoryRoot, entry), join(projectRoot, entry), {
+      recursive: true,
+      errorOnExist: true,
+      force: false,
+    })
+  }
+  await symlink(join(repositoryRoot, 'node_modules'), join(projectRoot, 'node_modules'), 'dir')
+
+  const vite = join(repositoryRoot, 'node_modules', '.bin', 'vite')
+  const wrangler = join(repositoryRoot, 'node_modules', '.bin', 'wrangler')
+  const playwright = join(repositoryRoot, 'node_modules', '.bin', 'playwright')
+
+  await run(vite, ['build', '--config', 'vite.client.config.ts'])
+  await run(process.execPath, [
+    join(repositoryRoot, 'scripts', 'check-no-secret-artifacts.mjs'),
+    join(projectRoot, 'dist', 'e2e-client'),
+  ])
+  await run(wrangler, [
+    'd1',
+    'migrations',
+    'apply',
+    'DB',
+    '--config',
+    'wrangler.e2e.jsonc',
+    '--local',
+    '--persist-to',
+    stateRoot,
+  ])
+  await run(wrangler, [
+    'd1',
+    'execute',
+    'DB',
+    '--config',
+    'wrangler.e2e.jsonc',
+    '--local',
+    '--persist-to',
+    stateRoot,
+    '--yes',
+    '--command',
+    `CREATE TABLE e2e_guard (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO e2e_guard (key, value) VALUES ('db_sentinel', '${dbSentinel}')`,
+  ])
+
+  const port = await reservePort()
+  const baseURL = `https://127.0.0.1:${String(port)}`
+  worker = spawn(
+    wrangler,
+    [
+      'dev',
+      '--config',
+      'wrangler.e2e.jsonc',
+      '--local',
+      '--persist-to',
+      stateRoot,
+      '--ip',
+      '127.0.0.1',
+      '--port',
+      String(port),
+      '--local-protocol',
+      'https',
+      '--var',
+      `APP_ORIGIN:${baseURL}`,
+      '--var',
+      'E2E_ENVIRONMENT:local-e2e',
+      '--var',
+      `E2E_RUN_ID:${dbSentinel}`,
+      '--log-level',
+      'warn',
+    ],
+    { cwd: projectRoot, env: environment, stdio: 'inherit' },
+  )
+
+  await waitForIdentity(baseURL, dbSentinel)
+  await run(playwright, ['test', '--config', 'playwright.stack.config.ts'], {
+    env: {
+      ...environment,
+      STACK_BASE_URL: baseURL,
+      STACK_DB_SENTINEL: dbSentinel,
+      STACK_OUTPUT_DIR: outputRoot,
+    },
+  })
+  await run(process.execPath, [
+    join(repositoryRoot, 'scripts', 'check-no-secret-artifacts.mjs'),
+    outputRoot,
+  ])
+
+  process.stdout.write('Isolated local Worker + D1 E2E passed\n')
+} catch (error) {
+  process.stderr.write('Isolated local Worker + D1 E2E failed\n')
+  process.exitCode = 1
+  if (process.env.DEBUG_STACK_E2E === '1' && error instanceof Error) {
+    process.stderr.write(`${error.message}\n`)
+  }
+} finally {
+  await stopWorker()
+  await rm(temporaryRoot, { recursive: true, force: true })
+}

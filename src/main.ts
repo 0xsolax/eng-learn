@@ -1,18 +1,11 @@
 import { createPinia } from 'pinia'
 import { createApp } from 'vue'
-import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
-import AdminHomePage from './pages/admin/AdminHomePage.vue'
-import LearnerHomePage from './pages/app/LearnerHomePage.vue'
+import { createAppRouter } from './app/router'
+import './styles/tokens.css'
+import './styles/base.css'
+import './styles/motion.css'
 
-const router = createRouter({
-  history: createWebHistory(),
-  routes: [
-    { path: '/', redirect: '/app' },
-    { path: '/admin', component: AdminHomePage },
-    { path: '/app', component: LearnerHomePage },
-  ],
-})
+const router = createAppRouter()
 
 createApp(App).use(createPinia()).use(router).mount('#app')
-

@@ -1,7 +1,11 @@
-import { createDefaultWorkerApp, type WorkerEnv } from './app'
+import { createDefaultWorkerApp, type WorkerApp, type WorkerEnv } from './app'
+
+let application: WorkerApp | undefined
 
 export default {
   fetch(request: Request, env: WorkerEnv): Promise<Response> {
-    return createDefaultWorkerApp(env).fetch(request)
+    application ??= createDefaultWorkerApp(env)
+
+    return application.fetch(request)
   },
 } satisfies ExportedHandler<WorkerEnv>
