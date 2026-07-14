@@ -5,7 +5,8 @@
 - 项目：eng-learn
 - 文档类型：阶段 0 审计与执行决策
 - 日期：2026-07-13
-- 状态：本地门禁实现与内部验证完成；G-W、旧数据审计与外部门禁阻断生产
+- 更新日期：2026-07-14
+- 状态：本地门禁与 G-W v2 内部验收完成；旧数据审计与外部门禁阻断生产
 - 修改人：Solazhu
 - 负责人：Solazhu
 - 操作人：Solazhu
@@ -14,6 +15,8 @@
 - 代码约束：`pdoc/rule/RULE_前后端代码规范_v1.md`
 - 实施验收：`pdoc/report/REPORT_0713_前端视觉落地与双工作台交互闭环验收_v1.md`
 - 产品约束冲突：`pdoc/report/REPORT_CONFLICT_0713_五词首课与错词回流间隔约束冲突_v1.md`
+- 当前回流优化计划：`pdoc/plan/PLAN_0714_错词回流间隔与单词重复上限优化_v1.md`
+- 回流优化验收：`pdoc/report/REPORT_0714_错词回流间隔与单词重复上限优化验收_v1.md`
 - 历史数据冲突：`pdoc/report/REPORT_CONFLICT_0713_旧版题型快照与新交互契约冲突_v1.md`
 
 ## 2. 严谨目标
@@ -27,7 +30,7 @@
 3. 六类 lesson task 使用共享判别联合，前端不读取 `unknown` 后猜 prompt。
 4. 同一 source 可以创建递增 draft version；published version 和已有 task snapshot 保持不可变。
 5. build 只生成 draft exercise item；批准、禁用和覆盖率全部由服务端状态决定。
-6. 错词在同一 lesson 内隔 5 至 8 道题回流，最后一题答错不能利用 80% 比例跳过回流。
+6. 错词若在同一 lesson 实际回流，首次同词再现前完整间隔 3 至 6 道实际完成题；每词每课总 task 不超过 3，达到上限或容量不足时明确 defer，最后一题答错不能利用 80% 比例跳过已生成 required task。
 7. 失败、刷新、重复提交和重复完成均有稳定、可恢复且幂等的行为。
 8. 本地真实栈测试每次使用全新 D1 状态，不复用旧服务，也不可能连接生产 D1。
 9. 类型、lint、单元、组件、API、真实 D1、E2E、构建与 Cloudflare 检查均有真实执行证据。
@@ -135,14 +138,19 @@ pnpm test:e2e
 
 ### 4.5 回流与结课
 
-- lesson task 增加 `primary`、`bridge`、`reflux` 角色和 reflux 来源。
-- 回流间隔由服务端选择并持久化，只能是 5 至 8。
-- 后续任务不足时，从当前 lesson 已激活词的 approved snapshot 生成 bridge；不使用未来组、不跨 lesson、不由前端造题。
-- bridge 和 reflux 答题写审计日志，但不重复调用 StageEngine 推进 mastery。
+本节原先冻结的 5 至 8 题、持续答错继续生成强制回流义务，已由五词全错反例证明不能形成有限通用模型。2026-07-14，Solazhu 已确认以 `PLAN_0714` 的 v2 规则替代该现行决策；原口径的完整定义与反例只保留在冲突报告中，此处仅记录替代关系。
+
+- lesson task 保留 `primary`、`bridge`、`reflux` 角色和 reflux 来源。
+- 回流间隔由服务端唯一队列策略选择并持久化；答错后第一次再次完成相同 `wordId` 前必须完整间隔 3 至 6 道实际完成题，skipped task 不计间隔。
+- 每词每课 `primary + bridge + reflux` 总 task 上限为 3；pending 和 skipped task 同样占用预算。
+- bridge 只使用 session 创建时冻结的 `lessonWordSet` 内不可变快照；不使用未来组、不跨 lesson、不由前端造题。
+- 任一可评分 role 答错都进入相同排程判断；bridge 和 reflux 写审计日志，但不重复调用 StageEngine 推进 mastery。
+- 达到上限写 `deferred_cap`；精确可行性判断证明无合法排程时写 `deferred_capacity`。两者均不生成新 required task，并由 StageEngine 收紧为下一课到期。
 - 服务端只允许回答当前第一个 pending task。
-- 80% 比例只计算 primary task；所有 required bridge/reflux 必须完成。
+- 80% 比例只计算 primary task；所有已经生成的 required bridge/reflux 必须完成。deferred outcome 不是 pending obligation。
 - complete 原子地把允许跳过的剩余 primary task 标为 skipped，并且 session/course 只推进一次。
-- reflux 再次答错会产生新的强制回流义务。
+
+以上契约已完成本地实现，并通过纯队列、Service、SQLite-D1、Worker API、恢复/幂等、隔离本地整栈和浏览器多视口验收。目标 D1 started v1 审计、远端 migration 和隔离 preview 尚未执行，因此本地 G-W 关闭，生产仍保持阻断。
 
 ### 4.6 CSV 导入
 
@@ -162,7 +170,7 @@ pnpm test:e2e
 | B2 审核与 coverage | draft/edit/approve/disable/query | build 后阻断、批准后发布、重复 build 保留编辑 | G-V |
 | B3 Learner session | session service/repository/migration | 伪造、过期、撤销、越权、轮换 | G-L |
 | B4 Task schema | shared Zod、snapshot parse、反馈 DTO | 六类合法/非法组合、答案不泄露 | G-S/G-T |
-| B5 回流状态机 | CourseRuntime、course repository、migration | 首/中/末答错、gap 5/8、5/6 反例 | G-W |
+| B5 回流状态机 v2 | CourseRuntime、唯一队列策略、course repository、additive migration | gap 2/3/6/7、五词全错 15 题、每词上限 3、cap/capacity defer、5/6 反例 | G-W |
 | B6 稳定错误与读取 | Worker routes/query service | field issues、404/401/409/500、刷新恢复 | G-E/G-R |
 | F2 真实 walking skeleton | API client、admin/app 最薄 UI | admin→learner→S0 一次提交 | 阶段 3 |
 | F3 完整双端闭环 | S0-S5、恢复、报告、管理流水线 | 计划第 12 节全部场景 | 阶段 4–7 |
@@ -224,7 +232,7 @@ preview dry-run（配置存在后）
 - learner 可以读取或修改其他 course/session/task。
 - renderer 仍需 `as` 猜测 prompt。
 - published version 的任何写操作成功。
-- 最后一题答错后可以在 reflux 完成前结课。
+- 最后一题答错后可以跳过已生成的 required reflux，或已明确 defer 后仍被无限阻断。
 - 本地真实栈无法证明正在使用全新本地 D1。
 - preview URL、Worker、环境或 D1 身份无法证明不是生产。
 
@@ -253,8 +261,8 @@ preview dry-run（配置存在后）
 
 - G-L、G-S、G-V、G-R、G-T 和 G-E 已完成实现并通过单元、组件、API、真实 D1 和浏览器验证。
 - G-A 的 Worker JWT 校验与无静态 secret 本地门禁已完成；远端 Access application/policy 和自定义域名仍未验证。
-- G-W 的单次可满足序列、结课阻断和队列持久化已验证，但固定 5 词首课的五词连续全错序列在既定约束下无解，保持生产阻断。
+- G-W 已按 `PLAN_0714` v2 完成本地实现和全量内部验证：3 至 6 道实际间隔、每词总 task 上限 3、cap/capacity defer、策略版本、恢复/幂等和五词全错 15 题均通过；远端 started v1 审计与 preview 仍阻断生产。
 - G-P 未关闭；没有创建或访问远端 preview/生产 Worker、D1 或 Access 资源。
 - 目标远端 D1 的旧版题型和 lesson snapshot 尚未完成只读审计，历史数据兼容保持阻断。
 
-完整测试计数、阶段验收矩阵、失败运行说明、回滚边界和下一步决策见实施验收报告。
+原前端实施测试见 `REPORT_0713`；G-W v2 的完整测试计数、阶段验收矩阵、失败运行说明、回滚边界和下一步决策见 `REPORT_0714`。

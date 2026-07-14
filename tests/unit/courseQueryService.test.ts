@@ -188,8 +188,8 @@ describe('course query service', () => {
 
     expect(firstRead).toMatchObject({
       lessonNo: 1,
-      completedTaskCount: 7,
-      totalTaskCount: 7,
+      completedTaskCount: 6,
+      totalTaskCount: 6,
       correctRate: 0.8,
       needsPracticeWords: [{ id: firstTask.wordId, word: 'word-1' }],
       nextLessonNo: 2,
@@ -200,6 +200,125 @@ describe('course query service', () => {
     expect(JSON.stringify(firstRead)).not.toMatch(
       /easeFactor|masteryScore|nextDueLessonNo|wrongStreak/u,
     )
+  })
+
+  it('reports a deferred bridge word as needing practice even when its primary passed', async () => {
+    const fixture = await createFixture(5)
+    const created = await fixture.runtime.createCourse({
+      learnerName: 'Alice',
+      sourceVersionId: fixture.versionId,
+    })
+    const lesson = await fixture.runtime.startLesson(created.course.id)
+
+    for (const task of lesson.tasks.slice(0, 4)) {
+      await fixture.runtime.submitAnswer({
+        sessionId: lesson.session.id,
+        taskId: task.id,
+        submission: { taskType: 'recognize_meaning', response: 'known' },
+      })
+    }
+
+    const lastPrimary = requireValue(lesson.tasks[4], 'Expected the last primary task')
+    await fixture.runtime.submitAnswer({
+      sessionId: lesson.session.id,
+      taskId: lastPrimary.id,
+      submission: { taskType: 'recognize_meaning', response: 'learning' },
+    })
+
+    const firstBridge = (await fixture.runtime.getLesson(lesson.session.id)).tasks.find(
+      (task) => task.role === 'bridge',
+    )
+
+    if (!firstBridge) throw new Error('Expected a bridge task')
+
+    for (;;) {
+      const current = (await fixture.runtime.getLesson(lesson.session.id)).tasks.find(
+        (task) => task.status === 'pending',
+      )
+
+      if (!current) break
+      await fixture.runtime.submitAnswer({
+        sessionId: lesson.session.id,
+        taskId: current.id,
+        submission: {
+          taskType: 'recognize_meaning',
+          response: current.wordId === firstBridge.wordId ? 'learning' : 'known',
+        },
+      })
+    }
+
+    await fixture.runtime.completeLesson(lesson.session.id)
+    const report = await fixture.queries.getLessonReport(
+      { learnerId: created.learner.id, courseId: created.course.id },
+      lesson.session.id,
+    )
+
+    expect(report.needsPracticeWords).toEqual([
+      { id: firstBridge.wordId, word: 'word-1' },
+      { id: lastPrimary.wordId, word: 'word-5' },
+    ])
+    expect(report.progressWords.map((word) => word.id)).not.toContain(firstBridge.wordId)
+  })
+
+  it('rejects a completed v2 report when a non-primary answer audit is missing', async () => {
+    const fixture = await createFixture(5)
+    const created = await fixture.runtime.createCourse({
+      learnerName: 'Alice',
+      sourceVersionId: fixture.versionId,
+    })
+    const lesson = await fixture.runtime.startLesson(created.course.id)
+    const firstTask = requireValue(lesson.tasks[0], 'Expected the first primary task')
+
+    await fixture.runtime.submitAnswer({
+      sessionId: lesson.session.id,
+      taskId: firstTask.id,
+      submission: { taskType: 'recognize_meaning', response: 'learning' },
+    })
+
+    for (;;) {
+      const current = (await fixture.runtime.getLesson(lesson.session.id)).tasks.find(
+        (task) => task.status === 'pending',
+      )
+
+      if (!current) break
+      await fixture.runtime.submitAnswer({
+        sessionId: lesson.session.id,
+        taskId: current.id,
+        submission: { taskType: 'recognize_meaning', response: 'known' },
+      })
+    }
+
+    await fixture.runtime.completeLesson(lesson.session.id)
+    const snapshot = await fixture.courseRepository.getLessonReportSnapshot({
+      sessionId: lesson.session.id,
+      courseId: created.course.id,
+    })
+
+    if (!snapshot) throw new Error('Expected the completed lesson report snapshot')
+    const nonPrimaryTask = requireValue(
+      snapshot.tasks.find((task) => task.role !== 'primary'),
+      'Expected a non-primary task',
+    )
+    const corruptQueries = createCourseQueryService({
+      contentRepository: fixture.contentRepository,
+      courseRepository: {
+        ...fixture.courseRepository,
+        getLessonReportSnapshot: () =>
+          Promise.resolve({
+            ...snapshot,
+            reviewLogs: snapshot.reviewLogs.filter(
+              (log) => log.taskId !== nonPrimaryTask.id,
+            ),
+          }),
+      },
+    })
+
+    await expect(
+      corruptQueries.getLessonReport(
+        { learnerId: created.learner.id, courseId: created.course.id },
+        lesson.session.id,
+      ),
+    ).rejects.toMatchObject({ code: 'dependency_failure' })
   })
 
   it('rejects cross-course reports and reports from an unfinished lesson', async () => {
@@ -248,13 +367,15 @@ const createFixture = async (wordCount = 10) => {
 
   return {
     builder,
+    contentRepository,
+    courseRepository,
     sourceId: imported.sourceId,
     versionId: imported.versionId,
     runtime: createCourseRuntime({
       contentRepository,
       courseRepository,
       now: () => NOW,
-      selectRefluxGap: () => 5,
+      queueWriteMode: 'v2',
     }),
     queries: createCourseQueryService({ contentRepository, courseRepository }),
   }

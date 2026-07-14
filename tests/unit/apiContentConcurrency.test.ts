@@ -158,6 +158,7 @@ const createContentRaceApp = (
       courseRepository,
       operationLedger,
       now,
+      queueWriteMode: 'v2',
     }),
     courseQueryService: createCourseQueryService({ contentRepository, courseRepository }),
     courseRepository,

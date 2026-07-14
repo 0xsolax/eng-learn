@@ -4,6 +4,7 @@ import { createInMemoryCourseRepository } from '../../server/repositories/inMemo
 import { createContentBuilder } from '../../server/services/ContentBuilder'
 import {
   createCourseRuntime,
+  parseLessonQueueWriteMode,
   type CourseRuntime,
 } from '../../server/services/CourseRuntime'
 import type { SourceVersionSnapshot } from '../../server/repositories/contentRepository'
@@ -24,6 +25,51 @@ const createWords = (count: number): ImportWordInput[] =>
   })
 
 describe('course runtime workflow', () => {
+  it.each([
+    { configured: undefined, expected: 'disabled' },
+    { configured: '', expected: 'disabled' },
+    { configured: 'unexpected', expected: 'disabled' },
+    { configured: 'legacy_v1', expected: 'legacy_v1' },
+    { configured: 'v2', expected: 'v2' },
+    { configured: 'disabled', expected: 'disabled' },
+  ] as const)(
+    'parses queue write mode "$configured" as $expected',
+    ({ configured, expected }) => {
+      expect(parseLessonQueueWriteMode(configured)).toBe(expected)
+    },
+  )
+
+  it('persists the selected v2 queue policy on a new lesson session', async () => {
+    const fixture = await createQueueModeFixture()
+    const lesson = await fixture.createRuntime('v2').startLesson(fixture.courseId)
+
+    await expect(
+      fixture.courseRepository.getLessonSession(lesson.session.id),
+    ).resolves.toMatchObject({ queuePolicyVersion: 'v2_3_6_cap3' })
+  })
+
+  it('rejects a new lesson in disabled mode without creating a session', async () => {
+    const fixture = await createQueueModeFixture()
+
+    await expect(
+      fixture.createRuntime('disabled').startLesson(fixture.courseId),
+    ).rejects.toMatchObject({ code: 'course_unavailable' })
+    await expect(
+      fixture.courseRepository.getStartedLesson(fixture.courseId, 1),
+    ).resolves.toBeUndefined()
+  })
+
+  it('resumes an existing v2 lesson even after write mode is disabled', async () => {
+    const fixture = await createQueueModeFixture()
+    const started = await fixture.createRuntime('v2').startLesson(fixture.courseId)
+    const resumed = await fixture.createRuntime('disabled').startLesson(fixture.courseId)
+
+    expect(resumed).toEqual(started)
+    await expect(
+      fixture.courseRepository.getLessonSession(started.session.id),
+    ).resolves.toMatchObject({ queuePolicyVersion: 'v2_3_6_cap3' })
+  })
+
   it('creates courses only from published source versions', async () => {
     const contentRepository = createInMemoryContentRepository()
     const contentBuilder = createContentBuilder({
@@ -34,6 +80,7 @@ describe('course runtime workflow', () => {
       contentRepository,
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
+      queueWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importWords({
       sourceName: 'Course source',
@@ -73,6 +120,7 @@ describe('course runtime workflow', () => {
       contentRepository,
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
+      queueWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importWords({
       sourceName: 'Lesson source',
@@ -110,6 +158,7 @@ describe('course runtime workflow', () => {
       contentRepository,
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
+      queueWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importWords({
       sourceName: 'Concurrent lesson source',
@@ -142,6 +191,7 @@ describe('course runtime workflow', () => {
       contentRepository,
       courseRepository,
       now: () => new Date('2026-07-06T00:00:00.000Z'),
+      queueWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importWords({
       sourceName: 'Answer source',
@@ -201,6 +251,7 @@ describe('course runtime workflow', () => {
       contentRepository,
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
+      queueWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importWords({
       sourceName: 'Wrong answer source',
@@ -244,6 +295,7 @@ describe('course runtime workflow', () => {
       contentRepository,
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
+      queueWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importWords({
       sourceName: 'Wrong word reflux source',
@@ -333,6 +385,7 @@ describe('course runtime workflow', () => {
       contentRepository,
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
+      queueWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importWords({
       sourceName: 'Completion source',
@@ -387,6 +440,7 @@ describe('course runtime workflow', () => {
       contentRepository,
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
+      queueWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importWords({
       sourceName: 'Lesson two source',
@@ -444,6 +498,7 @@ describe('course runtime workflow', () => {
       contentRepository,
       courseRepository,
       now: () => new Date('2026-07-06T00:00:00.000Z'),
+      queueWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importWords({
       sourceName: 'Lesson gap source',
@@ -499,6 +554,7 @@ describe('course runtime workflow', () => {
       contentRepository,
       courseRepository,
       now: () => new Date('2026-07-06T00:00:00.000Z'),
+      queueWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importWords({
       sourceName: 'Twenty-word lesson gap source',
@@ -536,6 +592,37 @@ describe('course runtime workflow', () => {
     ).resolves.toBeUndefined()
   })
 })
+
+const createQueueModeFixture = async () => {
+  const contentRepository = createInMemoryContentRepository()
+  const courseRepository = createInMemoryCourseRepository()
+  const now = () => new Date('2026-07-14T00:00:00.000Z')
+  const contentBuilder = createContentBuilder({ repository: contentRepository, now })
+  const draft = await contentBuilder.importWords({
+    sourceName: 'Queue policy source',
+    words: createWords(5),
+  })
+
+  await buildApproveAndPublish(contentBuilder, draft.versionId)
+
+  const createRuntime = (queueWriteMode: 'legacy_v1' | 'v2' | 'disabled') =>
+    createCourseRuntime({
+      contentRepository,
+      courseRepository,
+      now,
+      queueWriteMode,
+    })
+  const created = await createRuntime('v2').createCourse({
+    learnerName: 'Alice',
+    sourceVersionId: draft.versionId,
+  })
+
+  return {
+    courseId: created.course.id,
+    courseRepository,
+    createRuntime,
+  }
+}
 
 const getRequiredTask = <T>(tasks: T[], index: number): T => {
   const task = tasks[index]

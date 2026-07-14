@@ -1,4 +1,4 @@
-import { expect, test, type APIRequestContext, type APIResponse } from '@playwright/test'
+import { expect, test, type APIResponse } from '@playwright/test'
 import { z } from 'zod'
 import {
   adminExerciseItemListSchema,
@@ -204,7 +204,7 @@ test('enforces response-loss replay, token boundaries, and one-winner rotation i
   expect(await failureCode(revokedSession)).toBe('learner_session_revoked')
 })
 
-test('production Vue browser closes the admin lifecycle, preserves an unknown create, and completes learner S0', async ({
+test('production Vue browser closes admin lifecycle and a capped all-wrong learner S0', async ({
   page,
   baseURL,
 }) => {
@@ -321,13 +321,61 @@ test('production Vue browser closes the admin lifecycle, preserves an unknown cr
 
   await page.getByRole('button', { name: '开始第 1 课' }).click()
   await expect(page).toHaveURL(/\/app\/lesson\/[^/]+$/u)
-  await expect(page.getByRole('heading', { level: 2, name: 'browser-word-1' })).toBeVisible()
-  await page.getByRole('button', { name: '我认识' }).click()
-  await expect(page.getByText('答对了', { exact: true })).toBeVisible()
-  await expect(page.getByText('服务端已记录这次判断。', { exact: true })).toBeVisible()
+  const answeredWords: string[] = []
+
+  for (let answerIndex = 0; answerIndex < 15; answerIndex += 1) {
+    const currentHeading = page.locator('#recognize-word')
+    const currentWord = (await currentHeading.textContent())?.trim()
+
+    if (!currentWord) throw new Error(`Expected browser task ${String(answerIndex + 1)}`)
+    answeredWords.push(currentWord)
+    await page.getByRole('button', { name: '还要学习' }).click()
+    await expect(page.getByRole('alert')).toContainText('继续学习')
+    await page.getByRole('button', { name: '继续' }).click()
+
+    if (answerIndex === 6) {
+      const nextWord = (await page.locator('#recognize-word').textContent())?.trim()
+
+      if (!nextWord) throw new Error('Expected a current task before browser refresh')
+      await page.reload()
+      await expect(page.locator('#recognize-word')).toHaveText(nextWord)
+    }
+  }
+
+  const distinctWords = Array.from(new Set(answeredWords))
+  expect(distinctWords).toHaveLength(5)
+  for (const word of distinctWords) {
+    const positions = answeredWords
+      .map((candidate, index) => (candidate === word ? index : -1))
+      .filter((index) => index >= 0)
+
+    expect(positions).toHaveLength(3)
+    for (let index = 1; index < positions.length; index += 1) {
+      const previous = positions[index - 1]
+      const current = positions[index]
+
+      if (previous === undefined || current === undefined) {
+        throw new Error('Expected adjacent browser word positions')
+      }
+      expect(current - previous - 1).toBeGreaterThanOrEqual(3)
+      expect(current - previous - 1).toBeLessThanOrEqual(6)
+    }
+  }
+
+  await expect(page.getByText('本课任务已答完')).toBeVisible()
+  await page.getByRole('button', { name: '完成本课' }).click()
+  await expect(page).toHaveURL(/\/app\/lesson\/[^/]+\/report$/u)
+  await expect(page.getByText('已完成 15 / 15 道任务。')).toBeVisible()
+  await expect(page.getByText('本课正确率：0%')).toBeVisible()
+  const practiceWords = await page
+    .getByRole('heading', { level: 2, name: '还要再练' })
+    .locator('..')
+    .getByRole('listitem')
+    .allTextContents()
+  expect(practiceWords.sort()).toEqual(distinctWords.sort())
 })
 
-test('runs admin lifecycle, learner isolation, reflux, recovery, and idempotent completion', async ({
+test('runs admin lifecycle, learner isolation, capped v2 reflux, recovery, and completion', async ({
   request,
   baseURL,
 }) => {
@@ -431,44 +479,73 @@ test('runs admin lifecycle, learner isolation, reflux, recovery, and idempotent 
     startedLessonSchema,
   )
   expect(lesson.tasks).toHaveLength(5)
+  let recovered = lesson
+  const answeredWordIds: string[] = []
 
-  for (const task of lesson.tasks.slice(0, 4)) {
-    const result = await answerKnown(request, originHeaders, lesson.session.id, task.id)
-    expect(result.correct).toBe(true)
-  }
-  const lastPrimary = lesson.tasks[4]
+  for (let answerIndex = 0; answerIndex < 15; answerIndex += 1) {
+    const current = recovered.tasks.find((task) => task.status === 'pending')
 
-  if (!lastPrimary) throw new Error('Expected the fifth primary task')
-  const wrong = await success(
-    await request.post(
-      `/api/app/lessons/${lesson.session.id}/tasks/${lastPrimary.id}/answer`,
-      {
+    if (!current) throw new Error(`Expected pending task ${String(answerIndex + 1)}`)
+    answeredWordIds.push(current.wordId)
+    const wrong = await success(
+      await request.post(
+        `/api/app/lessons/${lesson.session.id}/tasks/${current.id}/answer`,
+        {
+          headers: originHeaders,
+          data: { taskType: 'recognize_meaning', response: 'learning' },
+        },
+      ),
+      taskAnswerResultSchema,
+    )
+    expect(wrong).toMatchObject({ taskId: current.id, correct: false })
+
+    const next = await success(
+      await request.get(`/api/app/lessons/${lesson.session.id}`),
+      startedLessonSchema,
+    )
+
+    if (answerIndex === 0) {
+      const blocked = await request.post(`/api/app/lessons/${lesson.session.id}/complete`, {
         headers: originHeaders,
-        data: { taskType: 'recognize_meaning', response: 'learning' },
-      },
-    ),
-    taskAnswerResultSchema,
-  )
-  expect(wrong.correct).toBe(false)
+      })
+      expect(blocked.status()).toBe(409)
+      expect(await failureCode(blocked)).toBe('lesson_incomplete')
+    }
 
-  const recovered = await success(
-    await request.get(`/api/app/lessons/${lesson.session.id}`),
-    startedLessonSchema,
-  )
-  const bridges = recovered.tasks.filter((task) => task.role === 'bridge')
-  const reflux = recovered.tasks.find((task) => task.role === 'reflux')
-  expect(bridges.length).toBeGreaterThanOrEqual(5)
-  expect(bridges.length).toBeLessThanOrEqual(8)
-  expect(reflux?.orderIndex).toBe(lastPrimary.orderIndex + bridges.length + 1)
+    if (answerIndex === 6) {
+      const refreshed = await success(
+        await request.get(`/api/app/lessons/${lesson.session.id}`),
+        startedLessonSchema,
+      )
+      expect(refreshed).toEqual(next)
+    }
 
-  const blocked = await request.post(`/api/app/lessons/${lesson.session.id}/complete`, {
-    headers: originHeaders,
-  })
-  expect(blocked.status()).toBe(409)
-  expect(await failureCode(blocked)).toBe('lesson_incomplete')
+    recovered = next
+  }
 
-  for (const task of recovered.tasks.filter((candidate) => candidate.status === 'pending')) {
-    await answerKnown(request, originHeaders, lesson.session.id, task.id)
+  expect(recovered.tasks).toHaveLength(15)
+  expect(recovered.tasks.every((task) => task.status === 'completed')).toBe(true)
+  expect(recovered.session.completedTaskCount).toBe(15)
+  expect(answeredWordIds).toEqual(recovered.tasks.map((task) => task.wordId))
+
+  const wordIds = Array.from(new Set(answeredWordIds))
+  expect(wordIds).toHaveLength(5)
+  for (const wordId of wordIds) {
+    const positions = recovered.tasks
+      .map((task, index) => (task.wordId === wordId ? index : -1))
+      .filter((index) => index >= 0)
+
+    expect(positions).toHaveLength(3)
+    for (let index = 1; index < positions.length; index += 1) {
+      const previous = positions[index - 1]
+      const current = positions[index]
+
+      if (previous === undefined || current === undefined) {
+        throw new Error('Expected adjacent same-word positions')
+      }
+      expect(current - previous - 1).toBeGreaterThanOrEqual(3)
+      expect(current - previous - 1).toBeLessThanOrEqual(6)
+    }
   }
 
   const completed = await success(
@@ -494,25 +571,13 @@ test('runs admin lifecycle, learner isolation, reflux, recovery, and idempotent 
   )
   expect(report).toMatchObject({
     lessonNo: 1,
-    completedTaskCount: recovered.tasks.length,
-    totalTaskCount: recovered.tasks.length,
+    completedTaskCount: 15,
+    totalTaskCount: 15,
     nextLessonNo: 2,
     courseStatus: 'active',
   })
+  expect(report.needsPracticeWords.map((word) => word.id).sort()).toEqual(wordIds.sort())
 })
-
-const answerKnown = (
-  request: APIRequestContext,
-  headers: Record<string, string>,
-  sessionId: string,
-  taskId: string,
-) =>
-  request
-    .post(`/api/app/lessons/${sessionId}/tasks/${taskId}/answer`, {
-      headers,
-      data: { taskType: 'recognize_meaning', response: 'known' },
-    })
-    .then((response) => success(response, taskAnswerResultSchema))
 
 const success = async <TSchema extends z.ZodType>(
   response: APIResponse,

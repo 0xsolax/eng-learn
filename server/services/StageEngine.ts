@@ -56,6 +56,18 @@ export const applyAnswerScore = (
   }
 }
 
+export const deferToNextLesson = (
+  state: UserWordStateRecord,
+  input: {
+    lessonNo: number
+    updatedAt: string
+  },
+): UserWordStateRecord => ({
+  ...state,
+  nextDueLessonNo: Math.min(state.nextDueLessonNo, input.lessonNo + 1),
+  updatedAt: input.updatedAt,
+})
+
 const upgradeStage = (stage: WordStage): WordStage => {
   const index = STAGE_ORDER.indexOf(stage)
   const nextStage = STAGE_ORDER[Math.min(index + 1, STAGE_ORDER.length - 1)]

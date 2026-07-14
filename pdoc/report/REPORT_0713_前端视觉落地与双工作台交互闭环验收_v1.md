@@ -6,7 +6,7 @@
 - 文档类型：实施验收与发布决策报告
 - 报告版本：v1
 - 执行窗口：2026-07-13 至 2026-07-14
-- 状态：本地实现与内部验证完成；生产发布阻断
+- 状态：本地实现与 G-W v2 内部验收完成；生产发布阻断
 - 发布决策：NO-GO
 - 修改人：Solazhu
 - 负责人：Solazhu
@@ -14,16 +14,18 @@
 - 执行计划：`pdoc/plan/PLAN_0713_前端视觉落地与双工作台交互闭环_v1.md`
 - 阶段 0 决策：`pdoc/report/REPORT_0713_前端阶段0门禁审计与执行决策_v1.md`
 - 产品约束冲突：`pdoc/report/REPORT_CONFLICT_0713_五词首课与错词回流间隔约束冲突_v1.md`
+- 当前回流优化计划：`pdoc/plan/PLAN_0714_错词回流间隔与单词重复上限优化_v1.md`
+- 回流优化验收：`pdoc/report/REPORT_0714_错词回流间隔与单词重复上限优化验收_v1.md`
 - 历史数据冲突：`pdoc/report/REPORT_CONFLICT_0713_旧版题型快照与新交互契约冲突_v1.md`
 
 ## 2. 验收结论
 
-管理端与学习端的本地实现、共享契约、安全边界、错误恢复、真实 Worker/D1 闭环、响应式和自动化无障碍检查已经完成。本地最终门禁全部通过：573 个 Vitest 用例、35 个 UI Playwright 用例和 4 个真实 Worker/D1 Playwright 用例均通过，构建、Cloudflare 隔离检查以及 secret/宿主路径工件扫描通过。
+管理端与学习端的本地实现、共享契约、安全边界、错误恢复、真实 Worker/D1 闭环、响应式和自动化无障碍检查已经完成。本报告原冻结候选曾通过 573 个 Vitest 用例、35 个 UI Playwright 用例和 4 个真实 Worker/D1 Playwright 用例；`PLAN_0714` v2 的最新全量计数和重新执行证据见 `REPORT_0714`。
 
-该结果不能解释为“所有问题已解决”，也不能授权生产发布。当前仍有两个生产阻断：
+以上原结果不能单独解释为 G-W v2 已通过，也不能授权生产发布。2026-07-14，v2 已完成本地实现和内部验收；当前生产阻断为：
 
-1. 首课固定 5 个词时，“任意错词第一次再次出现前隔 5 至 8 道题、同课完成、不借未来词、不增加中性题”对五词连续答错没有合法调度。
-2. 目标远端 D1 尚未完成旧版题型、旧 lesson snapshot 和未关联 review log 的只读计数审计，无法证明历史课程都能进入新交互契约。
+1. 目标远端 D1 尚未完成 started v1 session、旧版题型、旧 lesson snapshot 和未关联 review log 的只读计数审计。
+2. 远端 migration、隔离 preview 和发布/回退演练尚未执行。
 
 此外，远端 Cloudflare Access、独立 preview Worker/D1、远端 migration preflight、真实手机和平板、视觉基线确认和目标儿童观察均未完成。以上任一门禁未关闭前，生产状态保持 NO-GO。
 
@@ -87,9 +89,11 @@
 | 结课焦点丢失 | 确定性 403 后 activeElement 落到 body | 主操作存在时优先 complete/reload；移除后回退 exit，两个互补焦点测试通过 |
 | 焦点优先级回归 | 第一版回退选择器按 DOM 顺序错误优先 exit | 拆成显式两级查询，LessonRunner 52/52 通过并经独立终审复核 |
 
-最终独立代码审计曾发现并阻断“真实管理端 UI 覆盖盲区”和“发布净化器可能改写模板字符串”两个 P2；两项均完成 RED→GREEN 并再次独立复核。除已记录的五词回流 P1 产品约束冲突外，最终候选没有遗留的可复现 P0、P1 或 P2。
+最终独立代码审计曾发现并阻断“真实管理端 UI 覆盖盲区”和“发布净化器可能改写模板字符串”两个 P2；两项均完成 RED→GREEN 并再次独立复核。该结论只适用于当时冻结候选。五词回流 v2 已另行完成实现、全量门禁和双轴审查，证据以 `REPORT_0714` 为准。
 
 ## 5. 最终自动化验证
+
+本节记录的是 `PLAN_0713` 原冻结候选的历史验证，不包含 `PLAN_0714` v2；以下计数不得被引用为 v2 已通过。v2 的重新执行结果已另行写入 `REPORT_0714`。
 
 最终结果均基于最后一次代码冻结后的独占执行。候选 diff（排除不属于本轮的 `pdoc/.DS_Store`）应用到基于 `3385386` 的全新 detached worktree 后统一验证，避免复用主工作区的依赖、服务或测试产物。
 
@@ -129,13 +133,13 @@
 
 | 阶段 | 本地状态 | 未关闭边界 |
 | --- | --- | --- |
-| 阶段 0 契约与门禁 | 部分通过 | G-W 产品约束无解；G-A 远端 Access、旧数据审计未完成 |
+| 阶段 0 契约与门禁 | 本地通过 | G-W v2 已完成；G-A 远端 Access、旧数据审计未完成 |
 | 阶段 1 测试底座与设计基础 | 通过 | 无本地阻断 |
 | 阶段 2 双端壳、路由、API client | 通过 | 生产管理员身份仍依赖远端 Access 配置 |
 | 阶段 3 最薄真实闭环 | 本地通过 | 只验证隔离本地 Worker/D1，不替代 preview |
 | 阶段 4 学习码与课程首页 | 本地通过 | 真实设备观察未完成 |
 | 阶段 5 S0-S5 | 新契约通过 | 旧版持久化题型需远端只读审计 |
-| 阶段 6 恢复、回流与报告 | 部分通过 | 单次与已有可满足序列通过；五词连续全错的 5-8 间隔无解 |
+| 阶段 6 恢复、回流与报告 | 本地通过 | v2 的 3-6 实际间隔、每词上限 3、defer、五词全错 15 题、刷新与报告均通过；preview 未执行 |
 | 阶段 7 管理端内容闭环 | 新内容通过 | 历史 course/lesson 兼容结果未知 |
 | 阶段 8 响应式、无障碍、视觉 | 自动化部分通过 | 浏览器 UI 真实 200% 缩放、软键盘/安全区、真实手机/平板、用户视觉基线和目标儿童观察未完成 |
 | 阶段 9 发布验收 | 本地门禁通过 | preview、远端 migration、生产 smoke 和真实回滚演练未执行 |
@@ -144,13 +148,16 @@
 
 ### 7.1 五词回流约束
 
-必须由 Solazhu 明确选择一个分支：
+Solazhu 已确认 `PLAN_0714` v2，不再等待 A/B/C 选择：
 
-- A：重设全局回流调度；lesson snapshot 至少冻结 6 个安全词槽，并同时约束全部 pending obligation。6 词只是必要条件之一，不能只改 `GROUP_SIZE`。
-- B：新增不绑定 vocabulary word 的中性 filler task 契约。
-- C：修订“同词第一次再次出现前必须隔 5 至 8 题”的产品语义。
+- 第一次再次完成相同 `wordId` 前完整间隔 3 至 6 道实际完成题。
+- 每词每课 `primary + bridge + reflux` 总 task 上限为 3，pending/skipped 也占预算。
+- 达到上限写 `deferred_cap`；精确证明无合法排程时写 `deferred_capacity`，两者均收紧为下一课到期且不永久阻断本课。
+- 五词连续全错必须恰好 15 题、每词 3 次；冻结词少于 4 个采用明确 short-pool defer。
+- 80% primary 与所有已生成 required task 同时满足才可结课。
+- v1/v2 session 必须显式区分，不静默切换或改写历史 snapshot。
 
-条件性推荐为 A＞B＞C：A 保留原教学语义且不新增题型，但必须一并解决 due-only 1 至 5 词课、短词库/尾组、混合 gap、bridge/reflux 答错语义、同时 pending 上限、持续全错终止方式和历史课程兼容。选择前不得把 G-W 标记为通过；选择后必须先修订上位计划、schema 和状态序列测试，再继续实现。
+本地代码、additive migration、内存/SQLite-D1、Worker API、整栈和浏览器测试已经完成。目标 D1 migration、started v1 审计和 preview 未执行，因此 G-W 本地通过但生产继续保持 NO-GO。
 
 ### 7.2 旧版题型与快照
 
@@ -166,7 +173,7 @@
 
 1. 配置并验证自定义域名、Cloudflare Access application/policy、audience 和 team domain。
 2. 创建独立 preview Worker/D1，证明名称、URL、环境标识和 D1 ID 均不命中生产。
-3. 在远端 clone/preview 先执行 8 个 additive migration 和旧数据 preflight，再进行 smoke。
+3. 在远端 clone/preview 先执行 9 个 additive migration 和旧数据 preflight，再进行 smoke。
 4. 使用浏览器 UI 完成人工真实 200% 缩放，并用至少一台真实手机和一台真实平板验证 Cookie、网络、软键盘、焦点和安全区。
 5. Solazhu 完成首轮视觉确认后建立截图基线。
 6. 在监护人知情同意下完成目标年龄儿童观察。
@@ -175,7 +182,8 @@
 ## 8. 发布与回滚边界
 
 - 本轮没有部署 Worker、没有执行远端 migration、没有创建 Access 策略、没有写 preview 或生产 D1。
-- migration 0003 至 0008 均为 additive；Worker 回滚不会自动撤销数据库结构，远端执行前必须先在 clone/preview 演练。
+- migration 0003 至 0009 均为 additive；Worker 回滚不会自动撤销数据库结构，远端执行前必须先在 clone/preview 演练。
+- v2 产生 session 后只允许回退到同时理解 v1/v2 的双读兼容 Worker，并切换为禁止创建新 session；只理解旧 5 至 8 规则的 Worker 不是合法回滚目标。本地已产生并验证 v2 session，且验证了禁止创建新 session 时仍可恢复既有 v1/v2 session；远端回滚演练仍未执行。
 - published content 和已有 lesson task snapshot 不原地修改；内容修复继续使用新 version。
 - 若 preview 发现身份、历史题型或队列错误，回滚 Worker 到上一已验证 version，保留 additive schema，并停止生产发布。
 - 当前没有可验证的上一生产 Worker version 记录，因此报告不能宣称生产回滚步骤已实演。
@@ -184,13 +192,12 @@
 
 执行过程中检测到 `HEAD`、`main` 和本地 `origin/main` 引用由外部状态推进到 `3385386`（提交信息：`实施阶段0前置验收与独立任务拆分`，提交时间 2026-07-14 00:13:22 +0800）。本轮根代理和分配的子任务没有执行 stage、commit 或 push，也没有回退该外部变更。
 
-`pdoc/.DS_Store` 已被该 checkout 跟踪且处于修改状态；它不属于本轮实现范围，已原样保留。当前后续深审修复、测试和报告仍为未暂存工作区变更，未替用户创建提交。
+阶段 0 检查时发现 `pdoc/.DS_Store` 已被该 checkout 跟踪且处于修改状态；它不属于本轮实现范围，已原样保留。后续 `PLAN_0714` 的实现、验证与提交状态以对应验收报告为准。
 
 ## 10. 下一步顺序
 
-1. Solazhu 先确认五词回流冲突分支；当前条件性推荐 A，但必须接受全局调度与历史兼容的完整边界，不能只改分组常量。
-2. 明确目标 D1 和 preview 身份，执行旧数据只读审计并选择历史兼容分支。
-3. 修订上位计划后关闭 G-W；重新运行状态序列、D1、API 和浏览器闭环。
-4. 建立并验证 Access 与隔离 preview；完成 migration preflight。
-5. 完成真实设备、视觉确认和目标儿童观察。
-6. 所有门禁通过后，再单独授权 preview 和生产发布。
+1. 以 `REPORT_0714_错词回流间隔与单词重复上限优化验收_v1.md` 记录的本地 G-W 结果作为当前实现基线。
+2. 明确目标 D1 和 preview 身份，执行旧数据只读审计并确认历史兼容策略。
+3. 建立并验证 Access 与隔离 preview；完成 migration preflight、远端 clone 演练和回滚演练。
+4. 完成真实设备、视觉确认和目标儿童观察。
+5. 所有外部门禁通过后，再单独授权 preview 和生产发布。

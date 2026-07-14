@@ -31,7 +31,11 @@ import {
   readLearnerSessionCookie,
 } from './security/learnerHttpSecurity'
 import { createContentBuilder, type ContentBuilder } from './services/ContentBuilder'
-import { createCourseRuntime, type CourseRuntime } from './services/CourseRuntime'
+import {
+  createCourseRuntime,
+  parseLessonQueueWriteMode,
+  type CourseRuntime,
+} from './services/CourseRuntime'
 import {
   createCourseQueryService,
   type CourseQueryService,
@@ -66,6 +70,7 @@ export type WorkerEnv = {
   APP_ORIGIN?: string
   CF_ACCESS_ISSUER?: string
   CF_ACCESS_AUDIENCE?: string
+  LESSON_QUEUE_WRITE_MODE?: string
 }
 
 export type CreateWorkerAppInput = {
@@ -126,6 +131,7 @@ export const createTestWorkerApp = (
       courseRepository,
       operationLedger,
       now,
+      queueWriteMode: 'v2',
     }),
     courseQueryService: createCourseQueryService({ contentRepository, courseRepository }),
     courseRepository,
@@ -175,6 +181,7 @@ export const createDefaultWorkerApp = (env: WorkerEnv): WorkerApp => {
       courseRepository,
       operationLedger,
       now,
+      queueWriteMode: parseLessonQueueWriteMode(env.LESSON_QUEUE_WRITE_MODE),
     }),
     courseQueryService: createCourseQueryService({ contentRepository, courseRepository }),
     courseRepository,

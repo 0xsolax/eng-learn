@@ -100,6 +100,20 @@ export const createCourseQueryService = (input: {
     const primaryTasks = snapshot.tasks.filter((task) => task.role === 'primary')
     const primaryTaskIds = new Set(primaryTasks.map((task) => task.id))
     const primaryLogs = snapshot.reviewLogs.filter((log) => primaryTaskIds.has(log.taskId))
+    const loggedTaskIds = new Set(snapshot.reviewLogs.map((log) => log.taskId))
+    const hasIncompleteV2Audit =
+      snapshot.session.queuePolicyVersion === 'v2_3_6_cap3' &&
+      (snapshot.tasks.some(
+        (task) => task.status === 'completed' && !loggedTaskIds.has(task.id),
+      ) ||
+        snapshot.reviewLogs.some(
+          (log) => !isPassingReviewScore(log.score) && log.queueDisposition === undefined,
+        ))
+
+    if (hasIncompleteV2Audit) {
+      throw new DomainError('dependency_failure', 'Completed v2 task audit is incomplete')
+    }
+
     const loggedPrimaryTaskIds = new Set(primaryLogs.map((log) => log.taskId))
     const hasMissingCompletedLog = primaryTasks.some(
       (task) => task.status === 'completed' && !loggedPrimaryTaskIds.has(task.id),
@@ -112,6 +126,14 @@ export const createCourseQueryService = (input: {
     const needsPracticeIds = new Set(
       primaryLogs.filter((log) => !isPassingReviewScore(log.score)).map((log) => log.wordId),
     )
+    for (const log of snapshot.reviewLogs) {
+      if (
+        log.queueDisposition === 'deferred_cap' ||
+        log.queueDisposition === 'deferred_capacity'
+      ) {
+        needsPracticeIds.add(log.wordId)
+      }
+    }
     const progressIds = new Set(
       primaryLogs
         .filter((log) => isPassingReviewScore(log.score) && !needsPracticeIds.has(log.wordId))

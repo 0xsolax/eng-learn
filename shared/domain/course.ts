@@ -29,6 +29,10 @@ export type LessonSessionStatus = 'started' | 'completed' | 'abandoned'
 
 export type LessonTaskStatus = 'pending' | 'completed' | 'skipped'
 
+export type LessonQueuePolicyVersion = 'v1_5_8_unbounded' | 'v2_3_6_cap3'
+
+export type QueueDisposition = 'scheduled' | 'deferred_cap' | 'deferred_capacity'
+
 export type LessonSessionView = {
   id: string
   courseId: string

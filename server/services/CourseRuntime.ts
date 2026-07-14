@@ -20,13 +20,20 @@ import type {
   CourseRepository,
   LessonSessionRecord,
   LessonTaskRecord,
+  QueueDisposition,
   RecordAnswerInput,
+  RecordedAnswerOutcome,
+  ReviewLogRecord,
   UserWordStateRecord,
 } from '../repositories/courseRepository'
 import type { ContentRepository, SourceVersionSnapshot } from '../repositories/contentRepository'
 import { requireLearnerSafeExerciseItemContent } from '../errors/PersistedContentCompatibilityError'
 import { DomainError } from '../errors/DomainError'
-import { applyAnswerScore } from './StageEngine'
+import { applyAnswerScore, deferToNextLesson } from './StageEngine'
+import {
+  planWrongAnswer,
+  validateLessonQueueSnapshot,
+} from './LessonQueuePolicy'
 import {
   getLessonCompletionDecision,
   getNextPendingTask,
@@ -77,7 +84,13 @@ export type CreateCourseRuntimeInput = {
   now: () => Date
   operationLedger?: AdminOperationLedgerReader
   selectRefluxGap?: () => number
+  queueWriteMode: LessonQueueWriteMode
 }
+
+export type LessonQueueWriteMode = 'legacy_v1' | 'v2' | 'disabled'
+
+export const parseLessonQueueWriteMode = (value: string | undefined): LessonQueueWriteMode =>
+  value === 'legacy_v1' || value === 'v2' || value === 'disabled' ? value : 'disabled'
 
 export const createCourseRuntime = ({
   contentRepository,
@@ -85,6 +98,7 @@ export const createCourseRuntime = ({
   now,
   operationLedger,
   selectRefluxGap = selectDefaultRefluxGap,
+  queueWriteMode,
 }: CreateCourseRuntimeInput): CourseRuntime => {
   const createCourse = async (input: {
     learnerName: string
@@ -223,6 +237,15 @@ export const createCourseRuntime = ({
         return existing
       }
 
+      const queuePolicyVersion = policyVersionForWriteMode(queueWriteMode)
+
+      if (!queuePolicyVersion) {
+        throw new DomainError(
+          'course_unavailable',
+          'New lesson sessions are disabled for the current queue policy',
+        )
+      }
+
       const sourceVersion = await contentRepository.getSourceVersion(course.sourceVersionId)
 
       if (!sourceVersion || sourceVersion.version.status !== 'published') {
@@ -324,6 +347,7 @@ export const createCourseRuntime = ({
           completedTaskCount: 0,
           correctCount: 0,
           wrongCount: 0,
+          queuePolicyVersion,
           startedAt: createdAt,
         },
         tasks,
@@ -407,16 +431,38 @@ export const createCourseRuntime = ({
     const existing = await courseRepository.getSubmittedAnswer(session.id, task.id)
 
     if (existing) {
-      return {
-        ...existing,
-        feedback: createTaskFeedback(task, existing.reviewLog.score),
-      }
+      return toSubmittedTaskAnswer(task, existing)
     }
 
-    const lessonTasks = await courseRepository.getLessonTasks(session.id)
+    const usesV2QueuePolicy = session.queuePolicyVersion === 'v2_3_6_cap3'
+    const queueSnapshot =
+      usesV2QueuePolicy
+        ? await courseRepository.getLessonQueueSnapshot({
+            sessionId: session.id,
+            courseId: session.courseId,
+          })
+        : undefined
+
+    if (
+      usesV2QueuePolicy &&
+      (!queueSnapshot ||
+        queueSnapshot.session.id !== session.id ||
+        queueSnapshot.session.queuePolicyVersion !== session.queuePolicyVersion)
+    ) {
+      throw new DomainError(
+        'queue_invariant_violation',
+        'Lesson queue state is inconsistent',
+      )
+    }
+
+    const lessonTasks =
+      queueSnapshot?.tasks ?? await courseRepository.getLessonTasks(session.id)
     const currentTask = getNextPendingTask(lessonTasks)
 
     if (!currentTask || currentTask.id !== task.id) {
+      const raced = await courseRepository.getSubmittedAnswer(session.id, task.id)
+
+      if (raced) return toSubmittedTaskAnswer(task, raced)
       throw new DomainError('task_not_current', 'Only the first pending task can be answered')
     }
 
@@ -435,20 +481,34 @@ export const createCourseRuntime = ({
       )
     }
 
-    const wordState = await courseRepository.getWordState(task.courseId, task.wordId)
+    const lessonWordStates =
+      usesV2QueuePolicy
+        ? await courseRepository.getWordStates(task.courseId)
+        : undefined
+    const wordState = lessonWordStates
+      ? lessonWordStates.find((state) => state.wordId === task.wordId)
+      : await courseRepository.getWordState(task.courseId, task.wordId)
 
     if (!wordState) {
       throw new DomainError('not_found', `Word state is missing for ${task.wordId}`)
     }
 
     const createdAt = now().toISOString()
-    const advanceWordState = task.role === 'primary'
-    const updatedWordState = advanceWordState
+    const isWrongAnswer = !isPassingReviewScore(evaluation.score)
+    const persistWordState =
+      task.role === 'primary' ||
+      (usesV2QueuePolicy && isWrongAnswer)
+    const updatedWordState = task.role === 'primary'
       ? applyAnswerScore(wordState, {
           lessonNo: session.lessonNo,
           score: evaluation.score,
           updatedAt: createdAt,
         })
+      : usesV2QueuePolicy && isWrongAnswer
+        ? deferToNextLesson(wordState, {
+            lessonNo: session.lessonNo,
+            updatedAt: createdAt,
+          })
       : wordState
     const completedTask: LessonTaskRecord = {
       ...task,
@@ -457,41 +517,110 @@ export const createCourseRuntime = ({
     const completedQueue = lessonTasks.map((candidate) =>
       candidate.id === completedTask.id ? completedTask : candidate,
     )
-    const nextQueue =
-      !isPassingReviewScore(evaluation.score) && task.role !== 'bridge'
-        ? scheduleWrongAnswerReflux({
-            tasks: completedQueue,
-            task: completedTask,
-            gap: selectRefluxGap(),
-            createdAt,
-          })
-        : completedQueue
+    const reviewLogBase: ReviewLogRecord = {
+      id: crypto.randomUUID(),
+      sessionId: session.id,
+      taskId: task.id,
+      courseId: task.courseId,
+      wordId: task.wordId,
+      stage: task.stage,
+      taskType: task.taskType,
+      userAnswer: JSON.stringify(submission),
+      correctAnswer: evaluation.logCorrectAnswer,
+      score: evaluation.score,
+      lessonNo: session.lessonNo,
+      createdAt,
+    }
+    let queueDisposition: QueueDisposition | undefined
+    let nextQueue: LessonTaskRecord[]
+
+    if (!usesV2QueuePolicy) {
+      nextQueue =
+        isWrongAnswer && task.role !== 'bridge'
+          ? scheduleWrongAnswerReflux({
+              tasks: completedQueue,
+              task: completedTask,
+              gap: selectRefluxGap(),
+              createdAt,
+            })
+          : completedQueue
+    } else {
+      const suspendedWordIds = new Set(
+        (lessonWordStates ?? [])
+          .filter((state) => state.status === 'suspended')
+          .map((state) => state.wordId),
+      )
+
+      try {
+        if (isWrongAnswer) {
+          const plan = planWrongAnswer(
+            {
+              tasks: lessonTasks,
+              reviewLogs: queueSnapshot?.reviewLogs ?? [],
+              suspendedWordIds,
+            },
+            {
+              sourceTaskId: task.id,
+              createBridge: (source) =>
+                cloneQueueTask(source, {
+                  role: 'bridge',
+                  required: true,
+                  createdAt,
+                }),
+              createReflux: (source) =>
+                cloneQueueTask(source, {
+                  role: 'reflux',
+                  required: true,
+                  refluxSourceTaskId: task.id,
+                  createdAt,
+                }),
+            },
+          )
+          queueDisposition = plan.disposition
+          nextQueue = plan.tasks
+        } else {
+          nextQueue = completedQueue
+        }
+
+        validateLessonQueueSnapshot({
+          tasks: nextQueue,
+          reviewLogs: [
+            ...(queueSnapshot?.reviewLogs ?? []),
+            {
+              taskId: task.id,
+              wordId: task.wordId,
+              score: evaluation.score,
+              ...(queueDisposition === undefined ? {} : { queueDisposition }),
+            },
+          ],
+          suspendedWordIds,
+        })
+      } catch {
+        const raced = await courseRepository.getSubmittedAnswer(session.id, task.id)
+
+        if (raced) return toSubmittedTaskAnswer(task, raced)
+        throw new DomainError(
+          'queue_invariant_violation',
+          'Lesson queue state is inconsistent',
+        )
+      }
+    }
+
+    const reviewLog: ReviewLogRecord = {
+      ...reviewLogBase,
+      ...(queueDisposition === undefined ? {} : { queueDisposition }),
+    }
     const taskDelta = createRecordAnswerTaskDelta(lessonTasks, nextQueue)
     const recorded = await courseRepository.recordAnswer({
       task: completedTask,
       wordState: updatedWordState,
-      reviewLog: {
-        id: crypto.randomUUID(),
-        sessionId: session.id,
-        taskId: task.id,
-        courseId: task.courseId,
-        wordId: task.wordId,
-        stage: task.stage,
-        taskType: task.taskType,
-        userAnswer: JSON.stringify(submission),
-        correctAnswer: evaluation.logCorrectAnswer,
-        score: evaluation.score,
-        lessonNo: session.lessonNo,
-        createdAt,
-      },
+      reviewLog,
       ...taskDelta,
-      advanceWordState,
+      persistWordState,
+      expectedQueuePolicyVersion: session.queuePolicyVersion,
     })
 
-    return {
-      ...recorded,
-      feedback: createTaskFeedback(task, recorded.reviewLog.score),
-    }
+    return toSubmittedTaskAnswer(task, recorded)
   }
 
   const completeLesson = async (sessionId: string): Promise<CompletedLesson> => {
@@ -517,7 +646,48 @@ export const createCourseRuntime = ({
       return completed
     }
 
-    const tasks = await courseRepository.getLessonTasks(sessionId)
+    let tasks: LessonTaskRecord[]
+
+    if (session.queuePolicyVersion === 'v2_3_6_cap3') {
+      const queueSnapshot = await courseRepository.getLessonQueueSnapshot({
+        sessionId,
+        courseId: session.courseId,
+      })
+
+      if (
+        !queueSnapshot ||
+        queueSnapshot.session.id !== session.id ||
+        queueSnapshot.session.queuePolicyVersion !== session.queuePolicyVersion
+      ) {
+        throw new DomainError(
+          'queue_invariant_violation',
+          'Lesson queue state is inconsistent',
+        )
+      }
+
+      const suspendedWordIds = new Set(
+        (await courseRepository.getWordStates(session.courseId))
+          .filter((state) => state.status === 'suspended')
+          .map((state) => state.wordId),
+      )
+
+      try {
+        validateLessonQueueSnapshot({
+          tasks: queueSnapshot.tasks,
+          reviewLogs: queueSnapshot.reviewLogs,
+          suspendedWordIds,
+        })
+      } catch {
+        throw new DomainError(
+          'queue_invariant_violation',
+          'Lesson queue state is inconsistent',
+        )
+      }
+
+      tasks = queueSnapshot.tasks
+    } else {
+      tasks = await courseRepository.getLessonTasks(sessionId)
+    }
     const decision = getLessonCompletionDecision(tasks)
 
     if (!decision.allowed) {
@@ -597,6 +767,14 @@ const createRecordAnswerTaskDelta = (
     completedTaskCount: after.filter((task) => task.status === 'completed').length,
   }
 }
+
+const toSubmittedTaskAnswer = (
+  task: LessonTaskRecord,
+  outcome: RecordedAnswerOutcome,
+): SubmittedTaskAnswer => ({
+  ...outcome.submittedAnswer,
+  feedback: createTaskFeedback(task, outcome.submittedAnswer.reviewLog.score),
+})
 
 const hasMutableTaskColumnChange = (
   before: LessonTaskRecord,
@@ -990,6 +1168,15 @@ const selectDefaultRefluxGap = (): number => {
   crypto.getRandomValues(value)
 
   return 5 + ((value[0] ?? 0) % 4)
+}
+
+const policyVersionForWriteMode = (
+  mode: LessonQueueWriteMode,
+): LessonSessionRecord['queuePolicyVersion'] | undefined => {
+  if (mode === 'legacy_v1') return 'v1_5_8_unbounded'
+  if (mode === 'v2') return 'v2_3_6_cap3'
+
+  return undefined
 }
 
 const createInitialWordState = (input: {

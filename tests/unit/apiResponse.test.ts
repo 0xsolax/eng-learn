@@ -61,6 +61,24 @@ describe('API error responses', () => {
     })
   })
 
+  it('maps a queue invariant failure to a stable conflict without exposing internals', async () => {
+    const response = toApiErrorResponse(
+      new DomainError(
+        'queue_invariant_violation',
+        'Lesson queue state is inconsistent',
+      ),
+    )
+
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toEqual({
+      ok: false,
+      error: {
+        code: 'queue_invariant_violation',
+        message: 'Lesson queue state is inconsistent',
+      },
+    })
+  })
+
   it('maps bounded-body rejection to HTTP 413', async () => {
     const response = toApiErrorResponse(
       new DomainError('payload_too_large', 'Request body exceeds the allowed size'),

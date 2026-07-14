@@ -22,6 +22,7 @@ const migrationPaths = [
   '../../migrations/0006_add_lesson_task_queue.sql',
   '../../migrations/0007_backfill_legacy_lesson_runtime.sql',
   '../../migrations/0008_add_admin_operation_ledger.sql',
+  '../../migrations/0009_add_lesson_queue_policy_v2.sql',
 ]
 
 type SqliteD1Statement = {
@@ -30,7 +31,7 @@ type SqliteD1Statement = {
   first(): Promise<unknown>
   all(): Promise<{ success: true; results: unknown[]; meta: Record<string, never> }>
   reserve(): void
-  execute(): { success: true; meta: { changes: number } }
+  execute(): { success: true; results: unknown[]; meta: { changes: number } }
 }
 
 type D1QueryBudgetProbe = {
@@ -39,6 +40,7 @@ type D1QueryBudgetProbe = {
     boundCount: number
     maxStringBytes: number
   }>
+  batchSizes: number[]
   reset(): void
   failNextBatchAt(statementIndex: number): void
 }
@@ -56,8 +58,10 @@ const createSqliteD1 = (
   let injectedFailureIndex: number | undefined
   const budget: D1QueryBudgetProbe = {
     queries: [],
+    batchSizes: [],
     reset() {
       this.queries.length = 0
+      this.batchSizes.length = 0
     },
     failNextBatchAt(statementIndex) {
       injectedFailureIndex = statementIndex
@@ -120,9 +124,21 @@ const createSqliteD1 = (
       },
       reserve,
       execute() {
+        if (/^\s*SELECT\b/i.test(sql)) {
+          return {
+            success: true,
+            results: statement.all(...bindings),
+            meta: { changes: 0 },
+          }
+        }
+
         const result = statement.run(...bindings)
 
-        return { success: true, meta: { changes: Number(result.changes) } }
+        return {
+          success: true,
+          results: [],
+          meta: { changes: Number(result.changes) },
+        }
       },
     }
 
@@ -135,6 +151,7 @@ const createSqliteD1 = (
     },
     batch(statements: D1PreparedStatement[]) {
       const sqliteStatements = statements as unknown as SqliteD1Statement[]
+      budget.batchSizes.push(sqliteStatements.length)
 
       for (const statement of sqliteStatements) {
         statement.reserve()
@@ -389,7 +406,10 @@ const seedAdditionalWords = (database: DatabaseSync, wordCount: number): void =>
     .run(wordCount, 'group-1')
 }
 
-const createD1RuntimeLessonFixture = async (refluxGaps: number[] = [5]) => {
+const createD1RuntimeLessonFixture = async (
+  refluxGaps: number[] = [5],
+  queuePolicyVersion: 'v1_5_8_unbounded' | 'v2_3_6_cap3' = 'v1_5_8_unbounded',
+) => {
   const fixture = await createRepositoryFixture()
   seedAdditionalWords(fixture.database, 5)
   const tasks = Array.from({ length: 5 }, (_, index) =>
@@ -414,6 +434,7 @@ const createD1RuntimeLessonFixture = async (refluxGaps: number[] = [5]) => {
       completedTaskCount: 0,
       correctCount: 0,
       wrongCount: 0,
+      queuePolicyVersion,
       startedAt: NOW,
     },
     tasks,
@@ -425,6 +446,8 @@ const createD1RuntimeLessonFixture = async (refluxGaps: number[] = [5]) => {
     courseRepository: fixture.repository,
     now: () => new Date(NOW),
     selectRefluxGap: () => gaps.shift() ?? 5,
+    queueWriteMode:
+      queuePolicyVersion === 'v2_3_6_cap3' ? 'v2' : 'legacy_v1',
   })
 
   fixture.budget.reset()
@@ -432,6 +455,462 @@ const createD1RuntimeLessonFixture = async (refluxGaps: number[] = [5]) => {
 }
 
 describe('D1 course queue repository', () => {
+  it('persists a v2 session policy and restores it in the authoritative queue snapshot', async () => {
+    const { database, budget, repository } = await createRepositoryFixture()
+    const task = createTask('task-policy-v2', 1)
+
+    await repository.createLesson({
+      session: {
+        id: 'lesson-policy-v2',
+        courseId: 'course-1',
+        lessonNo: 1,
+        status: 'started',
+        taskCount: 1,
+        completedTaskCount: 0,
+        correctCount: 0,
+        wrongCount: 0,
+        queuePolicyVersion: 'v2_3_6_cap3',
+        startedAt: NOW,
+      },
+      tasks: [{ ...task, sessionId: 'lesson-policy-v2' }],
+      wordStates: [createWordState()],
+    })
+
+    await expect(repository.getLessonSession('lesson-policy-v2')).resolves.toMatchObject({
+      queuePolicyVersion: 'v2_3_6_cap3',
+    })
+    budget.reset()
+    await expect(
+      repository.getLessonQueueSnapshot({
+        sessionId: 'lesson-policy-v2',
+        courseId: 'course-1',
+      }),
+    ).resolves.toMatchObject({
+      session: { queuePolicyVersion: 'v2_3_6_cap3' },
+      tasks: [{ id: 'task-policy-v2' }],
+      reviewLogs: [],
+    })
+    expect(budget.batchSizes).toEqual([3])
+    expectD1FreeInvocation(budget, 3)
+
+    database.close()
+  })
+
+  it('commits and restores the winning v2 queue disposition with its answer', async () => {
+    const { database, repository } = await createRepositoryFixture()
+    const pendingTask = createTask('task-v2-disposition', 1, {
+      sessionId: 'lesson-v2-disposition',
+    })
+    await repository.createLesson({
+      session: {
+        id: 'lesson-v2-disposition',
+        courseId: 'course-1',
+        lessonNo: 1,
+        status: 'started',
+        taskCount: 1,
+        completedTaskCount: 0,
+        correctCount: 0,
+        wrongCount: 0,
+        queuePolicyVersion: 'v2_3_6_cap3',
+        startedAt: NOW,
+      },
+      tasks: [pendingTask],
+      wordStates: [createWordState()],
+    })
+    const completedTask = { ...pendingTask, status: 'completed' as const }
+    const input = {
+      task: completedTask,
+      wordState: createWordState({
+        totalAttemptCount: 1,
+        totalWrongCount: 1,
+        wrongStreak: 1,
+        lastSeenLessonNo: 1,
+        nextDueLessonNo: 2,
+        status: 'learning',
+      }),
+      reviewLog: {
+        id: 'review-v2-disposition',
+        sessionId: 'lesson-v2-disposition',
+        taskId: pendingTask.id,
+        courseId: 'course-1',
+        wordId: 'word-1',
+        stage: 'S0' as const,
+        taskType: 'recognize_meaning',
+        userAnswer: JSON.stringify({ taskType: 'recognize_meaning', response: 'learning' }),
+        correctAnswer: 'known',
+        score: 0 as const,
+        lessonNo: 1,
+        createdAt: NOW,
+        queueDisposition: 'deferred_cap' as const,
+      },
+      taskMutations: [completedTask],
+      reorderedExistingTaskIds: [],
+      taskCount: 1,
+      completedTaskCount: 1,
+      persistWordState: true,
+      expectedQueuePolicyVersion: 'v2_3_6_cap3' as const,
+    }
+
+    await expect(repository.recordAnswer(input)).resolves.toMatchObject({
+      queueDisposition: 'deferred_cap',
+      submittedAnswer: {
+        reviewLog: { id: 'review-v2-disposition', score: 0 },
+      },
+    })
+    await expect(
+      repository.getSubmittedAnswer('lesson-v2-disposition', pendingTask.id),
+    ).resolves.toMatchObject({
+      queueDisposition: 'deferred_cap',
+      submittedAnswer: {
+        reviewLog: { id: 'review-v2-disposition', score: 0 },
+      },
+    })
+    await expect(
+      repository.getLessonQueueSnapshot({
+        sessionId: 'lesson-v2-disposition',
+        courseId: 'course-1',
+      }),
+    ).resolves.toMatchObject({
+      reviewLogs: [
+        { id: 'review-v2-disposition', queueDisposition: 'deferred_cap' },
+      ],
+    })
+
+    database.close()
+  })
+
+  it('writes nothing when the answer policy does not match the persisted session policy', async () => {
+    const { database, repository } = await createRepositoryFixture()
+    const pendingTask = createTask('task-policy-mismatch', 1, {
+      sessionId: 'lesson-policy-mismatch',
+    })
+    await repository.createLesson({
+      session: {
+        id: 'lesson-policy-mismatch',
+        courseId: 'course-1',
+        lessonNo: 1,
+        status: 'started',
+        taskCount: 1,
+        completedTaskCount: 0,
+        correctCount: 0,
+        wrongCount: 0,
+        queuePolicyVersion: 'v2_3_6_cap3',
+        startedAt: NOW,
+      },
+      tasks: [pendingTask],
+      wordStates: [createWordState()],
+    })
+
+    await expect(
+      repository.recordAnswer({
+        task: { ...pendingTask, status: 'completed' },
+        wordState: createWordState({ totalAttemptCount: 1, totalWrongCount: 1 }),
+        reviewLog: {
+          id: 'review-policy-mismatch',
+          sessionId: 'lesson-policy-mismatch',
+          taskId: pendingTask.id,
+          courseId: 'course-1',
+          wordId: 'word-1',
+          stage: 'S0',
+          taskType: 'recognize_meaning',
+          correctAnswer: 'known',
+          score: 0,
+          queueDisposition: 'deferred_cap',
+          lessonNo: 1,
+          createdAt: NOW,
+        },
+        taskMutations: [{ ...pendingTask, status: 'completed' }],
+        reorderedExistingTaskIds: [],
+        taskCount: 1,
+        completedTaskCount: 1,
+        persistWordState: true,
+        expectedQueuePolicyVersion: 'v1_5_8_unbounded',
+      }),
+    ).rejects.toThrow()
+
+    expect(database.prepare('SELECT COUNT(*) AS count FROM review_logs').get()).toEqual({
+      count: 0,
+    })
+    expect(
+      database
+        .prepare('SELECT status FROM lesson_tasks WHERE id = ?')
+        .get(pendingTask.id),
+    ).toEqual({ status: 'pending' })
+    expect(
+      database
+        .prepare(`
+          SELECT completed_task_count AS completedTaskCount,
+            correct_count AS correctCount,
+            wrong_count AS wrongCount
+          FROM lesson_sessions
+          WHERE id = 'lesson-policy-mismatch'
+        `)
+        .get(),
+    ).toEqual({ completedTaskCount: 0, correctCount: 0, wrongCount: 0 })
+
+    database.close()
+  })
+
+  it('writes nothing when the proposed winner is not the first pending task', async () => {
+    const { database, repository } = await createRepositoryFixture()
+    const firstTask = createTask('task-current-first', 1, {
+      sessionId: 'lesson-current-guard',
+    })
+    const laterTask = createTask('task-current-later', 2, {
+      sessionId: 'lesson-current-guard',
+    })
+    await repository.createLesson({
+      session: {
+        id: 'lesson-current-guard',
+        courseId: 'course-1',
+        lessonNo: 1,
+        status: 'started',
+        taskCount: 2,
+        completedTaskCount: 0,
+        correctCount: 0,
+        wrongCount: 0,
+        queuePolicyVersion: 'v1_5_8_unbounded',
+        startedAt: NOW,
+      },
+      tasks: [firstTask, laterTask],
+      wordStates: [createWordState()],
+    })
+
+    await expect(
+      repository.recordAnswer({
+        task: { ...laterTask, status: 'completed' },
+        wordState: createWordState({ totalAttemptCount: 1, totalCorrectCount: 1 }),
+        reviewLog: {
+          id: 'review-current-later',
+          sessionId: 'lesson-current-guard',
+          taskId: laterTask.id,
+          courseId: 'course-1',
+          wordId: 'word-1',
+          stage: 'S0',
+          taskType: 'recognize_meaning',
+          correctAnswer: 'known',
+          score: 2,
+          lessonNo: 1,
+          createdAt: NOW,
+        },
+        taskMutations: [{ ...laterTask, status: 'completed' }],
+        reorderedExistingTaskIds: [],
+        taskCount: 2,
+        completedTaskCount: 1,
+        persistWordState: true,
+        expectedQueuePolicyVersion: 'v1_5_8_unbounded',
+      }),
+    ).rejects.toThrow()
+
+    expect(database.prepare('SELECT COUNT(*) AS count FROM review_logs').get()).toEqual({
+      count: 0,
+    })
+    expect(
+      database
+        .prepare(`
+          SELECT id, status
+          FROM lesson_tasks
+          WHERE session_id = 'lesson-current-guard'
+          ORDER BY order_index
+        `)
+        .all(),
+    ).toEqual([
+      { id: firstTask.id, status: 'pending' },
+      { id: laterTask.id, status: 'pending' },
+    ])
+
+    database.close()
+  })
+
+  it('returns one persisted disposition when concurrent v2 answers propose different outcomes', async () => {
+    const { database, repository } = await createRepositoryFixture()
+    const sourceTask = createTask('task-v2-race', 1, { sessionId: 'lesson-v2-race' })
+    await repository.createLesson({
+      session: {
+        id: 'lesson-v2-race',
+        courseId: 'course-1',
+        lessonNo: 1,
+        status: 'started',
+        taskCount: 1,
+        completedTaskCount: 0,
+        correctCount: 0,
+        wrongCount: 0,
+        queuePolicyVersion: 'v2_3_6_cap3',
+        startedAt: NOW,
+      },
+      tasks: [sourceTask],
+      wordStates: [createWordState()],
+    })
+    const completedTask = { ...sourceTask, status: 'completed' as const }
+    const wordState = createWordState({
+      totalAttemptCount: 1,
+      totalWrongCount: 1,
+      wrongStreak: 1,
+      lastSeenLessonNo: 1,
+      nextDueLessonNo: 2,
+      status: 'learning',
+    })
+    const deferredInput = {
+      task: completedTask,
+      wordState,
+      reviewLog: {
+        id: 'review-v2-race-deferred',
+        sessionId: 'lesson-v2-race',
+        taskId: sourceTask.id,
+        courseId: 'course-1',
+        wordId: 'word-1',
+        stage: 'S0' as const,
+        taskType: 'recognize_meaning',
+        correctAnswer: 'known',
+        score: 0 as const,
+        queueDisposition: 'deferred_cap' as const,
+        lessonNo: 1,
+        createdAt: NOW,
+      },
+      taskMutations: [completedTask],
+      reorderedExistingTaskIds: [],
+      taskCount: 1,
+      completedTaskCount: 1,
+      persistWordState: true,
+      expectedQueuePolicyVersion: 'v2_3_6_cap3' as const,
+    }
+    const refluxTask = createTask('task-v2-race-reflux', 2, {
+      sessionId: 'lesson-v2-race',
+      role: 'reflux',
+      required: true,
+      refluxSourceTaskId: sourceTask.id,
+    })
+    const scheduledInput = {
+      ...deferredInput,
+      reviewLog: {
+        ...deferredInput.reviewLog,
+        id: 'review-v2-race-scheduled',
+        queueDisposition: 'scheduled' as const,
+      },
+      taskMutations: [completedTask, refluxTask],
+      taskCount: 2,
+    }
+
+    const [first, second] = await Promise.all([
+      repository.recordAnswer(deferredInput),
+      repository.recordAnswer(scheduledInput),
+    ])
+    const tasks = await repository.getLessonTasks('lesson-v2-race')
+    const snapshot = await repository.getLessonQueueSnapshot({
+      sessionId: 'lesson-v2-race',
+      courseId: 'course-1',
+    })
+
+    expect(second).toEqual(first)
+    expect(snapshot?.reviewLogs).toHaveLength(1)
+    expect(snapshot?.reviewLogs[0]?.queueDisposition).toBe(first.queueDisposition)
+    expect(tasks.filter((task) => task.role === 'reflux')).toHaveLength(
+      first.queueDisposition === 'scheduled' ? 1 : 0,
+    )
+    expect(database.prepare('SELECT COUNT(*) AS count FROM review_logs').get()).toEqual({
+      count: 1,
+    })
+
+    database.close()
+  })
+
+  it('rolls back the v2 disposition, child task, state, and counters as one batch', async () => {
+    const { database, budget, repository } = await createRepositoryFixture()
+    const sourceTask = createTask('task-v2-rollback', 1, {
+      sessionId: 'lesson-v2-rollback',
+    })
+    await repository.createLesson({
+      session: {
+        id: 'lesson-v2-rollback',
+        courseId: 'course-1',
+        lessonNo: 1,
+        status: 'started',
+        taskCount: 1,
+        completedTaskCount: 0,
+        correctCount: 0,
+        wrongCount: 0,
+        queuePolicyVersion: 'v2_3_6_cap3',
+        startedAt: NOW,
+      },
+      tasks: [sourceTask],
+      wordStates: [createWordState()],
+    })
+    const completedTask = { ...sourceTask, status: 'completed' as const }
+    const refluxTask = createTask('task-v2-rollback-reflux', 2, {
+      sessionId: 'lesson-v2-rollback',
+      role: 'reflux',
+      required: true,
+      refluxSourceTaskId: sourceTask.id,
+    })
+    budget.failNextBatchAt(2)
+
+    await expect(
+      repository.recordAnswer({
+        task: completedTask,
+        wordState: createWordState({
+          totalAttemptCount: 1,
+          totalWrongCount: 1,
+          wrongStreak: 1,
+          lastSeenLessonNo: 1,
+          nextDueLessonNo: 2,
+          status: 'learning',
+        }),
+        reviewLog: {
+          id: 'review-v2-rollback',
+          sessionId: 'lesson-v2-rollback',
+          taskId: sourceTask.id,
+          courseId: 'course-1',
+          wordId: 'word-1',
+          stage: 'S0',
+          taskType: 'recognize_meaning',
+          correctAnswer: 'known',
+          score: 0,
+          queueDisposition: 'scheduled',
+          lessonNo: 1,
+          createdAt: NOW,
+        },
+        taskMutations: [completedTask, refluxTask],
+        reorderedExistingTaskIds: [],
+        taskCount: 2,
+        completedTaskCount: 1,
+        persistWordState: true,
+        expectedQueuePolicyVersion: 'v2_3_6_cap3',
+      }),
+    ).rejects.toThrow('Injected D1 batch failure')
+
+    expect(database.prepare('SELECT COUNT(*) AS count FROM review_logs').get()).toEqual({
+      count: 0,
+    })
+    expect(
+      database
+        .prepare('SELECT id, status FROM lesson_tasks WHERE session_id = ? ORDER BY order_index')
+        .all('lesson-v2-rollback'),
+    ).toEqual([{ id: sourceTask.id, status: 'pending' }])
+    expect(
+      database
+        .prepare(`
+          SELECT total_attempt_count AS totalAttemptCount,
+            total_wrong_count AS totalWrongCount
+          FROM user_word_states
+          WHERE id = 'state-1'
+        `)
+        .get(),
+    ).toEqual({ totalAttemptCount: 0, totalWrongCount: 0 })
+    expect(
+      database
+        .prepare(`
+          SELECT task_count AS taskCount,
+            completed_task_count AS completedTaskCount,
+            wrong_count AS wrongCount
+          FROM lesson_sessions
+          WHERE id = 'lesson-v2-rollback'
+        `)
+        .get(),
+    ).toEqual({ taskCount: 1, completedTaskCount: 0, wrongCount: 0 })
+
+    database.close()
+  })
+
   it('creates a 65-task lesson within the D1 Free per-invocation query budget', async () => {
     const { database, budget, repository } = await createRepositoryFixture()
     const tasks = Array.from({ length: 65 }, (_, index) =>
@@ -448,6 +927,7 @@ describe('D1 course queue repository', () => {
         completedTaskCount: 0,
         correctCount: 0,
         wrongCount: 0,
+        queuePolicyVersion: 'v1_5_8_unbounded',
         startedAt: NOW,
       },
       tasks,
@@ -477,6 +957,7 @@ describe('D1 course queue repository', () => {
             completedTaskCount: 0,
             correctCount: 0,
             wrongCount: 0,
+            queuePolicyVersion: 'v1_5_8_unbounded',
             startedAt: NOW,
           },
           tasks: [createTask('task-inactive-course', 1)],
@@ -526,6 +1007,7 @@ describe('D1 course queue repository', () => {
           completedTaskCount: 0,
           correctCount: 0,
           wrongCount: 0,
+          queuePolicyVersion: 'v1_5_8_unbounded',
           startedAt: NOW,
         },
         tasks,
@@ -560,6 +1042,7 @@ describe('D1 course queue repository', () => {
         completedTaskCount: 0,
         correctCount: 0,
         wrongCount: 0,
+        queuePolicyVersion: 'v1_5_8_unbounded',
         startedAt: NOW,
       },
       tasks,
@@ -595,7 +1078,8 @@ describe('D1 course queue repository', () => {
       reorderedExistingTaskIds: [],
       taskCount: tasks.length,
       completedTaskCount: 1,
-      advanceWordState: true,
+      persistWordState: true,
+      expectedQueuePolicyVersion: 'v1_5_8_unbounded' as const,
     }
 
     installLessonTaskWriteAudit(database)
@@ -603,7 +1087,7 @@ describe('D1 course queue repository', () => {
     budget.reset()
     const first = await repository.recordAnswer(input)
 
-    expect(first.reviewLog.id).toBe('review-budget-500')
+    expect(first.submittedAnswer.reviewLog.id).toBe('review-budget-500')
     expect(readLessonTaskWriteCounts(database)).toEqual({ inserts: 0, updates: 1 })
     expectD1FreeInvocation(budget, 7)
 
@@ -642,6 +1126,128 @@ describe('D1 course queue repository', () => {
         .filter((task) => task.role === 'bridge')
         .every((task) => task.wordId !== source.wordId),
     ).toBe(true)
+
+    database.close()
+  })
+
+  it('restores v2 wrong-answer dispositions after a runtime restart and completes at the five-word cap', async () => {
+    const { database, db, budget, repository, runtime, tasks } =
+      await createD1RuntimeLessonFixture([], 'v2_3_6_cap3')
+    const firstTask = tasks[0]
+
+    if (!firstTask) throw new Error('Expected the first v2 runtime task')
+
+    budget.reset()
+    await runtime.submitAnswer({
+      sessionId: 'lesson-1',
+      taskId: firstTask.id,
+      submission: { taskType: 'recognize_meaning', response: 'learning' },
+    })
+
+    budget.reset()
+    const beforeRestart = await repository.getLessonQueueSnapshot({
+      sessionId: 'lesson-1',
+      courseId: 'course-1',
+    })
+    const resumedRepository = createD1CourseRepository(db)
+    const resumedRuntime = createCourseRuntime({
+      contentRepository: createD1ContentRepository(db),
+      courseRepository: resumedRepository,
+      now: () => new Date(NOW),
+      queueWriteMode: 'v2',
+    })
+    budget.reset()
+    const afterRestart = await resumedRepository.getLessonQueueSnapshot({
+      sessionId: 'lesson-1',
+      courseId: 'course-1',
+    })
+    budget.reset()
+    const resumedLesson = await resumedRuntime.getLesson('lesson-1')
+
+    expect(afterRestart).toEqual(beforeRestart)
+    expect(afterRestart?.reviewLogs).toEqual([
+      expect.objectContaining({
+        taskId: firstTask.id,
+        queueDisposition: 'scheduled',
+      }),
+    ])
+    expect(
+      resumedLesson.tasks.map((task) => ({
+        id: task.id,
+        orderIndex: task.orderIndex,
+        status: task.status,
+        role: task.role,
+        refluxSourceTaskId: task.refluxSourceTaskId,
+      })),
+    ).toEqual(
+      afterRestart?.tasks.map((task) => ({
+        id: task.id,
+        orderIndex: task.orderIndex,
+        status: task.status,
+        role: task.role,
+        refluxSourceTaskId: task.refluxSourceTaskId,
+      })),
+    )
+
+    let answeredCount = 1
+
+    for (;;) {
+      budget.reset()
+      const current = (await resumedRuntime.getLesson('lesson-1')).tasks.find(
+        (task) => task.status === 'pending',
+      )
+
+      if (!current) break
+      if (answeredCount >= 15) {
+        throw new Error('Restarted v2 D1 runtime exceeded the fifteen-task bound')
+      }
+
+      budget.reset()
+      await resumedRuntime.submitAnswer({
+        sessionId: 'lesson-1',
+        taskId: current.id,
+        submission: { taskType: 'recognize_meaning', response: 'learning' },
+      })
+      answeredCount += 1
+    }
+
+    budget.reset()
+    const completedSnapshot = await resumedRepository.getLessonQueueSnapshot({
+      sessionId: 'lesson-1',
+      courseId: 'course-1',
+    })
+
+    expect(answeredCount).toBe(15)
+    expect(completedSnapshot?.tasks).toHaveLength(15)
+    expect(
+      Array.from(
+        (completedSnapshot?.tasks ?? []).reduce<Map<string, number>>(
+          (counts, task) =>
+            counts.set(task.wordId, (counts.get(task.wordId) ?? 0) + 1),
+          new Map(),
+        ).values(),
+      ).sort((left, right) => left - right),
+    ).toEqual([3, 3, 3, 3, 3])
+    expect(
+      completedSnapshot?.reviewLogs.filter(
+        (log) => log.queueDisposition === 'scheduled',
+      ),
+    ).toHaveLength(10)
+    expect(
+      completedSnapshot?.reviewLogs.filter(
+        (log) => log.queueDisposition === 'deferred_cap',
+      ),
+    ).toHaveLength(5)
+    expect(
+      completedSnapshot?.reviewLogs.filter(
+        (log) => log.queueDisposition === 'deferred_capacity',
+      ),
+    ).toHaveLength(0)
+    budget.reset()
+    await expect(resumedRuntime.completeLesson('lesson-1')).resolves.toMatchObject({
+      session: { status: 'completed', taskCount: 15, completedTaskCount: 15 },
+      course: { currentLessonNo: 2 },
+    })
 
     database.close()
   })
@@ -756,6 +1362,7 @@ describe('D1 course queue repository', () => {
         completedTaskCount: 400,
         correctCount: 400,
         wrongCount: 0,
+        queuePolicyVersion: 'v1_5_8_unbounded',
         startedAt: NOW,
       },
       tasks,
@@ -819,6 +1426,7 @@ describe('D1 course queue repository', () => {
       completedTaskCount: 0,
       correctCount: 0,
       wrongCount: 0,
+      queuePolicyVersion: 'v1_5_8_unbounded',
       startedAt: NOW,
     }
 
@@ -897,7 +1505,8 @@ describe('D1 course queue repository', () => {
         reorderedExistingTaskIds: [],
         taskCount: 1,
         completedTaskCount: 1,
-        advanceWordState: true,
+        persistWordState: true,
+        expectedQueuePolicyVersion: 'v1_5_8_unbounded',
       }),
     ).rejects.toThrow('Injected D1 batch failure')
     expect(database.prepare('SELECT COUNT(*) AS count FROM review_logs').get()).toEqual({
@@ -1042,6 +1651,7 @@ describe('D1 course queue repository', () => {
         completedTaskCount: 0,
         correctCount: 0,
         wrongCount: 0,
+        queuePolicyVersion: 'v1_5_8_unbounded',
         startedAt: NOW,
       },
       tasks: [firstTask],
@@ -1060,6 +1670,7 @@ describe('D1 course queue repository', () => {
         completedTaskCount: 0,
         correctCount: 0,
         wrongCount: 0,
+        queuePolicyVersion: 'v1_5_8_unbounded',
         startedAt: NOW,
       },
       tasks: [loserTask],
@@ -1111,6 +1722,7 @@ describe('D1 course queue repository', () => {
         completedTaskCount: 0,
         correctCount: 0,
         wrongCount: 0,
+        queuePolicyVersion: 'v1_5_8_unbounded',
         startedAt: NOW,
       },
       tasks: [primary],
@@ -1145,7 +1757,8 @@ describe('D1 course queue repository', () => {
       reorderedExistingTaskIds: [],
       taskCount: 1,
       completedTaskCount: 1,
-      advanceWordState: true,
+      persistWordState: true,
+      expectedQueuePolicyVersion: 'v1_5_8_unbounded' as const,
     })
     await repository.completeLesson({
       sessionId: 'lesson-1',
@@ -1204,6 +1817,7 @@ describe('D1 course queue repository', () => {
         completedTaskCount: 0,
         correctCount: 0,
         wrongCount: 0,
+        queuePolicyVersion: 'v1_5_8_unbounded',
         startedAt: NOW,
       },
       tasks: [task],
@@ -1251,6 +1865,7 @@ describe('D1 course queue repository', () => {
           completedTaskCount: 0,
           correctCount: 0,
           wrongCount: 0,
+          queuePolicyVersion: 'v1_5_8_unbounded',
           startedAt: NOW,
         },
         tasks: [task],
@@ -1294,6 +1909,7 @@ describe('D1 course queue repository', () => {
           completedTaskCount: 0,
           correctCount: 0,
           wrongCount: 0,
+          queuePolicyVersion: 'v1_5_8_unbounded',
           startedAt: NOW,
         },
         tasks: [task],
@@ -1339,6 +1955,7 @@ describe('D1 course queue repository', () => {
           completedTaskCount: 0,
           correctCount: 0,
           wrongCount: 0,
+          queuePolicyVersion: 'v1_5_8_unbounded',
           startedAt: NOW,
         },
         tasks: [task],
@@ -1357,6 +1974,7 @@ describe('D1 course queue repository', () => {
         contentRepository: createD1ContentRepository(db),
         courseRepository: racingRepository,
         now: () => new Date(NOW),
+        queueWriteMode: 'legacy_v1',
       })
 
       await expect(
@@ -1420,6 +2038,7 @@ describe('D1 course queue repository', () => {
           completedTaskCount: 0,
           correctCount: 0,
           wrongCount: 0,
+          queuePolicyVersion: 'v1_5_8_unbounded',
           startedAt: NOW,
         },
         tasks: [task],
@@ -1457,7 +2076,8 @@ describe('D1 course queue repository', () => {
           reorderedExistingTaskIds: [],
           taskCount: 1,
           completedTaskCount: 1,
-          advanceWordState: true,
+          persistWordState: true,
+          expectedQueuePolicyVersion: 'v1_5_8_unbounded',
         }),
       ).rejects.toMatchObject({ code: 'course_unavailable' })
       expect(database.prepare('SELECT COUNT(*) AS count FROM review_logs').get()).toEqual({
@@ -1506,6 +2126,7 @@ describe('D1 course queue repository', () => {
           completedTaskCount: 0,
           correctCount: 0,
           wrongCount: 0,
+          queuePolicyVersion: 'v1_5_8_unbounded',
           startedAt: NOW,
         },
         tasks: [task],
@@ -1545,7 +2166,8 @@ describe('D1 course queue repository', () => {
           reorderedExistingTaskIds: [],
           taskCount: 1,
           completedTaskCount: 1,
-          advanceWordState: true,
+          persistWordState: true,
+          expectedQueuePolicyVersion: 'v1_5_8_unbounded',
         }),
       ).rejects.toMatchObject({ code: 'lesson_not_active' })
       expect(database.prepare('SELECT COUNT(*) AS count FROM review_logs').get()).toEqual({
@@ -1583,6 +2205,7 @@ describe('D1 course queue repository', () => {
           completedTaskCount: 0,
           correctCount: 0,
           wrongCount: 0,
+          queuePolicyVersion: 'v1_5_8_unbounded',
           startedAt: NOW,
         },
         tasks: [task],
@@ -1601,6 +2224,7 @@ describe('D1 course queue repository', () => {
         contentRepository: createD1ContentRepository(db),
         courseRepository: racingRepository,
         now: () => new Date(NOW),
+        queueWriteMode: 'legacy_v1',
       })
 
       await expect(
@@ -1660,6 +2284,7 @@ describe('D1 course queue repository', () => {
         completedTaskCount: 0,
         correctCount: 0,
         wrongCount: 0,
+        queuePolicyVersion: 'v1_5_8_unbounded',
         startedAt: NOW,
       },
       tasks: [primary],
@@ -1706,7 +2331,8 @@ describe('D1 course queue repository', () => {
       reorderedExistingTaskIds: [],
       taskCount: 3,
       completedTaskCount: 1,
-      advanceWordState: true,
+      persistWordState: true,
+      expectedQueuePolicyVersion: 'v1_5_8_unbounded' as const,
     }
     const concurrentLoserInput = {
       ...input,
@@ -1758,6 +2384,7 @@ describe('D1 course queue repository', () => {
           completedTaskCount: 4,
           correctCount: 4,
           wrongCount: 0,
+          queuePolicyVersion: 'v1_5_8_unbounded',
           startedAt: NOW,
         },
         tasks,
@@ -1810,6 +2437,7 @@ describe('D1 course queue repository', () => {
           completedTaskCount: 4,
           correctCount: 4,
           wrongCount: 0,
+          queuePolicyVersion: 'v1_5_8_unbounded',
           startedAt: NOW,
         },
         tasks,
@@ -1861,6 +2489,7 @@ describe('D1 course queue repository', () => {
         completedTaskCount: 4,
         correctCount: 4,
         wrongCount: 0,
+        queuePolicyVersion: 'v1_5_8_unbounded',
         startedAt: NOW,
       },
       tasks,

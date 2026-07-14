@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applyAnswerScore } from '../../server/services/StageEngine'
+import { applyAnswerScore, deferToNextLesson } from '../../server/services/StageEngine'
 import type { UserWordStateRecord } from '../../server/repositories/courseRepository'
 
 const createState = (overrides: Partial<UserWordStateRecord> = {}): UserWordStateRecord => ({
@@ -66,5 +66,44 @@ describe('stage engine', () => {
       easeFactor: 0.75,
       nextDueLessonNo: 9,
     })
+  })
+
+  it('clamps a deferred word to the next lesson without advancing learning counters', () => {
+    const current = createState({
+      stage: 'S3',
+      totalAttemptCount: 7,
+      totalCorrectCount: 6,
+      totalWrongCount: 1,
+      currentStreak: 4,
+      wrongStreak: 0,
+      lapseCount: 1,
+      easeFactor: 1.4,
+      masteryScore: 45,
+      lastSeenLessonNo: 3,
+      nextDueLessonNo: 12,
+      status: 'learning',
+    })
+
+    const deferred = deferToNextLesson(current, {
+      lessonNo: 5,
+      updatedAt: '2026-07-14T00:00:00.000Z',
+    })
+
+    expect(deferred).toEqual({
+      ...current,
+      nextDueLessonNo: 6,
+      updatedAt: '2026-07-14T00:00:00.000Z',
+    })
+  })
+
+  it('does not postpone a deferred word that is already due sooner', () => {
+    const current = createState({ nextDueLessonNo: 4 })
+
+    expect(
+      deferToNextLesson(current, {
+        lessonNo: 5,
+        updatedAt: '2026-07-14T00:00:00.000Z',
+      }).nextDueLessonNo,
+    ).toBe(4)
   })
 })

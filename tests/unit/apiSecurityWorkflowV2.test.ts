@@ -132,6 +132,39 @@ describe('worker learner session security contract', () => {
     expect(afterLogout.status).toBe(401)
     expect(await readErrorCode(afterLogout)).toBe('learner_session_revoked')
   })
+
+  it('keeps v2 queue policy and disposition out of learner answer payloads', async () => {
+    const fixture = await createPublishedCourseFixture()
+    const cookie = await exchangeCode(fixture.app, fixture.accessCode)
+    const lesson = await readSuccess<{
+      session: { id: string }
+      tasks: Array<{ id: string }>
+    }>(
+      await fixture.app.fetch(
+        request(`/api/app/courses/${fixture.courseId}/lessons/start`, {
+          method: 'POST',
+          origin: ORIGIN,
+          cookie,
+        }),
+      ),
+    )
+    const firstTask = lesson.tasks[0]
+
+    if (!firstTask) throw new Error('Expected a lesson task')
+    const submitted = await readSuccess<Record<string, unknown>>(
+      await fixture.app.fetch(
+        request(`/api/app/lessons/${lesson.session.id}/tasks/${firstTask.id}/answer`, {
+          method: 'POST',
+          origin: ORIGIN,
+          cookie,
+          body: { taskType: 'recognize_meaning', response: 'learning' },
+        }),
+      ),
+    )
+
+    expect(submitted).toMatchObject({ taskId: firstTask.id, score: 0, correct: false })
+    expect(JSON.stringify(submitted)).not.toMatch(/queueDisposition|queuePolicyVersion/u)
+  })
 })
 
 const createPublishedCourseFixture = async () => {

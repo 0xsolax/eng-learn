@@ -4,7 +4,9 @@ import type {
   CreatedCourse,
   CompletedLesson,
   LessonSessionStatus,
+  LessonQueuePolicyVersion,
   LessonTaskStatus,
+  QueueDisposition,
   ReviewScore,
   StartedLesson,
   SubmittedAnswer,
@@ -18,6 +20,11 @@ import type {
 } from '../../shared/api/taskSchemas'
 import type { CreateCourseAdminOperation } from './adminOperationLedger'
 import type { AccessCodeHash } from '../security/credentialCrypto'
+
+export type {
+  LessonQueuePolicyVersion,
+  QueueDisposition,
+} from '../../shared/domain/course'
 
 export type LearnerRecord = {
   id: string
@@ -44,6 +51,7 @@ export type LessonSessionRecord = {
   completedTaskCount: number
   correctCount: number
   wrongCount: number
+  queuePolicyVersion: LessonQueuePolicyVersion
   startedAt: string
   completedAt?: string
 }
@@ -98,6 +106,7 @@ export type ReviewLogRecord = {
   userAnswer?: string
   correctAnswer: string
   score: ReviewScore
+  queueDisposition?: QueueDisposition
   lessonNo: number
   createdAt: string
 }
@@ -135,11 +144,13 @@ export type AdminLearnerCredential = {
   credentialVersion: number
 }
 
-export type LessonReportSnapshot = {
+export type LessonQueueSnapshot = {
   session: LessonSessionRecord
   tasks: LessonTaskRecord[]
   reviewLogs: ReviewLogRecord[]
 }
+
+export type LessonReportSnapshot = LessonQueueSnapshot
 
 export type CreateLessonInput = {
   session: LessonSessionRecord
@@ -161,7 +172,13 @@ export type RecordAnswerInput = {
   reorderedExistingTaskIds: string[]
   taskCount: number
   completedTaskCount: number
-  advanceWordState: boolean
+  persistWordState: boolean
+  expectedQueuePolicyVersion: LessonQueuePolicyVersion
+}
+
+export type RecordedAnswerOutcome = {
+  submittedAnswer: SubmittedAnswer
+  queueDisposition?: QueueDisposition
 }
 
 export type SaveSentenceOutputPreviewInput = {
@@ -212,6 +229,10 @@ export type CourseRepository = {
   getLessonTask(sessionId: string, taskId: string): Promise<LessonTaskRecord | undefined>
   getLessonTasks(sessionId: string): Promise<LessonTaskRecord[]>
   getLessonSession(sessionId: string): Promise<LessonSessionRecord | undefined>
+  getLessonQueueSnapshot(input: {
+    sessionId: string
+    courseId: string
+  }): Promise<LessonQueueSnapshot | undefined>
   getLessonReportSnapshot(input: {
     sessionId: string
     courseId: string
@@ -221,7 +242,10 @@ export type CourseRepository = {
   ): Promise<SentenceOutputPreview | undefined>
   getWordStates(courseId: string): Promise<UserWordStateRecord[]>
   getWordState(courseId: string, wordId: string): Promise<UserWordStateRecord | undefined>
-  getSubmittedAnswer(sessionId: string, taskId: string): Promise<SubmittedAnswer | undefined>
-  recordAnswer(input: RecordAnswerInput): Promise<SubmittedAnswer>
+  getSubmittedAnswer(
+    sessionId: string,
+    taskId: string,
+  ): Promise<RecordedAnswerOutcome | undefined>
+  recordAnswer(input: RecordAnswerInput): Promise<RecordedAnswerOutcome>
   completeLesson(input: CompleteLessonInput): Promise<CompletedLesson | undefined>
 }

@@ -830,6 +830,7 @@ const createAvailabilityFixture = async () => {
     courseRepository,
     now: () => NOW,
     selectRefluxGap: () => 5,
+    queueWriteMode: 'legacy_v1',
   })
   const queries = createCourseQueryService({ contentRepository, courseRepository })
   const sessions = createLearnerSessionService({

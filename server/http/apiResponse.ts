@@ -24,6 +24,7 @@ const DOMAIN_ERROR_STATUS: Record<ApiError['code'], number> = {
   origin_forbidden: 403,
   operation_superseded: 409,
   payload_too_large: 413,
+  queue_invariant_violation: 409,
   report_unavailable: 409,
   s5_preview_required: 409,
   source_draft_exists: 409,

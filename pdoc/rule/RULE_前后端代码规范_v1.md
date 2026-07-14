@@ -5,6 +5,7 @@
 - 项目：eng-learn
 - 规则版本：v1
 - 创建日期：2026-07-06
+- 更新日期：2026-07-14
 - 修改人：Solazhu
 - 负责人：Solazhu
 - 操作人：Solazhu
@@ -30,7 +31,7 @@
 - 领域类型只允许在共享类型层定义一次。
 - API 请求和响应必须使用共享 schema 校验。
 - 阶段、题型、状态、评分枚举必须集中定义。
-- 调度间隔只允许由 `StageEngine` 或等价唯一模块提供。
+- 跨课阶段与 `nextDueLessonNo` 只允许由 `StageEngine` 提供；课内错词回流间隔、任务次数预算和 obligation 只允许由唯一队列策略提供。
 - 前端不得自行推导阶段升级、降级或下次复习课时。
 
 ### 3.2 分层边界
@@ -105,6 +106,7 @@ Vue Page
     services/
       ContentBuilder.ts
       LessonScheduler.ts
+      LessonQueuePolicy.ts
       TaskGenerator.ts
       AnswerEvaluator.ts
       StageEngine.ts
@@ -289,9 +291,10 @@ Service 是业务规则唯一落点。
 
 - `ContentBuilder`：从词库版本生成练习包和练习项目。
 - `LessonScheduler`：选择本课应出现的词和阶段。
+- `LessonQueuePolicy`：唯一负责课内错词回流、全局可行性排程、每词次数预算和 obligation。
 - `TaskGenerator`：把练习项目转为本课任务快照。
 - `AnswerEvaluator`：处理答题提交、计数和日志。
-- `StageEngine`：阶段升级、降级、间隔计算、掌握度计算。
+- `StageEngine`：阶段升级、降级、跨课间隔、下一课到期和掌握度计算；不负责课内任务排程。
 - `ReportService`：生成课程和课后报告。
 
 规则：
@@ -456,6 +459,16 @@ Pinia 禁止保存：
 
 前端不得自行写这些状态变更。
 
+### 10.4 错词回流队列
+
+- 错答后第一次再次完成相同 `wordId` 前，必须完整间隔 3-6 道实际完成且产生 review log 的可评分任务；skipped task 不计入间隔。
+- 同一单词在同一课的 `primary + bridge + reflux` 总 task 数最多为 3；pending 和 skipped task 均占预算。
+- 任一用户可见、可评分 role 答错都必须进入唯一队列策略，不得按 role 静默忽略。
+- 达到上限时持久化 `deferred_cap`；精确可行性判断证明无合法 3-6 排程时持久化 `deferred_capacity`。两者均不得追加新的 required task，并必须通过 `StageEngine` 收紧为下一课到期。
+- `primary` 是同课唯一完整推进 StageEngine 的任务；`bridge` 和 `reflux` 不重复升降级。
+- 完成课时必须同时满足至少 80% primary 已完成和所有已生成 required task 已完成。deferred outcome 不是 pending obligation，不得形成无限课时。
+- 前端只渲染服务端权威队列，不计算 gap、cap、obligation 或 defer。
+
 ## 11. 错误处理规范
 
 ### 11.1 后端错误
@@ -507,8 +520,12 @@ Pinia 禁止保存：
 - score 0、1、2、3 对 streak、wrong count、ease factor 的影响。
 - S0-S5 升级门槛。
 - 连续错误降级。
-- 错词延迟 5-8 题后回炉。
-- 完成率不足 80% 不推进课时。
+- 错词首次同词回流前完整间隔 3-6 道实际完成题，gap 2/7 均拒绝。
+- 五词连续全错恰好 15 个 task，每词总 task 不超过 3。
+- 第三次仍错不生成第 4 个 task，持久化 `deferred_cap` 并收紧为下一课到期。
+- 冻结词不足 4 个时持久化 `deferred_capacity`，不借未来词或生成中性 filler。
+- 重复或并发 answer 不重复消耗次数预算，不生成重复 obligation。
+- primary 完成率不足 80% 不推进课时。
 
 ### 12.2 API 测试必测
 
@@ -536,7 +553,7 @@ Pinia 禁止保存：
 - 学生完成 Lesson 1。
 - 学生进入 Lesson 2。
 - 刷新后继续未完成课时。
-- 错词回炉完成前不能结束课程。
+- 已生成 required 回流任务完成前不能结束课程；达到上限或容量不足而明确 defer 后可有限结束。
 
 ### 12.4 提交前检查
 
@@ -610,7 +627,7 @@ pnpm build
 每次 review 至少检查：
 
 - 是否出现日期调度。
-- 是否绕过 `StageEngine` 更新阶段。
+- 是否绕过 `StageEngine` 更新跨课阶段，或绕过唯一队列策略计算课内回流。
 - 是否绕过 service 直接写多表。
 - 是否让学生端访问管理端数据。
 - 是否破坏发布版本不可变。

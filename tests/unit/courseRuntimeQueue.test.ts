@@ -4,10 +4,115 @@ import { createInMemoryCourseRepository } from '../../server/repositories/inMemo
 import { createContentBuilder, type ContentBuilder } from '../../server/services/ContentBuilder'
 import { createCourseRuntime } from '../../server/services/CourseRuntime'
 import { DomainError } from '../../server/errors/DomainError'
+import { exerciseItemContentSchema } from '../../shared/api/taskSchemas'
 
 const NOW = new Date('2026-07-13T00:00:00.000Z')
 
 describe('course runtime authoritative task queue', () => {
+  it('bounds five always-wrong v2 words to fifteen tasks without capacity defer', async () => {
+    const fixture = await createFixture(5, 5, 'v2')
+    const lesson = await fixture.runtime.startLesson(fixture.courseId)
+    let answeredCount = 0
+
+    for (;;) {
+      const current = (await fixture.runtime.getLesson(lesson.session.id)).tasks.find(
+        (task) => task.status === 'pending',
+      )
+
+      if (!current) break
+      if (answeredCount >= 15) throw new Error('V2 queue exceeded the fifteen-task bound')
+
+      await submitRecognize(fixture.runtime, lesson.session.id, current.id, 'learning')
+      answeredCount += 1
+    }
+
+    const snapshot = await fixture.courseRepository.getLessonQueueSnapshot({
+      sessionId: lesson.session.id,
+      courseId: fixture.courseId,
+    })
+
+    expect(answeredCount).toBe(15)
+    expect(snapshot?.tasks).toHaveLength(15)
+    expect(countBy(snapshot?.tasks ?? [], (task) => task.wordId)).toEqual([3, 3, 3, 3, 3])
+    expect(
+      snapshot?.reviewLogs.filter((log) => log.queueDisposition === 'scheduled'),
+    ).toHaveLength(10)
+    expect(
+      snapshot?.reviewLogs.filter((log) => log.queueDisposition === 'deferred_cap'),
+    ).toHaveLength(5)
+    expect(
+      snapshot?.reviewLogs.filter((log) => log.queueDisposition === 'deferred_capacity'),
+    ).toHaveLength(0)
+
+    for (const log of snapshot?.reviewLogs.filter(
+      (candidate) => candidate.queueDisposition === 'scheduled',
+    ) ?? []) {
+      const sourceIndex = snapshot?.tasks.findIndex((task) => task.id === log.taskId) ?? -1
+      const source = snapshot?.tasks[sourceIndex]
+      const childIndex = snapshot?.tasks.findIndex(
+        (task) => task.refluxSourceTaskId === log.taskId,
+      ) ?? -1
+      const firstSameWordIndex = snapshot?.tasks.findIndex(
+        (task, index) => index > sourceIndex && task.wordId === source?.wordId,
+      ) ?? -1
+
+      expect(firstSameWordIndex).toBe(childIndex)
+      expect(childIndex - sourceIndex - 1).toBeGreaterThanOrEqual(3)
+      expect(childIndex - sourceIndex - 1).toBeLessThanOrEqual(6)
+    }
+
+    const states = await fixture.courseRepository.getWordStates(fixture.courseId)
+    expect(states).toHaveLength(5)
+    expect(states.every((state) => state.totalAttemptCount === 1)).toBe(true)
+    expect(states.every((state) => state.totalWrongCount === 1)).toBe(true)
+    expect(states.every((state) => state.nextDueLessonNo === 2)).toBe(true)
+
+    await expect(fixture.runtime.completeLesson(lesson.session.id)).resolves.toMatchObject({
+      session: { status: 'completed', taskCount: 15, completedTaskCount: 15 },
+      course: { currentLessonNo: 2 },
+    })
+  })
+
+  it.each([1, 2, 3])(
+    'keeps two consecutive short-pool lessons finite for N=%i',
+    async (wordCount) => {
+      const fixture = await createFixture(3, 5, 'v2')
+      await seedShortPoolLesson(fixture, wordCount)
+
+      for (const expectedLessonNo of [1, 2]) {
+        const lesson = await fixture.runtime.startLesson(fixture.courseId)
+
+        expect(lesson.session.lessonNo).toBe(expectedLessonNo)
+
+        for (let index = 0; index < wordCount; index += 1) {
+          const current = (await fixture.runtime.getLesson(lesson.session.id)).tasks.find(
+            (task) => task.status === 'pending',
+          )
+
+          if (!current) throw new Error('Expected another short-pool primary task')
+          await submitRecognize(fixture.runtime, lesson.session.id, current.id, 'learning')
+        }
+
+        const snapshot = await fixture.courseRepository.getLessonQueueSnapshot({
+          sessionId: lesson.session.id,
+          courseId: fixture.courseId,
+        })
+
+        expect(snapshot?.tasks).toHaveLength(wordCount)
+        expect(snapshot?.tasks.every((task) => task.role === 'primary')).toBe(true)
+        expect(
+          snapshot?.reviewLogs.every(
+            (log) => log.queueDisposition === 'deferred_capacity',
+          ),
+        ).toBe(true)
+        await expect(fixture.runtime.completeLesson(lesson.session.id)).resolves.toMatchObject({
+          session: { status: 'completed' },
+          course: { currentLessonNo: expectedLessonNo + 1 },
+        })
+      }
+    },
+  )
+
   it('allows answering only the first pending task', async () => {
     const fixture = await createFixture(5)
     const lesson = await fixture.runtime.startLesson(fixture.courseId)
@@ -20,6 +125,55 @@ describe('course runtime authoritative task queue', () => {
         submission: { taskType: 'recognize_meaning', response: 'known' },
       }),
     ).rejects.toMatchObject({ code: 'task_not_current' })
+  })
+
+  it('schedules a v2 bridge wrong answer without advancing mastery counters', async () => {
+    const fixture = await createFixture(5, 5, 'v2')
+    const lesson = await fixture.runtime.startLesson(fixture.courseId)
+
+    for (const task of lesson.tasks.slice(0, 4)) {
+      await submitRecognize(fixture.runtime, lesson.session.id, task.id, 'known')
+    }
+
+    await submitRecognize(
+      fixture.runtime,
+      lesson.session.id,
+      requireTask(lesson.tasks, 4).id,
+      'learning',
+    )
+    const bridge = (await fixture.runtime.getLesson(lesson.session.id)).tasks.find(
+      (task) => task.role === 'bridge' && task.status === 'pending',
+    )
+
+    if (!bridge) throw new Error('Expected a v2 bridge task')
+    const before = await fixture.courseRepository.getWordState(
+      fixture.courseId,
+      bridge.wordId,
+    )
+
+    await submitRecognize(fixture.runtime, lesson.session.id, bridge.id, 'learning')
+
+    const after = await fixture.courseRepository.getWordState(
+      fixture.courseId,
+      bridge.wordId,
+    )
+    const snapshot = await fixture.courseRepository.getLessonQueueSnapshot({
+      sessionId: lesson.session.id,
+      courseId: fixture.courseId,
+    })
+    const bridgeLog = snapshot?.reviewLogs.find((log) => log.taskId === bridge.id)
+
+    expect(bridgeLog?.queueDisposition).toBe('scheduled')
+    expect(
+      snapshot?.tasks.filter((task) => task.refluxSourceTaskId === bridge.id),
+    ).toHaveLength(1)
+    expect(after).toMatchObject({
+      stage: before?.stage,
+      totalAttemptCount: before?.totalAttemptCount,
+      totalCorrectCount: before?.totalCorrectCount,
+      totalWrongCount: before?.totalWrongCount,
+      nextDueLessonNo: 2,
+    })
   })
 
   it('inserts five required bridge tasks before reflux when the last primary answer is wrong', async () => {
@@ -375,7 +529,7 @@ describe('course runtime authoritative task queue', () => {
   })
 
   it('records concurrent retries once and creates only one reflux obligation', async () => {
-    const fixture = await createFixture(5, 5)
+    const fixture = await createFixture(5, 5, 'v2')
     const lesson = await fixture.runtime.startLesson(fixture.courseId)
     const firstTask = requireTask(lesson.tasks, 0)
     const input = {
@@ -392,6 +546,124 @@ describe('course runtime authoritative task queue', () => {
     expect(second).toEqual(first)
     expect(first.wordState.totalAttemptCount).toBe(1)
     expect(restored.tasks.filter((task) => task.role === 'reflux')).toHaveLength(1)
+    await expect(
+      fixture.courseRepository.getLessonQueueSnapshot({
+        sessionId: lesson.session.id,
+        courseId: fixture.courseId,
+      }),
+    ).resolves.toMatchObject({
+      reviewLogs: [{ taskId: firstTask.id, queueDisposition: 'scheduled' }],
+    })
+  })
+
+  it('rejects a corrupt v2 queue snapshot without any business write', async () => {
+    const fixture = await createFixture(5, 5, 'v2')
+    const lesson = await fixture.runtime.startLesson(fixture.courseId)
+    const firstTask = requireTask(lesson.tasks, 0)
+    const beforeSnapshot = await fixture.courseRepository.getLessonQueueSnapshot({
+      sessionId: lesson.session.id,
+      courseId: fixture.courseId,
+    })
+    const beforeWordStates = await fixture.courseRepository.getWordStates(fixture.courseId)
+
+    if (!beforeSnapshot) throw new Error('Expected a v2 queue snapshot')
+
+    const corruptRepository = {
+      ...fixture.courseRepository,
+      getLessonQueueSnapshot: async (input: { sessionId: string; courseId: string }) => {
+        const snapshot = await fixture.courseRepository.getLessonQueueSnapshot(input)
+
+        if (!snapshot) return undefined
+
+        return {
+          ...snapshot,
+          tasks: [
+            ...snapshot.tasks,
+            {
+              ...firstTask,
+              id: 'corrupt-duplicate-pending-task',
+              orderIndex: snapshot.tasks.length + 1,
+              role: 'bridge' as const,
+              required: true,
+            },
+          ],
+        }
+      },
+    }
+    const corruptRuntime = createCourseRuntime({
+      contentRepository: fixture.contentRepository,
+      courseRepository: corruptRepository,
+      now: () => NOW,
+      queueWriteMode: 'v2',
+    })
+
+    await expect(
+      corruptRuntime.submitAnswer({
+        sessionId: lesson.session.id,
+        taskId: firstTask.id,
+        submission: { taskType: 'recognize_meaning', response: 'learning' },
+      }),
+    ).rejects.toMatchObject({ code: 'queue_invariant_violation' })
+    await expect(
+      fixture.courseRepository.getLessonQueueSnapshot({
+        sessionId: lesson.session.id,
+        courseId: fixture.courseId,
+      }),
+    ).resolves.toEqual(beforeSnapshot)
+    await expect(fixture.courseRepository.getWordStates(fixture.courseId)).resolves.toEqual(
+      beforeWordStates,
+    )
+    await expect(
+      fixture.courseRepository.getSubmittedAnswer(lesson.session.id, firstTask.id),
+    ).resolves.toBeUndefined()
+  })
+
+  it('rejects v2 completion from a corrupt queue snapshot without advancing the course', async () => {
+    const fixture = await createFixture(5, 5, 'v2')
+    const lesson = await fixture.runtime.startLesson(fixture.courseId)
+
+    for (const task of lesson.tasks.slice(0, 4)) {
+      await submitRecognize(fixture.runtime, lesson.session.id, task.id, 'known')
+    }
+
+    const beforeSnapshot = await fixture.courseRepository.getLessonQueueSnapshot({
+      sessionId: lesson.session.id,
+      courseId: fixture.courseId,
+    })
+    const beforeCourse = await fixture.courseRepository.getCourse(fixture.courseId)
+
+    if (!beforeSnapshot) throw new Error('Expected a v2 queue snapshot')
+    const firstLog = beforeSnapshot.reviewLogs[0]
+
+    if (!firstLog) throw new Error('Expected a completed task audit log')
+
+    const corruptRepository = {
+      ...fixture.courseRepository,
+      getLessonQueueSnapshot: () =>
+        Promise.resolve({
+          ...beforeSnapshot,
+          reviewLogs: beforeSnapshot.reviewLogs.filter((log) => log.id !== firstLog.id),
+        }),
+    }
+    const corruptRuntime = createCourseRuntime({
+      contentRepository: fixture.contentRepository,
+      courseRepository: corruptRepository,
+      now: () => NOW,
+      queueWriteMode: 'v2',
+    })
+
+    await expect(corruptRuntime.completeLesson(lesson.session.id)).rejects.toMatchObject({
+      code: 'queue_invariant_violation',
+    })
+    await expect(
+      fixture.courseRepository.getLessonQueueSnapshot({
+        sessionId: lesson.session.id,
+        courseId: fixture.courseId,
+      }),
+    ).resolves.toEqual(beforeSnapshot)
+    await expect(fixture.courseRepository.getCourse(fixture.courseId)).resolves.toEqual(
+      beforeCourse,
+    )
   })
 
   it('atomically skips the remaining primary after 80 percent completion and advances once', async () => {
@@ -415,6 +687,7 @@ describe('course runtime authoritative task queue', () => {
 const createFixture = async (
   wordCount: number,
   refluxGap: number | (() => number) = 5,
+  queueWriteMode: 'legacy_v1' | 'v2' = 'legacy_v1',
 ) => {
   const contentRepository = createInMemoryContentRepository()
   const courseRepository = createInMemoryCourseRepository()
@@ -437,13 +710,100 @@ const createFixture = async (
     courseRepository,
     now: () => NOW,
     selectRefluxGap: typeof refluxGap === 'function' ? refluxGap : () => refluxGap,
+    queueWriteMode,
   })
   const created = await runtime.createCourse({
     learnerName: 'Alice',
     sourceVersionId: draft.versionId,
   })
 
-  return { runtime, courseId: created.course.id }
+  return {
+    runtime,
+    contentRepository,
+    courseRepository,
+    courseId: created.course.id,
+    versionId: draft.versionId,
+  }
+}
+
+const seedShortPoolLesson = async (
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  wordCount: number,
+): Promise<void> => {
+  const source = await fixture.contentRepository.getSourceVersion(fixture.versionId)
+  const group = source?.groups[0]
+  const words = source?.words.slice(0, wordCount) ?? []
+
+  if (!source || !group || words.length !== wordCount) {
+    throw new Error('Expected a published short-pool source snapshot')
+  }
+
+  const sessionId = `session-short-${String(wordCount)}`
+  const tasks = words.map((word, index) => {
+    const item = source.exerciseItems.find(
+      (candidate) =>
+        candidate.wordId === word.id &&
+        candidate.stage === 'S0' &&
+        candidate.status === 'approved',
+    )
+
+    if (!item) throw new Error(`Expected approved S0 content for ${word.id}`)
+    const content = exerciseItemContentSchema.parse({
+      stage: item.stage,
+      taskType: item.taskType,
+      prompt: item.prompt,
+      answer: item.answer,
+    })
+
+    return {
+      id: `task-short-${String(index + 1)}`,
+      sessionId,
+      courseId: fixture.courseId,
+      wordId: word.id,
+      orderIndex: index + 1,
+      status: 'pending' as const,
+      role: 'primary' as const,
+      required: false,
+      createdAt: NOW.toISOString(),
+      ...content,
+    }
+  })
+
+  await fixture.courseRepository.createLesson({
+    session: {
+      id: sessionId,
+      courseId: fixture.courseId,
+      lessonNo: 1,
+      status: 'started',
+      taskCount: tasks.length,
+      completedTaskCount: 0,
+      correctCount: 0,
+      wrongCount: 0,
+      queuePolicyVersion: 'v2_3_6_cap3',
+      startedAt: NOW.toISOString(),
+    },
+    tasks,
+    wordStates: words.map((word, index) => ({
+      id: `state-short-${String(index + 1)}`,
+      courseId: fixture.courseId,
+      wordId: word.id,
+      groupId: group.id,
+      stage: 'S0',
+      totalAttemptCount: 0,
+      totalCorrectCount: 0,
+      totalWrongCount: 0,
+      currentStreak: 0,
+      wrongStreak: 0,
+      lapseCount: 0,
+      easeFactor: 1,
+      masteryScore: 0,
+      firstLessonNo: 1,
+      nextDueLessonNo: 1,
+      status: 'new',
+      createdAt: NOW.toISOString(),
+      updatedAt: NOW.toISOString(),
+    })),
+  })
 }
 
 const createSentenceOutputFixture = async (
@@ -476,13 +836,14 @@ const createSentenceOutputFixture = async (
       id: sessionId,
       courseId,
       lessonNo: 1,
-        status: sessionStatus,
+      status: sessionStatus,
       taskCount: 1,
       completedTaskCount: 0,
       correctCount: 0,
       wrongCount: 0,
-        startedAt: NOW.toISOString(),
-        ...(sessionStatus === 'completed' ? { completedAt: NOW.toISOString() } : {}),
+      queuePolicyVersion: 'v1_5_8_unbounded',
+      startedAt: NOW.toISOString(),
+      ...(sessionStatus === 'completed' ? { completedAt: NOW.toISOString() } : {}),
     },
     tasks: [
       {
@@ -531,6 +892,7 @@ const createSentenceOutputFixture = async (
       courseRepository,
       now: () => NOW,
       selectRefluxGap: () => 5,
+      queueWriteMode: 'legacy_v1',
     }),
     courseRepository,
     courseId,
@@ -565,6 +927,15 @@ const requireTask = <T>(tasks: T[], index: number): T => {
 
   return task
 }
+
+const countBy = <T>(items: T[], key: (item: T) => string): number[] =>
+  Array.from(
+    items.reduce<Map<string, number>>((counts, item) => {
+      const value = key(item)
+      counts.set(value, (counts.get(value) ?? 0) + 1)
+      return counts
+    }, new Map()).values(),
+  ).sort((left, right) => left - right)
 
 const expectFirstSameWordGap = (
   tasks: Array<{ id: string; wordId: string; orderIndex: number }>,

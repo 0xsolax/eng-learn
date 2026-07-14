@@ -20,8 +20,10 @@ import type {
   CourseRepository,
   CreateCourseInput,
   CreateLessonInput,
+  LessonQueueSnapshot,
   LessonSessionRecord,
   LessonTaskRecord,
+  QueueDisposition,
   RecordAnswerInput,
   ReviewLogRecord,
   UserWordStateRecord,
@@ -69,6 +71,7 @@ type LessonSessionRow = {
   completed_task_count: number
   correct_count: number
   wrong_count: number
+  queue_policy_version: LessonSessionRecord['queuePolicyVersion']
   started_at: string
   completed_at: string | null
 }
@@ -130,6 +133,7 @@ type ReviewLogRow = {
   user_answer: string | null
   correct_answer: string
   score: ReviewLogRecord['score']
+  queue_disposition: QueueDisposition | null
   lesson_no: number
   created_at: string
 }
@@ -380,31 +384,12 @@ export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
     return row ? mapLessonSession(row) : undefined
   },
 
+  async getLessonQueueSnapshot(input) {
+    return readLessonQueueSnapshot(db, input)
+  },
+
   async getLessonReportSnapshot(input) {
-    const session = await this.getLessonSessionForCourse(input)
-
-    if (!session) {
-      return undefined
-    }
-
-    const taskRows = await db
-      .prepare(
-        `${LESSON_TASKS_WITH_WORD_SELECT} WHERE lesson_tasks.session_id = ? AND lesson_tasks.course_id = ? ORDER BY lesson_tasks.order_index ASC`,
-      )
-      .bind(input.sessionId, input.courseId)
-      .all<LessonTaskRow>()
-    const reviewRows = await db
-      .prepare(
-        'SELECT review_logs.* FROM review_logs INNER JOIN lesson_tasks ON lesson_tasks.id = review_logs.task_id AND lesson_tasks.session_id = review_logs.session_id AND lesson_tasks.course_id = review_logs.course_id WHERE review_logs.session_id = ? AND review_logs.course_id = ? ORDER BY lesson_tasks.order_index ASC',
-      )
-      .bind(input.sessionId, input.courseId)
-      .all<ReviewLogRow>()
-
-    return {
-      session,
-      tasks: taskRows.results.map(mapLessonTask),
-      reviewLogs: reviewRows.results.map(mapReviewLog),
-    }
+    return readLessonQueueSnapshot(db, input)
   },
 
   async saveSentenceOutputPreview(input) {
@@ -516,7 +501,7 @@ export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
       throw new Error(`Word state is missing for ${row.word_id}`)
     }
 
-    return toSubmittedAnswer(mapReviewLog(row), state)
+    return toRecordedAnswerOutcome(mapReviewLog(row), state)
   },
 
   async recordAnswer(input: RecordAnswerInput) {
@@ -668,6 +653,40 @@ export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
   },
 })
 
+const readLessonQueueSnapshot = async (
+  db: D1Database,
+  input: { sessionId: string; courseId: string },
+): Promise<LessonQueueSnapshot | undefined> => {
+  const [sessionResult, taskResult, reviewResult] = await db.batch([
+    db
+      .prepare('SELECT * FROM lesson_sessions WHERE id = ? AND course_id = ?')
+      .bind(input.sessionId, input.courseId),
+    db
+      .prepare(
+        `${LESSON_TASKS_WITH_WORD_SELECT} WHERE lesson_tasks.session_id = ? AND lesson_tasks.course_id = ? ORDER BY lesson_tasks.order_index ASC`,
+      )
+      .bind(input.sessionId, input.courseId),
+    db
+      .prepare(
+        'SELECT review_logs.* FROM review_logs INNER JOIN lesson_tasks ON lesson_tasks.id = review_logs.task_id AND lesson_tasks.session_id = review_logs.session_id AND lesson_tasks.course_id = review_logs.course_id WHERE review_logs.session_id = ? AND review_logs.course_id = ? ORDER BY lesson_tasks.order_index ASC',
+      )
+      .bind(input.sessionId, input.courseId),
+  ])
+  const sessionRow = sessionResult?.results[0] as LessonSessionRow | undefined
+
+  if (!sessionRow) {
+    return undefined
+  }
+
+  return {
+    session: mapLessonSession(sessionRow),
+    tasks: (taskResult?.results ?? []).map((row) => mapLessonTask(row as LessonTaskRow)),
+    reviewLogs: (reviewResult?.results ?? []).map((row) =>
+      mapReviewLog(row as ReviewLogRow),
+    ),
+  }
+}
+
 const requireActiveCourse = (course: CourseRecord | undefined): void => {
   if (!course || course.status !== 'active') {
     throw new DomainError('course_unavailable', 'Course is not active')
@@ -764,10 +783,20 @@ const toSubmittedAnswer = (
   },
 })
 
+const toRecordedAnswerOutcome = (
+  reviewLog: ReviewLogRecord,
+  wordState: UserWordStateRecord,
+) => ({
+  submittedAnswer: toSubmittedAnswer(reviewLog, wordState),
+  ...(reviewLog.queueDisposition === undefined
+    ? {}
+    : { queueDisposition: reviewLog.queueDisposition }),
+})
+
 const insertLessonSession = (db: D1Database, session: LessonSessionRecord): D1PreparedStatement =>
   db
     .prepare(
-      "INSERT INTO lesson_sessions (id, course_id, lesson_no, status, task_count, completed_task_count, correct_count, wrong_count, started_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM courses WHERE id = ? AND status = 'active')",
+      "INSERT INTO lesson_sessions (id, course_id, lesson_no, status, task_count, completed_task_count, correct_count, wrong_count, queue_policy_version, started_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM courses WHERE id = ? AND status = 'active')",
     )
     .bind(
       session.id,
@@ -778,6 +807,7 @@ const insertLessonSession = (db: D1Database, session: LessonSessionRecord): D1Pr
       session.completedTaskCount,
       session.correctCount,
       session.wrongCount,
+      session.queuePolicyVersion,
       session.startedAt,
       session.courseId,
     )
@@ -994,10 +1024,11 @@ const updateWordState = (
 const insertReviewLogIfPending = (
   db: D1Database,
   reviewLog: ReviewLogRecord,
+  expectedQueuePolicyVersion: RecordAnswerInput['expectedQueuePolicyVersion'],
 ): D1PreparedStatement =>
   db
     .prepare(
-      "INSERT INTO review_logs (id, session_id, task_id, course_id, word_id, stage, task_type, user_answer, correct_answer, score, lesson_no, created_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM lesson_tasks INNER JOIN lesson_sessions ON lesson_sessions.id = lesson_tasks.session_id AND lesson_sessions.course_id = lesson_tasks.course_id INNER JOIN courses ON courses.id = lesson_tasks.course_id WHERE lesson_tasks.id = ? AND lesson_tasks.session_id = ? AND lesson_tasks.course_id = ? AND lesson_tasks.status = 'pending' AND lesson_sessions.status = 'started' AND courses.status = 'active')",
+      "INSERT INTO review_logs (id, session_id, task_id, course_id, word_id, stage, task_type, user_answer, correct_answer, score, lesson_no, created_at, queue_disposition) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM lesson_tasks INNER JOIN lesson_sessions ON lesson_sessions.id = lesson_tasks.session_id AND lesson_sessions.course_id = lesson_tasks.course_id INNER JOIN courses ON courses.id = lesson_tasks.course_id WHERE lesson_tasks.id = ? AND lesson_tasks.session_id = ? AND lesson_tasks.course_id = ? AND lesson_tasks.status = 'pending' AND lesson_sessions.status = 'started' AND lesson_sessions.queue_policy_version = ? AND courses.status = 'active' AND NOT EXISTS (SELECT 1 FROM lesson_tasks AS earlier_task WHERE earlier_task.session_id = lesson_tasks.session_id AND earlier_task.status = 'pending' AND earlier_task.order_index < lesson_tasks.order_index))",
     )
     .bind(
       reviewLog.id,
@@ -1012,9 +1043,11 @@ const insertReviewLogIfPending = (
       reviewLog.score,
       reviewLog.lessonNo,
       reviewLog.createdAt,
+      reviewLog.queueDisposition ?? null,
       reviewLog.taskId,
       reviewLog.sessionId,
       reviewLog.courseId,
+      expectedQueuePolicyVersion,
     )
 
 const createRecordAnswerStatements = (
@@ -1026,7 +1059,11 @@ const createRecordAnswerStatements = (
   const wrongIncrement = isPrimary && !isPassingReviewScore(input.reviewLog.score) ? 1 : 0
 
   return [
-    insertReviewLogIfPending(db, input.reviewLog),
+    insertReviewLogIfPending(
+      db,
+      input.reviewLog,
+      input.expectedQueuePolicyVersion,
+    ),
     ...createTemporarilyNegativeOrderStatements(
       db,
       input.task.sessionId,
@@ -1034,7 +1071,7 @@ const createRecordAnswerStatements = (
       input.reviewLog.id,
     ),
     ...createBulkLessonTaskStatements(db, input.taskMutations, input.reviewLog.id),
-    ...(input.advanceWordState
+    ...(input.persistWordState
       ? [updateWordState(db, input.wordState, input.reviewLog.id)]
       : []),
     db
@@ -1169,6 +1206,7 @@ const mapLessonSession = (row: LessonSessionRow): LessonSessionRecord => ({
   completedTaskCount: row.completed_task_count,
   correctCount: row.correct_count,
   wrongCount: row.wrong_count,
+  queuePolicyVersion: row.queue_policy_version,
   startedAt: row.started_at,
   ...(row.completed_at ? { completedAt: row.completed_at } : {}),
 })
@@ -1247,6 +1285,9 @@ const mapReviewLog = (row: ReviewLogRow): ReviewLogRecord => ({
   ...(row.user_answer ? { userAnswer: row.user_answer } : {}),
   correctAnswer: row.correct_answer,
   score: row.score,
+  ...(row.queue_disposition === null
+    ? {}
+    : { queueDisposition: row.queue_disposition }),
   lessonNo: row.lesson_no,
   createdAt: row.created_at,
 })

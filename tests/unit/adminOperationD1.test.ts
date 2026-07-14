@@ -326,6 +326,7 @@ const createFixture = () => {
       courseRepository,
       operationLedger: ledger,
       now: () => NOW,
+      queueWriteMode: 'v2',
     }),
     sessionService: createLearnerSessionService({
       courseRepository,

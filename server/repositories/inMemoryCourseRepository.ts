@@ -89,6 +89,16 @@ export const createInMemoryCourseRepository = (
     },
   })
 
+  const toRecordedAnswerOutcome = (
+    reviewLog: ReviewLogRecord,
+    wordState: UserWordStateRecord,
+  ) => ({
+    submittedAnswer: toSubmittedAnswer(reviewLog, wordState),
+    ...(reviewLog.queueDisposition === undefined
+      ? {}
+      : { queueDisposition: reviewLog.queueDisposition }),
+  })
+
   const wordStateKey = (courseId: string, wordId: string) => `${courseId}:${wordId}`
   const taskKey = (sessionId: string, taskId: string) => `${sessionId}:${taskId}`
 
@@ -436,6 +446,10 @@ export const createInMemoryCourseRepository = (
       return sessions.get(sessionId)
     },
 
+    async getLessonQueueSnapshot(input) {
+      return this.getLessonReportSnapshot(input)
+    },
+
     async getLessonReportSnapshot(input) {
       const session = sessions.get(input.sessionId)
 
@@ -458,6 +472,7 @@ export const createInMemoryCourseRepository = (
           (left, right) =>
             (taskOrder.get(left.taskId) ?? 0) - (taskOrder.get(right.taskId) ?? 0),
         )
+        .map((log) => ({ ...log }))
 
       return {
         session: { ...session },
@@ -553,7 +568,7 @@ export const createInMemoryCourseRepository = (
         throw new Error(`Word state is missing for ${reviewLog.wordId}`)
       }
 
-      return toSubmittedAnswer(reviewLog, state)
+      return toRecordedAnswerOutcome(reviewLog, state)
     },
 
     async recordAnswer(input: RecordAnswerInput) {
@@ -577,7 +592,7 @@ export const createInMemoryCourseRepository = (
           throw new Error('Submitted answer integrity is invalid')
         }
 
-        return toSubmittedAnswer(existingReviewLog, existingWordState)
+        return toRecordedAnswerOutcome(existingReviewLog, existingWordState)
       }
 
       const session = sessions.get(input.task.sessionId)
@@ -590,10 +605,36 @@ export const createInMemoryCourseRepository = (
         throw new DomainError('lesson_not_active', 'Lesson session is not active')
       }
 
+      const sessionPolicy = session.queuePolicyVersion
+      const expectedPolicy = input.expectedQueuePolicyVersion
+      const isWrongAnswer = !isPassingReviewScore(input.reviewLog.score)
+      const hasWrongDisposition =
+        input.reviewLog.queueDisposition === 'scheduled' ||
+        input.reviewLog.queueDisposition === 'deferred_cap' ||
+        input.reviewLog.queueDisposition === 'deferred_capacity'
+      const dispositionMatches =
+        sessionPolicy === 'v1_5_8_unbounded'
+          ? input.reviewLog.queueDisposition === undefined
+          : isWrongAnswer
+            ? hasWrongDisposition
+            : input.reviewLog.queueDisposition === undefined
+
+      if (sessionPolicy !== expectedPolicy || !dispositionMatches) {
+        throw new Error('review_log_queue_policy_mismatch')
+      }
+
       const storedTask = findTask(input.task.sessionId, input.task.id)
 
       if (!storedTask || storedTask.status !== 'pending') {
         throw new Error(`Lesson task ${input.task.id} is not pending`)
+      }
+
+      const firstPendingTask = (tasksBySession.get(input.task.sessionId) ?? [])
+        .filter((task) => task.status === 'pending')
+        .sort((left, right) => left.orderIndex - right.orderIndex)[0]
+
+      if (!firstPendingTask || firstPendingTask.id !== storedTask.id) {
+        throw new Error(`Lesson task ${input.task.id} is not current`)
       }
 
       const storedTasks = tasksBySession.get(input.task.sessionId) ?? []
@@ -629,16 +670,17 @@ export const createInMemoryCourseRepository = (
           (storedTask.role === 'primary' && !isPassingReviewScore(input.reviewLog.score) ? 1 : 0),
       })
 
-      if (input.advanceWordState) {
+      if (input.persistWordState) {
         wordStates.set(
           wordStateKey(input.wordState.courseId, input.wordState.wordId),
           input.wordState,
         )
       }
-      reviewLogs.set(input.reviewLog.id, input.reviewLog)
+      const persistedReviewLog = { ...input.reviewLog }
+      reviewLogs.set(persistedReviewLog.id, persistedReviewLog)
       reviewLogByTask.set(taskKey(input.reviewLog.sessionId, input.reviewLog.taskId), input.reviewLog.id)
 
-      return toSubmittedAnswer(input.reviewLog, input.wordState)
+      return toRecordedAnswerOutcome(persistedReviewLog, input.wordState)
     },
 
     async completeLesson(input) {

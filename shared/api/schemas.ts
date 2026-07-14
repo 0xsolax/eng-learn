@@ -67,6 +67,7 @@ const simpleApiErrorSchema = z
       'credential_conflict',
       'idempotency_conflict',
       'operation_superseded',
+      'queue_invariant_violation',
       'dependency_failure',
       'internal_error',
       'origin_forbidden',
