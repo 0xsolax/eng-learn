@@ -157,7 +157,10 @@ export type RecordAnswerInput = {
   task: LessonTaskRecord
   wordState: UserWordStateRecord
   reviewLog: ReviewLogRecord
-  tasks: LessonTaskRecord[]
+  taskMutations: LessonTaskRecord[]
+  reorderedExistingTaskIds: string[]
+  taskCount: number
+  completedTaskCount: number
   advanceWordState: boolean
 }
 

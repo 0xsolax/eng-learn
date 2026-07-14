@@ -589,6 +589,32 @@ describe('legacy exercise content compatibility after migrations 0003-0007', () 
     database.close()
   })
 
+  it('maps a visually equivalent legacy S5 owning-word leak to a safe learner response without advancing state', async () => {
+    const database = createLegacyDatabase('published')
+    database
+      .prepare("UPDATE exercise_items SET prompt_json = ? WHERE id = 'legacy-s5'")
+      .run(JSON.stringify({ meaning: '请使用 ａｐｐｌｅ 完成句子' }))
+    seedLegacyCourse(database)
+    seedLegacyWordState(database, 'S5')
+    applyCurrentMigrations(database)
+    const db = createSqliteD1(database)
+    const app = createLegacyLearnerApp(db)
+    const cookie = await exchangeLegacyAccessCode(app)
+    const before = readLearnerRuntimeState(database)
+
+    const response = await app.fetch(
+      new Request(`${ORIGIN}/api/app/courses/course-legacy/lessons/start`, {
+        method: 'POST',
+        headers: { cookie, origin: ORIGIN },
+      }),
+    )
+
+    await expectSafeLegacyCompatibilityResponse(response)
+    expect(readLearnerRuntimeState(database)).toEqual(before)
+
+    database.close()
+  })
+
   it('fails closed before restoring a legacy started lesson whose meaning reveals the answer', async () => {
     const database = createLegacyDatabase('published')
     setLegacyMeaningLeak(database)

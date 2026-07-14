@@ -596,15 +596,31 @@ export const createInMemoryCourseRepository = (
         throw new Error(`Lesson task ${input.task.id} is not pending`)
       }
 
+      const storedTasks = tasksBySession.get(input.task.sessionId) ?? []
+      const nextTasksById = new Map(storedTasks.map((task) => [task.id, task]))
+
+      for (const mutation of input.taskMutations) {
+        if (
+          mutation.sessionId !== input.task.sessionId ||
+          mutation.courseId !== input.task.courseId
+        ) {
+          throw new Error(`Lesson task mutation ${mutation.id} is outside the answer scope`)
+        }
+
+        nextTasksById.set(mutation.id, mutation)
+      }
+
       tasksBySession.set(
         input.task.sessionId,
-        [...input.tasks].sort((left, right) => left.orderIndex - right.orderIndex),
+        Array.from(nextTasksById.values()).sort(
+          (left, right) => left.orderIndex - right.orderIndex,
+        ),
       )
 
       sessions.set(input.task.sessionId, {
         ...session,
-        taskCount: input.tasks.length,
-        completedTaskCount: input.tasks.filter((task) => task.status === 'completed').length,
+        taskCount: input.taskCount,
+        completedTaskCount: input.completedTaskCount,
         correctCount:
           session.correctCount +
           (storedTask.role === 'primary' && isPassingReviewScore(input.reviewLog.score) ? 1 : 0),

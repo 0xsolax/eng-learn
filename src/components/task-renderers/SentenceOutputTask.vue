@@ -19,6 +19,7 @@ const props = withDefaults(
     disabled?: boolean
     referenceSentence?: string
     restoredPreview?: RestoredPreview
+    recoveryDraft?: string
   }>(),
   { disabled: false },
 )
@@ -26,7 +27,7 @@ const emit = defineEmits<{
   preview: [request: SentenceOutputPreviewRequest]
   submit: [submission: Submission]
 }>()
-const draft = ref(props.restoredPreview?.draft ?? '')
+const draft = ref(props.restoredPreview?.draft ?? props.recoveryDraft ?? '')
 const previewRequested = ref(Boolean(props.restoredPreview))
 const previewPending = ref(false)
 const submitted = ref(false)

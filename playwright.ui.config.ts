@@ -5,7 +5,26 @@ const learnerProjects: Project[] = [
   { name: 'learner-375', use: { viewport: { width: 375, height: 812 } } },
   { name: 'learner-768', use: { viewport: { width: 768, height: 1024 } } },
   { name: 'learner-1280', use: { viewport: { width: 1280, height: 800 } } },
-].map((project) => ({ ...project, grep: /@learner/ }))
+].map((project) => ({ ...project, grep: /@learner/, grepInvert: /@reflow-200-/ }))
+
+const reflowProjects: Project[] = [
+  {
+    name: 'reflow-200-learner',
+    grep: /@reflow-200-learner/,
+    use: {
+      viewport: { width: 320, height: 568 },
+      deviceScaleFactor: 2,
+    },
+  },
+  {
+    name: 'reflow-200-admin',
+    grep: /@reflow-200-admin/,
+    use: {
+      viewport: { width: 640, height: 400 },
+      deviceScaleFactor: 2,
+    },
+  },
+]
 
 const adminProjects: Project[] = [
   { name: 'admin-375', use: { viewport: { width: 375, height: 812 } } },
@@ -13,9 +32,10 @@ const adminProjects: Project[] = [
   { name: 'admin-1024', use: { viewport: { width: 1024, height: 768 } } },
   { name: 'admin-1280', use: { viewport: { width: 1280, height: 800 } } },
   { name: 'admin-1440', use: { viewport: { width: 1440, height: 900 } } },
-].map((project) => ({ ...project, grep: /@admin/ }))
+].map((project) => ({ ...project, grep: /@admin/, grepInvert: /@reflow-200-/ }))
 
 const controlProjects: Project[] = [
+  { name: 'controls-320', use: { viewport: { width: 320, height: 568 } } },
   { name: 'controls-375', use: { viewport: { width: 375, height: 812 } } },
   { name: 'controls-1280', use: { viewport: { width: 1280, height: 800 } } },
 ].map((project) => ({ ...project, grep: /@controls/ }))
@@ -41,7 +61,13 @@ export default defineConfig({
     screenshot: 'off',
     video: 'off',
   },
-  projects: [...learnerProjects, ...adminProjects, ...controlProjects, ...rendererProjects],
+  projects: [
+    ...learnerProjects,
+    ...adminProjects,
+    ...controlProjects,
+    ...rendererProjects,
+    ...reflowProjects,
+  ],
   webServer: {
     command:
       'pnpm exec vite --config vite.ui.config.ts --host 127.0.0.1 --port 4174 --strictPort',

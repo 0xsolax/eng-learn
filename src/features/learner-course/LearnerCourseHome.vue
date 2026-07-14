@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { ApiFailureError } from '@/api/errors'
+import { isLearnerSessionAccessError } from '@/api/learnerSessionErrors'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
 import type { CourseHomeDto } from '@shared/api/courseSchemas'
@@ -22,12 +23,6 @@ const accessRequired = ref(false)
 const starting = ref(false)
 const startError = ref<string>()
 
-const isAccessRequiredError = (error: unknown): boolean =>
-  error instanceof ApiFailureError &&
-  (error.code === 'learner_session_expired' ||
-    error.code === 'learner_session_revoked' ||
-    error.code === 'learner_session_required')
-
 const isLegacyContentError = (error: unknown): boolean =>
   error instanceof ApiFailureError && error.code === 'legacy_content_incompatible'
 
@@ -40,7 +35,8 @@ const startLesson = async (): Promise<void> => {
     const lesson = await props.api.startLesson(home.value.course.id)
     emit('started', lesson.session.id)
   } catch (error) {
-    if (isAccessRequiredError(error)) {
+    if (isLearnerSessionAccessError(error)) {
+      home.value = undefined
       emit('access-required')
     } else if (isLegacyContentError(error)) {
       startError.value = '本课内容暂时无法使用，请联系课程管理员处理后再试'
@@ -60,7 +56,8 @@ const loadCourse = async (): Promise<void> => {
   try {
     home.value = await props.api.getCourseHome()
   } catch (error) {
-    accessRequired.value = isAccessRequiredError(error)
+    home.value = undefined
+    accessRequired.value = isLearnerSessionAccessError(error)
     const legacyContentError = isLegacyContentError(error)
     loadErrorTitle.value = accessRequired.value
       ? '学习会话已失效'

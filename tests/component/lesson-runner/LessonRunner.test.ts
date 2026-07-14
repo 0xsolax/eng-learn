@@ -1,6 +1,6 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import { ApiFailureError } from '@/api/errors'
+import { ApiFailureError, ApiNetworkError, InvalidApiResponseError } from '@/api/errors'
 import LessonRunner from '@/features/lesson-runner/LessonRunner.vue'
 import type { LessonTaskDto } from '@shared/api/taskSchemas'
 
@@ -87,6 +87,7 @@ const learnerSessionFailure = (code: (typeof learnerSessionErrorCodes)[number]) 
 const expectAccessRequiredWithoutNetworkRetry = (wrapper: VueWrapper): void => {
   expect(wrapper.emitted('access-required')).toHaveLength(1)
   expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+  expect(wrapper.find('.task-form').exists()).toBe(false)
   expect(wrapper.find('[data-action="retry"]').exists()).toBe(false)
   expect(wrapper.find('[data-action="reload-lesson"]').exists()).toBe(false)
 }
@@ -110,6 +111,22 @@ describe('LessonRunner', () => {
       expectAccessRequiredWithoutNetworkRetry(wrapper)
     },
   )
+
+  it('unloads the lesson for a non-JSON 401 instead of exposing stale retry UI', async () => {
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi.fn().mockRejectedValue(new InvalidApiResponseError(401)),
+      submitAnswer: vi.fn(),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-7' },
+    })
+
+    await flushPromises()
+
+    expect(api.getLesson).toHaveBeenCalledTimes(1)
+    expectAccessRequiredWithoutNetworkRetry(wrapper)
+  })
 
   it('shows safe return-and-contact guidance for incompatible persisted lesson content', async () => {
     const api = {
@@ -137,6 +154,41 @@ describe('LessonRunner', () => {
     expect(wrapper.find('[data-action="reload-lesson"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('返回课程')
   })
+
+  it.each([
+    ['completed', 'completed'],
+    ['abandoned', 'exit'],
+  ] as const)(
+    'routes an initially restored %s authority session without another mutation',
+    async (status, event) => {
+      const authoritativeLesson = {
+        ...lesson,
+        session: {
+          ...lesson.session,
+          status,
+          completedTaskCount: status === 'completed' ? 3 : 1,
+        },
+        tasks: status === 'completed'
+          ? lesson.tasks.map((task) => ({ ...task, status: 'completed' as const }))
+          : lesson.tasks,
+      }
+      const api = {
+        ...runnerApiNoops(),
+        getLesson: vi.fn().mockResolvedValue(authoritativeLesson),
+        submitAnswer: vi.fn(),
+      }
+      const wrapper = mount(LessonRunner, {
+        props: { api, sessionId: 'session-7' },
+      })
+
+      await flushPromises()
+
+      expect(api.getLesson).toHaveBeenCalledTimes(1)
+      expect(api.submitAnswer).not.toHaveBeenCalled()
+      expect(api.completeLesson).not.toHaveBeenCalled()
+      expect(wrapper.emitted(event)).toEqual([[]])
+    },
+  )
 
   it('gets the authoritative snapshot and renders only its first pending task', async () => {
     const api = {
@@ -291,7 +343,7 @@ describe('LessonRunner', () => {
     await wrapper.get('.task-form').trigger('submit')
     expect(api.submitAnswer).toHaveBeenCalledTimes(1)
 
-    rejectFirst?.(new Error('offline'))
+    rejectFirst?.(new ApiNetworkError(new Error('offline')))
     await flushPromises()
 
     expect((wrapper.get('input').element as HTMLInputElement).value).toBe('apple')
@@ -306,6 +358,245 @@ describe('LessonRunner', () => {
     expect(api.submitAnswer.mock.calls[1]).toEqual(api.submitAnswer.mock.calls[0])
     expect(api.getLesson).toHaveBeenCalledTimes(2)
     expect(wrapper.get('[data-action="retry"]').text()).toBe('继续')
+  })
+
+  it('retries the identical answer after a malformed success response leaves the result unknown', async () => {
+    const refreshedLesson = {
+      ...lesson,
+      session: { ...lesson.session, completedTaskCount: 2 },
+      tasks: [
+        completedFixtureTask,
+        { ...currentFixtureTask, status: 'completed' as const },
+        nextFixtureTask,
+      ],
+    }
+    const result = {
+      taskId: 'task-2',
+      score: 3 as const,
+      correct: true,
+      feedback: { taskType: 'recall_word' as const, correctAnswer: 'apple' },
+    }
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi
+        .fn()
+        .mockResolvedValueOnce(lesson)
+        .mockResolvedValueOnce(refreshedLesson),
+      submitAnswer: vi
+        .fn()
+        .mockRejectedValueOnce(new InvalidApiResponseError(200))
+        .mockResolvedValueOnce(result),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-7' },
+    })
+    await flushPromises()
+
+    await wrapper.get('input').setValue('apple')
+    await wrapper.get('.task-form').trigger('submit')
+    await flushPromises()
+
+    expect(api.submitAnswer).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-action="retry"]').text()).toBe('重新提交')
+
+    await wrapper.get('[data-action="retry"]').trigger('click')
+    await flushPromises()
+
+    expect(api.submitAnswer).toHaveBeenCalledTimes(2)
+    expect(api.submitAnswer.mock.calls[1]).toEqual(api.submitAnswer.mock.calls[0])
+    expect(api.getLesson).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['task_not_current', 'conflict'] as const)(
+    'preserves the answer but re-syncs authority instead of resubmitting after %s',
+    async (code) => {
+    const refreshedLesson = {
+      ...lesson,
+      session: { ...lesson.session, completedTaskCount: 2 },
+      tasks: [
+        completedFixtureTask,
+        { ...currentFixtureTask, status: 'completed' as const },
+        nextFixtureTask,
+      ],
+    }
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi
+        .fn()
+        .mockResolvedValueOnce(lesson)
+        .mockResolvedValueOnce(refreshedLesson),
+      submitAnswer: vi.fn().mockRejectedValue(
+        new ApiFailureError(409, { code, message: 'Task authority changed' }),
+      ),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-7' },
+    })
+    await flushPromises()
+
+    await wrapper.get('input').setValue('apple')
+    await wrapper.get('.task-form').trigger('submit')
+    await flushPromises()
+
+    expect((wrapper.get('input').element as HTMLInputElement).value).toBe('apple')
+    expect(api.submitAnswer).toHaveBeenCalledTimes(1)
+    expect(api.getLesson).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-action="retry"]').text()).toBe('重新同步本课')
+
+    await wrapper.get('[data-action="retry"]').trigger('click')
+    await flushPromises()
+
+    expect(api.submitAnswer).toHaveBeenCalledTimes(1)
+    expect(api.getLesson).toHaveBeenCalledTimes(2)
+      expect(wrapper.get('h2').text()).toBe('后续待答题')
+    },
+  )
+
+  it('routes a completed authority snapshot after lesson_not_active without resubmitting', async () => {
+    const completedAuthority = {
+      ...lesson,
+      session: {
+        ...lesson.session,
+        status: 'completed' as const,
+        completedTaskCount: 3,
+      },
+      tasks: lesson.tasks.map((task) => ({ ...task, status: 'completed' as const })),
+    }
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi
+        .fn()
+        .mockResolvedValueOnce(lesson)
+        .mockResolvedValueOnce(completedAuthority),
+      submitAnswer: vi.fn().mockRejectedValue(
+        new ApiFailureError(409, {
+          code: 'lesson_not_active',
+          message: 'Lesson session is not active',
+        }),
+      ),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-7' },
+    })
+    await flushPromises()
+
+    await wrapper.get('input').setValue('apple')
+    await wrapper.get('.task-form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[data-action="retry"]').text()).toBe('重新同步本课')
+    await wrapper.get('[data-action="retry"]').trigger('click')
+    await flushPromises()
+
+    expect(api.submitAnswer).toHaveBeenCalledTimes(1)
+    expect(api.getLesson).toHaveBeenCalledTimes(2)
+    expect(wrapper.emitted('completed')).toEqual([[]])
+    expect(wrapper.find('[data-action="retry"]').exists()).toBe(false)
+  })
+
+  it('returns to the course without retrying submit when authority reports course_unavailable', async () => {
+      const failure = new ApiFailureError(409, {
+        code: 'course_unavailable',
+        message: 'Course cannot continue',
+      })
+      const api = {
+        ...runnerApiNoops(),
+        getLesson: vi.fn().mockResolvedValue(lesson),
+        submitAnswer: vi.fn().mockRejectedValue(failure),
+      }
+      const wrapper = mount(LessonRunner, {
+        props: { api, sessionId: 'session-7' },
+      })
+      await flushPromises()
+
+      await wrapper.get('input').setValue('apple')
+      await wrapper.get('.task-form').trigger('submit')
+      await flushPromises()
+
+      expect(api.submitAnswer).toHaveBeenCalledTimes(1)
+      expect(api.getLesson).toHaveBeenCalledTimes(1)
+      expect(wrapper.emitted('exit')).toEqual([[]])
+      expect(wrapper.find('[data-action="retry"]').exists()).toBe(false)
+  })
+
+  it.each(['validation_error', 'task_type_mismatch'] as const)(
+    'shows a non-retryable task error instead of blindly resubmitting after %s',
+    async (code) => {
+      const failure = code === 'validation_error'
+        ? new ApiFailureError(400, {
+            code,
+            message: 'Submission is invalid',
+            details: {
+              fields: [{ path: 'submission.answer', message: 'Answer is invalid' }],
+            },
+          })
+        : new ApiFailureError(400, { code, message: 'Task type does not match' })
+      const api = {
+        ...runnerApiNoops(),
+        getLesson: vi.fn().mockResolvedValue(lesson),
+        submitAnswer: vi.fn().mockRejectedValue(failure),
+      }
+      const wrapper = mount(LessonRunner, {
+        props: { api, sessionId: 'session-7' },
+      })
+      await flushPromises()
+
+      await wrapper.get('input').setValue('apple')
+      await wrapper.get('.task-form').trigger('submit')
+      await flushPromises()
+
+      expect(api.submitAnswer).toHaveBeenCalledTimes(1)
+      expect(api.getLesson).toHaveBeenCalledTimes(1)
+      expect((wrapper.get('input').element as HTMLInputElement).value).toBe('apple')
+      expect(wrapper.get('[role="alert"]').text()).toContain('当前答案无法提交')
+      expect(wrapper.find('[data-action="retry"]').exists()).toBe(false)
+    },
+  )
+
+  it('does not offer a blind submit retry for another definitive 4xx failure', async () => {
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi.fn().mockResolvedValue(lesson),
+      submitAnswer: vi.fn().mockRejectedValue(
+        new ApiFailureError(403, {
+          code: 'forbidden_resource',
+          message: 'The task is not available to this learner',
+        }),
+      ),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-7' },
+    })
+    await flushPromises()
+
+    await wrapper.get('input').setValue('apple')
+    await wrapper.get('.task-form').trigger('submit')
+    await flushPromises()
+
+    expect(api.submitAnswer).toHaveBeenCalledTimes(1)
+    expect(api.getLesson).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[role="alert"]').text()).toContain('当前请求无法安全重试')
+    expect(wrapper.find('[data-action="retry"]').exists()).toBe(false)
+  })
+
+  it('does not retry an answer after a non-JSON 403 response', async () => {
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi.fn().mockResolvedValue(lesson),
+      submitAnswer: vi.fn().mockRejectedValue(new InvalidApiResponseError(403)),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-7' },
+    })
+    await flushPromises()
+
+    await wrapper.get('input').setValue('apple')
+    await wrapper.get('.task-form').trigger('submit')
+    await flushPromises()
+
+    expect(api.submitAnswer).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[role="alert"]').text()).toContain('当前请求无法安全重试')
+    expect(wrapper.find('[data-action="retry"]').exists()).toBe(false)
   })
 
   it.each(learnerSessionErrorCodes)(
@@ -349,7 +640,7 @@ describe('LessonRunner', () => {
       getLesson: vi
         .fn()
         .mockResolvedValueOnce(lesson)
-        .mockRejectedValueOnce(new Error('offline after save'))
+        .mockRejectedValueOnce(new ApiNetworkError(new Error('offline after save')))
         .mockResolvedValueOnce(refreshedLesson),
       submitAnswer: vi.fn().mockResolvedValue(result),
     }
@@ -371,6 +662,79 @@ describe('LessonRunner', () => {
     expect(api.submitAnswer).toHaveBeenCalledTimes(1)
     expect(api.getLesson).toHaveBeenCalledTimes(3)
     expect(wrapper.get('[data-action="retry"]').text()).toBe('继续')
+  })
+
+  it('returns to the course when the post-answer authority read reports course_unavailable', async () => {
+    const result = {
+      taskId: 'task-2',
+      score: 3 as const,
+      correct: true,
+      feedback: { taskType: 'recall_word' as const, correctAnswer: 'apple' },
+    }
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi
+        .fn()
+        .mockResolvedValueOnce(lesson)
+        .mockRejectedValueOnce(
+          new ApiFailureError(409, {
+            code: 'course_unavailable',
+            message: 'Course is not active',
+          }),
+        ),
+      submitAnswer: vi.fn().mockResolvedValue(result),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-7' },
+    })
+    await flushPromises()
+
+    await wrapper.get('input').setValue('apple')
+    await wrapper.get('.task-form').trigger('submit')
+    await flushPromises()
+
+    expect(api.submitAnswer).toHaveBeenCalledTimes(1)
+    expect(api.getLesson).toHaveBeenCalledTimes(2)
+    expect(wrapper.emitted('exit')).toEqual([[]])
+    expect(wrapper.find('[data-action="retry"]').exists()).toBe(false)
+  })
+
+  it('does not loop the post-answer authority read for incompatible legacy content', async () => {
+    const result = {
+      taskId: 'task-2',
+      score: 3 as const,
+      correct: true,
+      feedback: { taskType: 'recall_word' as const, correctAnswer: 'apple' },
+    }
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi
+        .fn()
+        .mockResolvedValueOnce(lesson)
+        .mockRejectedValueOnce(
+          new ApiFailureError(409, {
+            code: 'legacy_content_incompatible',
+            message: 'internal reason: unsafe apple answer',
+          }),
+        ),
+      submitAnswer: vi.fn().mockResolvedValue(result),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-7' },
+    })
+    await flushPromises()
+
+    await wrapper.get('input').setValue('apple')
+    await wrapper.get('.task-form').trigger('submit')
+    await flushPromises()
+
+    const alert = wrapper.get('[role="alert"]').text()
+    expect(api.submitAnswer).toHaveBeenCalledTimes(1)
+    expect(api.getLesson).toHaveBeenCalledTimes(2)
+    expect(alert).toContain('本课内容暂时无法使用')
+    expect(alert).toContain('联系课程管理员')
+    expect(alert).not.toContain('unsafe apple answer')
+    expect(wrapper.find('[data-action="retry"]').exists()).toBe(false)
   })
 
   it.each(learnerSessionErrorCodes)(
@@ -473,7 +837,9 @@ describe('LessonRunner', () => {
       ...runnerApiNoops(),
       getLesson: vi.fn().mockResolvedValue(sentenceOutputLesson),
       submitAnswer: vi.fn(),
-      previewSentenceOutput: vi.fn().mockRejectedValue(new Error('offline')),
+      previewSentenceOutput: vi.fn().mockRejectedValue(
+        new ApiNetworkError(new Error('offline')),
+      ),
     }
     const wrapper = mount(LessonRunner, {
       props: { api, sessionId: 'session-s5' },
@@ -487,6 +853,85 @@ describe('LessonRunner', () => {
     expect(wrapper.get('[role="alert"]').text()).toContain('参考句尚未读取')
     expect(wrapper.get('[data-action="retry"]').text()).toBe('重新预览')
     expect(wrapper.emitted('access-required')).toBeUndefined()
+  })
+
+  it('does not offer a blind preview retry for task_type_mismatch', async () => {
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi.fn().mockResolvedValue(sentenceOutputLesson),
+      submitAnswer: vi.fn(),
+      previewSentenceOutput: vi.fn().mockRejectedValue(
+        new ApiFailureError(400, {
+          code: 'task_type_mismatch',
+          message: 'Only sentence-output tasks support preview',
+        }),
+      ),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-s5' },
+    })
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('My local draft.')
+    await wrapper.get('[data-action="preview"]').trigger('click')
+    await flushPromises()
+
+    expect(api.previewSentenceOutput).toHaveBeenCalledTimes(1)
+    expect(api.getLesson).toHaveBeenCalledTimes(1)
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('My local draft.')
+    expect(wrapper.get('[role="alert"]').text()).toContain('当前参考句无法读取')
+    expect(wrapper.find('[data-action="retry"]').exists()).toBe(false)
+  })
+
+  it('re-syncs an S5 preview conflict and remounts the same task with the authority draft', async () => {
+    const authorityDraft = 'I eat the authority apple every day.'
+    const authoritativeLesson = {
+      ...sentenceOutputLesson,
+      tasks: sentenceOutputLesson.tasks.map((task) => ({
+        ...task,
+        preview: {
+          draft: authorityDraft,
+          referenceSentence: 'I eat an apple every day.',
+          revealedAt: '2026-07-13T00:00:00.000Z',
+        },
+      })),
+    }
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi
+        .fn()
+        .mockResolvedValueOnce(sentenceOutputLesson)
+        .mockResolvedValueOnce(authoritativeLesson),
+      submitAnswer: vi.fn(),
+      previewSentenceOutput: vi.fn().mockRejectedValue(
+        new ApiFailureError(409, {
+          code: 'conflict',
+          message: 'Sentence output preview is already fixed',
+        }),
+      ),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-s5' },
+    })
+    await flushPromises()
+
+    await wrapper.get('textarea').setValue('My local draft.')
+    await wrapper.get('[data-action="preview"]').trigger('click')
+    await flushPromises()
+
+    expect(api.previewSentenceOutput).toHaveBeenCalledTimes(1)
+    expect(api.getLesson).toHaveBeenCalledTimes(1)
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe('My local draft.')
+    expect(wrapper.get('[data-action="retry"]').text()).toBe('重新同步本课')
+
+    await wrapper.get('[data-action="retry"]').trigger('click')
+    await flushPromises()
+
+    expect(api.previewSentenceOutput).toHaveBeenCalledTimes(1)
+    expect(api.getLesson).toHaveBeenCalledTimes(2)
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe(authorityDraft)
+    expect(wrapper.get('textarea').attributes('readonly')).toBeDefined()
+    expect(wrapper.get('[role="status"]').text()).toContain('I eat an apple every day.')
   })
 
   it.each(learnerSessionErrorCodes)(
@@ -520,6 +965,74 @@ describe('LessonRunner', () => {
       expectAccessRequiredWithoutNetworkRetry(wrapper)
     },
   )
+
+  it('re-syncs s5_preview_required and submits only the authority draft after recovery', async () => {
+    const localDraft = 'My stale local apple sentence.'
+    const authorityDraft = 'My authoritative apple sentence.'
+    const restoredLesson = {
+      ...sentenceOutputLesson,
+      tasks: sentenceOutputLesson.tasks.map((task) => ({
+        ...task,
+        preview: {
+          draft: localDraft,
+          referenceSentence: 'I eat an apple every day.',
+          revealedAt: '2026-07-13T00:00:00.000Z',
+        },
+      })),
+    }
+    const authoritativeLesson = {
+      ...restoredLesson,
+      tasks: restoredLesson.tasks.map((task) => ({
+        ...task,
+        preview: { ...task.preview, draft: authorityDraft },
+      })),
+    }
+    const pendingRescore = new Promise<never>(() => undefined)
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi
+        .fn()
+        .mockResolvedValueOnce(restoredLesson)
+        .mockResolvedValueOnce(authoritativeLesson),
+      submitAnswer: vi
+        .fn()
+        .mockRejectedValueOnce(
+          new ApiFailureError(409, {
+            code: 's5_preview_required',
+            message: 'Sentence output preview must be restored',
+          }),
+        )
+        .mockReturnValueOnce(pendingRescore),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-s5' },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-self-score="2"]').trigger('click')
+    await flushPromises()
+
+    expect(api.submitAnswer).toHaveBeenCalledTimes(1)
+    expect(api.getLesson).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('[data-action="retry"]').text()).toBe('重新同步本课')
+
+    await wrapper.get('[data-action="retry"]').trigger('click')
+    await flushPromises()
+
+    expect(api.submitAnswer).toHaveBeenCalledTimes(1)
+    expect(api.getLesson).toHaveBeenCalledTimes(2)
+    expect((wrapper.get('textarea').element as HTMLTextAreaElement).value).toBe(authorityDraft)
+    expect(wrapper.get('textarea').attributes('readonly')).toBeDefined()
+
+    await wrapper.get('[data-self-score="3"]').trigger('click')
+
+    expect(api.submitAnswer).toHaveBeenCalledTimes(2)
+    expect(api.submitAnswer).toHaveBeenLastCalledWith('session-s5', 'task-s5', {
+      taskType: 'sentence_output',
+      draft: authorityDraft,
+      selfScore: 3,
+    })
+  })
 
   it('restores an authoritative S5 preview after the lesson page is reloaded', async () => {
     const restoredLesson = {
@@ -601,6 +1114,138 @@ describe('LessonRunner', () => {
     expect(wrapper.emitted('completed')).toEqual([[completedLesson]])
   })
 
+  it('re-gets authority instead of retrying completion after lesson_not_active', async () => {
+    const answeredLesson = {
+      ...lesson,
+      session: { ...lesson.session, completedTaskCount: 3 },
+      tasks: lesson.tasks.map((task) => ({ ...task, status: 'completed' as const })),
+    }
+    const completedAuthority = {
+      ...answeredLesson,
+      session: { ...answeredLesson.session, status: 'completed' as const },
+    }
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi
+        .fn()
+        .mockResolvedValueOnce(answeredLesson)
+        .mockResolvedValueOnce(completedAuthority),
+      submitAnswer: vi.fn(),
+      completeLesson: vi.fn().mockRejectedValue(
+        new ApiFailureError(409, {
+          code: 'lesson_not_active',
+          message: 'Lesson session is not active',
+        }),
+      ),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-7' },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-action="complete-lesson"]').trigger('click')
+    await flushPromises()
+
+    expect(api.completeLesson).toHaveBeenCalledTimes(1)
+    expect(api.getLesson).toHaveBeenCalledTimes(2)
+    expect(wrapper.emitted('completed')).toEqual([[]])
+    expect(wrapper.find('[data-action="complete-lesson"]').exists()).toBe(false)
+  })
+
+  it('prioritizes the completion action over the exit action after restoring an answered lesson', async () => {
+    const answeredLesson = {
+      ...lesson,
+      session: { ...lesson.session, completedTaskCount: 3 },
+      tasks: lesson.tasks.map((task) => ({ ...task, status: 'completed' as const })),
+    }
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi.fn().mockResolvedValue(answeredLesson),
+      submitAnswer: vi.fn(),
+    }
+    const wrapper = mount(LessonRunner, {
+      attachTo: document.body,
+      props: { api, sessionId: 'session-7' },
+    })
+
+    try {
+      await flushPromises()
+
+      expect(document.activeElement).toBe(
+        wrapper.get('[data-action="complete-lesson"]').element,
+      )
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('does not loop lesson completion for incompatible legacy content', async () => {
+    const answeredLesson = {
+      ...lesson,
+      session: { ...lesson.session, completedTaskCount: 3 },
+      tasks: lesson.tasks.map((task) => ({ ...task, status: 'completed' as const })),
+    }
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi.fn().mockResolvedValue(answeredLesson),
+      submitAnswer: vi.fn(),
+      completeLesson: vi.fn().mockRejectedValue(
+        new ApiFailureError(409, {
+          code: 'legacy_content_incompatible',
+          message: 'internal unsafe content reason',
+        }),
+      ),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-7' },
+    })
+    await flushPromises()
+
+    await wrapper.get('[data-action="complete-lesson"]').trigger('click')
+    await flushPromises()
+
+    const alert = wrapper.get('[role="alert"]').text()
+    expect(api.completeLesson).toHaveBeenCalledTimes(1)
+    expect(api.getLesson).toHaveBeenCalledTimes(1)
+    expect(alert).toContain('本课内容暂时无法使用')
+    expect(alert).toContain('联系课程管理员')
+    expect(alert).not.toContain('internal unsafe content reason')
+    expect(wrapper.find('[data-action="complete-lesson"]').exists()).toBe(false)
+  })
+
+  it('moves focus to the exit action after a deterministic completion failure', async () => {
+    const answeredLesson = {
+      ...lesson,
+      session: { ...lesson.session, completedTaskCount: 3 },
+      tasks: lesson.tasks.map((task) => ({ ...task, status: 'completed' as const })),
+    }
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi.fn().mockResolvedValue(answeredLesson),
+      submitAnswer: vi.fn(),
+      completeLesson: vi.fn().mockRejectedValue(new InvalidApiResponseError(403)),
+    }
+    const wrapper = mount(LessonRunner, {
+      attachTo: document.body,
+      props: { api, sessionId: 'session-7' },
+    })
+
+    try {
+      await flushPromises()
+      const completeAction = wrapper.get('[data-action="complete-lesson"]')
+      ;(completeAction.element as HTMLElement).focus()
+
+      await completeAction.trigger('click')
+      await flushPromises()
+
+      const exitAction = wrapper.get('[data-action="exit"]')
+      expect(wrapper.find('[data-action="complete-lesson"]').exists()).toBe(false)
+      expect(document.activeElement).toBe(exitAction.element)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it.each(learnerSessionErrorCodes)(
     'requests a new access code instead of retrying lesson completion for %s',
     async (code) => {
@@ -639,7 +1284,9 @@ describe('LessonRunner', () => {
       ...runnerApiNoops(),
       getLesson: vi.fn().mockResolvedValue(answeredLesson),
       submitAnswer: vi.fn(),
-      completeLesson: vi.fn().mockRejectedValue(new Error('offline')),
+      completeLesson: vi.fn().mockRejectedValue(
+        new ApiNetworkError(new Error('offline')),
+      ),
     }
     const wrapper = mount(LessonRunner, {
       props: { api, sessionId: 'session-7' },

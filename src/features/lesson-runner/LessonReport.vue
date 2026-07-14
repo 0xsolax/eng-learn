@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { ApiFailureError } from '@/api/errors'
+import { nextTick, onMounted, ref } from 'vue'
+import { ApiFailureError, InvalidApiResponseError } from '@/api/errors'
 import { isLearnerSessionAccessError } from '@/api/learnerSessionErrors'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
@@ -20,39 +20,91 @@ const emit = defineEmits<{
 }>()
 
 const summary = ref<LessonReportDto>()
-const loading = ref(true)
+const loading = ref(false)
+const errorActions = ref<HTMLElement>()
+const reportHeading = ref<HTMLHeadingElement>()
 const loadError = ref<{
-  kind: 'incomplete' | 'unavailable'
+  kind: 'transient' | 'return-lesson' | 'return-course'
+  title: string
   message: string
 }>()
 
-onMounted(async () => {
+const loadReport = async (isRetry = false): Promise<void> => {
+  if (loading.value) return
+
+  loading.value = true
+  if (!isRetry) loadError.value = undefined
+  let focusTarget: 'error-action' | 'report-heading' | undefined
   try {
     summary.value = await props.api.getLessonReport(props.sessionId)
+    loadError.value = undefined
+    if (isRetry) focusTarget = 'report-heading'
   } catch (error) {
-    if (isLearnerSessionAccessError(error)) {
+    if (
+      isLearnerSessionAccessError(error) ||
+      (error instanceof ApiFailureError && error.status === 401)
+    ) {
       emit('access-required')
       return
     }
-    loadError.value =
-      error instanceof ApiFailureError && error.apiError.code === 'report_unavailable'
-        ? {
-            kind: 'incomplete',
-            message: '服务端确认本课尚未完成，请返回本课继续完成必答任务。',
-          }
-        : {
-            kind: 'unavailable',
-            message: '暂时无法读取课后结果，请检查网络后返回课程。',
-          }
+    if (error instanceof ApiFailureError && error.apiError.code === 'report_unavailable') {
+      loadError.value = {
+        kind: 'return-lesson',
+        title: '本课尚未完成',
+        message: '服务端确认本课尚未完成，请返回本课继续完成必答任务。',
+      }
+    } else if (
+      error instanceof ApiFailureError &&
+      error.apiError.code === 'lesson_not_active'
+    ) {
+      loadError.value = {
+        kind: 'return-course',
+        title: '本课状态已变化',
+        message: '服务端确认本课当前不可继续，请返回课程查看最新状态。',
+      }
+    } else if (
+      (error instanceof ApiFailureError && error.status < 500) ||
+      (error instanceof InvalidApiResponseError &&
+        error.status >= 400 &&
+        error.status < 500)
+    ) {
+      loadError.value = {
+        kind: 'return-course',
+        title: '课后结果无法打开',
+        message: '服务端暂时无法提供这份课后结果，请返回课程查看最新状态。',
+      }
+    } else {
+      loadError.value = {
+        kind: 'transient',
+        title: '课后结果暂不可用',
+        message: '暂时无法读取课后结果，请重新读取，或返回课程。',
+      }
+    }
+    focusTarget = 'error-action'
   } finally {
     loading.value = false
   }
-})
+
+  if (focusTarget) {
+    await nextTick()
+    if (focusTarget === 'report-heading') {
+      reportHeading.value?.focus()
+    } else {
+      errorActions.value?.querySelector('button')?.focus()
+    }
+  }
+}
+
+const retryReport = (): void => {
+  void loadReport(true)
+}
+
+onMounted(loadReport)
 </script>
 
 <template>
   <UiStatusMessage
-    v-if="loading"
+    v-if="loading && !loadError"
     tone="info"
     title="正在读取课后结果"
   >
@@ -65,7 +117,12 @@ onMounted(async () => {
     <p class="lesson-report__eyebrow">
       本课完成
     </p>
-    <h1>第 {{ summary.lessonNo }} 课完成</h1>
+    <h1
+      ref="reportHeading"
+      tabindex="-1"
+    >
+      第 {{ summary.lessonNo }} 课完成
+    </h1>
     <UiStatusMessage
       tone="success"
       title="做得好，今天这一课完成了"
@@ -122,21 +179,35 @@ onMounted(async () => {
   </section>
   <section
     v-else-if="loadError"
+    ref="errorActions"
     class="lesson-report lesson-report--error"
+    :aria-busy="loading ? 'true' : undefined"
   >
     <UiStatusMessage
       tone="error"
-      :title="loadError.kind === 'incomplete' ? '本课尚未完成' : '课后结果暂不可用'"
+      :title="loadError.title"
     >
       {{ loadError.message }}
     </UiStatusMessage>
     <UiButton
+      v-if="loadError.kind === 'transient'"
       context="learner"
-      @click="loadError.kind === 'incomplete'
+      data-action="retry-report"
+      :loading="loading"
+      loading-label="正在重新读取"
+      @click="retryReport"
+    >
+      重新读取课后结果
+    </UiButton>
+    <UiButton
+      context="learner"
+      :data-action="loadError.kind === 'return-lesson' ? 'return-lesson' : 'return-course'"
+      :variant="loadError.kind === 'transient' ? 'secondary' : 'primary'"
+      @click="loadError.kind === 'return-lesson'
         ? $emit('return-lesson')
         : $emit('return-course')"
     >
-      {{ loadError.kind === 'incomplete' ? '返回本课' : '返回课程' }}
+      {{ loadError.kind === 'return-lesson' ? '返回本课' : '返回课程' }}
     </UiButton>
   </section>
 </template>

@@ -15,6 +15,10 @@ const sensitiveAssignments = [
   /["']?operation(?:_|-)?token["']?\s*[:=]\s*["'`]?[0-9a-f]{64}(?=["'`\s,}]|$)/i,
   /__Host-eng_learn_session=[0-9a-f]{64}/i,
 ]
+const hostPathMetadata = [
+  /\/\/#region[^\r\n]*(?:\/(?:Users|home|root|private\/var|tmp|workspace|builds)\/|[A-Za-z]:[\\/])/i,
+  /["'](?:configPath|userConfigPath)["']\s*:\s*["'](?:\/|[A-Za-z]:[\\/]|~[\\/])/i,
+]
 
 const findings = []
 
@@ -39,6 +43,9 @@ const scanFile = async (path) => {
   const content = await readFile(path, 'utf8')
   if (sensitiveAssignments.some((pattern) => pattern.test(content))) {
     addFinding('sensitive-assignment', path)
+  }
+  if (hostPathMetadata.some((pattern) => pattern.test(content))) {
+    addFinding('host-path-metadata', path)
   }
 }
 

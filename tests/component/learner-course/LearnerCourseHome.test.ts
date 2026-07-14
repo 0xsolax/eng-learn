@@ -1,6 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import { ApiFailureError } from '@/api/errors'
+import { ApiFailureError, InvalidApiResponseError } from '@/api/errors'
 import LearnerCourseHome from '@/features/learner-course/LearnerCourseHome.vue'
 
 const course = {
@@ -92,6 +92,22 @@ describe('LearnerCourseHome', () => {
           message: 'Learner session is unavailable',
         }),
       ),
+    }
+    const wrapper = mount(LearnerCourseHome, { props: { api } })
+    await flushPromises()
+
+    await wrapper.get('[data-action="start-lesson"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.emitted('access-required')).toHaveLength(1)
+    expect(wrapper.find('[role="alert"]').exists()).toBe(false)
+    expect(wrapper.find('[data-action="start-lesson"]').exists()).toBe(false)
+  })
+
+  it('returns to access entry when lesson start receives a non-JSON 401', async () => {
+    const api = {
+      getCourseHome: vi.fn().mockResolvedValue(courseHome),
+      startLesson: vi.fn().mockRejectedValue(new InvalidApiResponseError(401)),
     }
     const wrapper = mount(LearnerCourseHome, { props: { api } })
     await flushPromises()

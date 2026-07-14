@@ -329,6 +329,108 @@ const expectD1FreeInvocation = (
   }
 }
 
+const installLessonTaskWriteAudit = (database: DatabaseSync): void => {
+  database.exec(`
+    CREATE TABLE lesson_task_write_audit (
+      operation TEXT NOT NULL
+    );
+    CREATE TRIGGER lesson_task_write_audit_insert
+    AFTER INSERT ON lesson_tasks
+    BEGIN
+      INSERT INTO lesson_task_write_audit (operation) VALUES ('insert');
+    END;
+    CREATE TRIGGER lesson_task_write_audit_update
+    AFTER UPDATE ON lesson_tasks
+    BEGIN
+      INSERT INTO lesson_task_write_audit (operation) VALUES ('update');
+    END;
+  `)
+}
+
+const readLessonTaskWriteCounts = (
+  database: DatabaseSync,
+): { inserts: number; updates: number } => {
+  const rows = database
+    .prepare(
+      'SELECT operation, COUNT(*) AS count FROM lesson_task_write_audit GROUP BY operation',
+    )
+    .all() as Array<{ operation: string; count: number }>
+  const counts = new Map(rows.map((row) => [row.operation, row.count]))
+
+  return {
+    inserts: counts.get('insert') ?? 0,
+    updates: counts.get('update') ?? 0,
+  }
+}
+
+const resetLessonTaskWriteAudit = (database: DatabaseSync): void => {
+  database.prepare('DELETE FROM lesson_task_write_audit').run()
+}
+
+const seedAdditionalWords = (database: DatabaseSync, wordCount: number): void => {
+  const insertWord = database.prepare(
+    'INSERT INTO words (id, source_version_id, order_index, word, meaning, example_sentence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  )
+
+  for (let index = 2; index <= wordCount; index += 1) {
+    insertWord.run(
+      `word-${String(index)}`,
+      'version-1',
+      index,
+      `word-${String(index)}`,
+      `meaning-${String(index)}`,
+      '',
+      NOW,
+    )
+  }
+
+  database
+    .prepare('UPDATE word_groups SET end_order_index = ? WHERE id = ?')
+    .run(wordCount, 'group-1')
+}
+
+const createD1RuntimeLessonFixture = async (refluxGaps: number[] = [5]) => {
+  const fixture = await createRepositoryFixture()
+  seedAdditionalWords(fixture.database, 5)
+  const tasks = Array.from({ length: 5 }, (_, index) =>
+    createTask(`task-runtime-${String(index + 1)}`, index + 1, {
+      wordId: `word-${String(index + 1)}`,
+    }),
+  )
+  const wordStates = Array.from({ length: 5 }, (_, index) =>
+    createWordState({
+      id: `state-${String(index + 1)}`,
+      wordId: `word-${String(index + 1)}`,
+    }),
+  )
+
+  await fixture.repository.createLesson({
+    session: {
+      id: 'lesson-1',
+      courseId: 'course-1',
+      lessonNo: 1,
+      status: 'started',
+      taskCount: tasks.length,
+      completedTaskCount: 0,
+      correctCount: 0,
+      wrongCount: 0,
+      startedAt: NOW,
+    },
+    tasks,
+    wordStates,
+  })
+  const gaps = [...refluxGaps]
+  const runtime = createCourseRuntime({
+    contentRepository: createD1ContentRepository(fixture.db),
+    courseRepository: fixture.repository,
+    now: () => new Date(NOW),
+    selectRefluxGap: () => gaps.shift() ?? 5,
+  })
+
+  fixture.budget.reset()
+  return { ...fixture, runtime, tasks }
+}
+
 describe('D1 course queue repository', () => {
   it('creates a 65-task lesson within the D1 Free per-invocation query budget', async () => {
     const { database, budget, repository } = await createRepositoryFixture()
@@ -464,7 +566,6 @@ describe('D1 course queue repository', () => {
       wordStates: [createWordState()],
     })
     const completedTask = createTask(tasks[0]?.id ?? '', 1, { status: 'completed' })
-    const updatedTasks = [completedTask, ...tasks.slice(1)]
     const updatedState = createWordState({
       stage: 'S1',
       totalAttemptCount: 1,
@@ -490,15 +591,21 @@ describe('D1 course queue repository', () => {
         lessonNo: 1,
         createdAt: NOW,
       },
-      tasks: updatedTasks,
+      taskMutations: [completedTask],
+      reorderedExistingTaskIds: [],
+      taskCount: tasks.length,
+      completedTaskCount: 1,
       advanceWordState: true,
     }
+
+    installLessonTaskWriteAudit(database)
 
     budget.reset()
     const first = await repository.recordAnswer(input)
 
     expect(first.reviewLog.id).toBe('review-budget-500')
-    expectD1FreeInvocation(budget, 8)
+    expect(readLessonTaskWriteCounts(database)).toEqual({ inserts: 0, updates: 1 })
+    expectD1FreeInvocation(budget, 7)
 
     budget.reset()
     const retry = await repository.recordAnswer(input)
@@ -508,6 +615,126 @@ describe('D1 course queue repository', () => {
     expect(
       database.prepare('SELECT COUNT(*) AS count FROM review_logs').get(),
     ).toEqual({ count: 1 })
+
+    database.close()
+  })
+
+  it('writes only the current task and newly scheduled rows for an early wrong answer', async () => {
+    const { database, runtime, tasks } = await createD1RuntimeLessonFixture([5])
+    const source = tasks[0]
+
+    if (!source) throw new Error('Expected the first runtime task')
+    installLessonTaskWriteAudit(database)
+
+    await runtime.submitAnswer({
+      sessionId: 'lesson-1',
+      taskId: source.id,
+      submission: { taskType: 'recognize_meaning', response: 'learning' },
+    })
+
+    const restored = await runtime.getLesson('lesson-1')
+    expect(readLessonTaskWriteCounts(database)).toEqual({ inserts: 2, updates: 1 })
+    expect(restored.tasks.slice(0, 5).map((task) => task.id)).toEqual(
+      tasks.map((task) => task.id),
+    )
+    expect(
+      restored.tasks
+        .filter((task) => task.role === 'bridge')
+        .every((task) => task.wordId !== source.wordId),
+    ).toBe(true)
+
+    database.close()
+  })
+
+  it('temporarily reorders only existing task ids whose order actually changes', async () => {
+    const { database, runtime, tasks } = await createD1RuntimeLessonFixture([8, 5])
+    const first = tasks[0]
+    const second = tasks[1]
+
+    if (!first || !second) throw new Error('Expected two runtime tasks')
+    installLessonTaskWriteAudit(database)
+    await runtime.submitAnswer({
+      sessionId: 'lesson-1',
+      taskId: first.id,
+      submission: { taskType: 'recognize_meaning', response: 'learning' },
+    })
+    resetLessonTaskWriteAudit(database)
+
+    await runtime.submitAnswer({
+      sessionId: 'lesson-1',
+      taskId: second.id,
+      submission: { taskType: 'recognize_meaning', response: 'learning' },
+    })
+
+    expect(readLessonTaskWriteCounts(database)).toEqual({ inserts: 1, updates: 5 })
+
+    database.close()
+  })
+
+  it('keeps multi-round reflux task writes constant as the queue grows', async () => {
+    const { database, budget, runtime, tasks } = await createD1RuntimeLessonFixture([5, 5, 5])
+
+    for (const task of tasks.slice(0, 4)) {
+      budget.reset()
+      await runtime.submitAnswer({
+        sessionId: 'lesson-1',
+        taskId: task.id,
+        submission: { taskType: 'recognize_meaning', response: 'known' },
+      })
+    }
+
+    installLessonTaskWriteAudit(database)
+    let source = tasks[4]
+    const wrongWriteCounts: Array<{ inserts: number; updates: number }> = []
+
+    if (!source) throw new Error('Expected the last runtime task')
+
+    for (let round = 0; round < 3; round += 1) {
+      resetLessonTaskWriteAudit(database)
+      budget.reset()
+      await runtime.submitAnswer({
+        sessionId: 'lesson-1',
+        taskId: source.id,
+        submission: { taskType: 'recognize_meaning', response: 'learning' },
+      })
+      wrongWriteCounts.push(readLessonTaskWriteCounts(database))
+
+      if (round === 2) break
+
+      budget.reset()
+      let current = (await runtime.getLesson('lesson-1')).tasks.find(
+        (task) => task.status === 'pending',
+      )
+      while (current?.role === 'bridge') {
+        resetLessonTaskWriteAudit(database)
+        budget.reset()
+        await runtime.submitAnswer({
+          sessionId: 'lesson-1',
+          taskId: current.id,
+          submission: { taskType: 'recognize_meaning', response: 'known' },
+        })
+        expect(readLessonTaskWriteCounts(database)).toEqual({ inserts: 0, updates: 1 })
+        budget.reset()
+        current = (await runtime.getLesson('lesson-1')).tasks.find(
+          (task) => task.status === 'pending',
+        )
+      }
+
+      if (!current || current.role !== 'reflux') {
+        throw new Error('Expected the next reflux task')
+      }
+      source = current
+    }
+
+    expect(wrongWriteCounts).toEqual([
+      { inserts: 6, updates: 1 },
+      { inserts: 6, updates: 1 },
+      { inserts: 6, updates: 1 },
+    ])
+    budget.reset()
+    await expect(runtime.getLesson('lesson-1')).resolves.toMatchObject({
+      session: { taskCount: 23 },
+    })
 
     database.close()
   })
@@ -640,7 +867,7 @@ describe('D1 course queue repository', () => {
     })
     const completedTask = createTask(primary.id, 1, { status: 'completed' })
     budget.reset()
-    budget.failNextBatchAt(4)
+    budget.failNextBatchAt(3)
     await expect(
       repository.recordAnswer({
         task: completedTask,
@@ -666,7 +893,10 @@ describe('D1 course queue repository', () => {
           lessonNo: 1,
           createdAt: NOW,
         },
-        tasks: [completedTask],
+        taskMutations: [completedTask],
+        reorderedExistingTaskIds: [],
+        taskCount: 1,
+        completedTaskCount: 1,
         advanceWordState: true,
       }),
     ).rejects.toThrow('Injected D1 batch failure')
@@ -683,7 +913,7 @@ describe('D1 course queue repository', () => {
         )
         .get('state-1'),
     ).toEqual({ total_attempt_count: 0, total_correct_count: 0 })
-    expectD1FreeInvocation(budget, 7)
+    expectD1FreeInvocation(budget, 6)
 
     database.close()
   })
@@ -911,7 +1141,10 @@ describe('D1 course queue repository', () => {
         lessonNo: 1,
         createdAt: NOW,
       },
-      tasks: [completedTask],
+      taskMutations: [completedTask],
+      reorderedExistingTaskIds: [],
+      taskCount: 1,
+      completedTaskCount: 1,
       advanceWordState: true,
     })
     await repository.completeLesson({
@@ -984,11 +1217,14 @@ describe('D1 course queue repository', () => {
       revealedAt: NOW,
     }
 
+    installLessonTaskWriteAudit(database)
     const first = await repository.saveSentenceOutputPreview(input)
+    expect(readLessonTaskWriteCounts(database)).toEqual({ inserts: 0, updates: 1 })
     const retry = await repository.saveSentenceOutputPreview(input)
     const restored = await repository.getLessonTask('lesson-1', task.id)
 
     expect(retry).toEqual(first)
+    expect(readLessonTaskWriteCounts(database)).toEqual({ inserts: 0, updates: 1 })
     expect(restored).toMatchObject({
       draftAnswer: input.draft,
       referenceRevealedAt: input.revealedAt,
@@ -1217,7 +1453,10 @@ describe('D1 course queue repository', () => {
             lessonNo: 1,
             createdAt: NOW,
           },
-          tasks: [completedTask],
+          taskMutations: [completedTask],
+          reorderedExistingTaskIds: [],
+          taskCount: 1,
+          completedTaskCount: 1,
           advanceWordState: true,
         }),
       ).rejects.toMatchObject({ code: 'course_unavailable' })
@@ -1302,7 +1541,10 @@ describe('D1 course queue repository', () => {
             lessonNo: 1,
             createdAt: NOW,
           },
-          tasks: [completedTask],
+          taskMutations: [completedTask],
+          reorderedExistingTaskIds: [],
+          taskCount: 1,
+          completedTaskCount: 1,
           advanceWordState: true,
         }),
       ).rejects.toMatchObject({ code: 'lesson_not_active' })
@@ -1460,13 +1702,22 @@ describe('D1 course queue repository', () => {
         lessonNo: 1,
         createdAt: NOW,
       },
-      tasks: [completedPrimary, bridge, reflux],
+      taskMutations: [completedPrimary, bridge, reflux],
+      reorderedExistingTaskIds: [],
+      taskCount: 3,
+      completedTaskCount: 1,
       advanceWordState: true,
     }
+    const concurrentLoserInput = {
+      ...input,
+      reviewLog: { ...input.reviewLog, id: 'review-concurrent-loser' },
+    }
+
+    installLessonTaskWriteAudit(database)
 
     const [first, retry] = await Promise.all([
       repository.recordAnswer(input),
-      repository.recordAnswer(input),
+      repository.recordAnswer(concurrentLoserInput),
     ])
     const tasks = await repository.getLessonTasks('lesson-1')
     const state = await repository.getWordState('course-1', 'word-1')
@@ -1478,6 +1729,9 @@ describe('D1 course queue repository', () => {
       ['task-reflux', 3, 'reflux'],
     ])
     expect(state?.totalAttemptCount).toBe(1)
+    expect(readLessonTaskWriteCounts(database)).toEqual({ inserts: 2, updates: 1 })
+    await expect(repository.recordAnswer(input)).resolves.toEqual(first)
+    expect(readLessonTaskWriteCounts(database)).toEqual({ inserts: 2, updates: 1 })
     expect(
       database.prepare('SELECT COUNT(*) AS count FROM review_logs').get() as { count: number },
     ).toEqual({ count: 1 })

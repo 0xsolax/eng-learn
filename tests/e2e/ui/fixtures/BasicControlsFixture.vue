@@ -2,6 +2,7 @@
 import { ref } from 'vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
+import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
 
 const activationCount = ref(0)
 const learnerValue = ref('')
@@ -30,11 +31,54 @@ const adminValue = ref('')
         context="learner"
         label="学习码"
       />
+      <ui-button
+        data-testid="long-chinese-action"
+        context="learner"
+      >
+        重新同步本课后继续完成当前尚未提交的英文句子练习
+      </ui-button>
+      <ui-status-message
+        data-testid="long-english-status"
+        tone="error"
+        title="暂时无法读取这道练习"
+      >
+        <span lang="en">authoritative-task-snapshot-could-not-be-reconciled-with-the-current-lesson-session</span>
+      </ui-status-message>
     </section>
 
-    <p role="status">
+    <p
+      data-testid="activation-status"
+      role="status"
+    >
       学习按钮已激活 {{ activationCount }} 次
     </p>
+
+    <section aria-labelledby="state-controls">
+      <h2 id="state-controls">
+        非颜色状态线索
+      </h2>
+      <ui-status-message
+        data-testid="state-correct"
+        tone="success"
+        title="回答正确"
+      >
+        apple 是苹果。
+      </ui-status-message>
+      <ui-status-message
+        data-testid="state-error"
+        tone="error"
+        title="回答错误"
+      >
+        再看一次，apple 是苹果。
+      </ui-status-message>
+      <ui-button
+        data-testid="state-disabled"
+        context="learner"
+        disabled
+      >
+        已禁用：等待本课同步
+      </ui-button>
+    </section>
 
     <section aria-labelledby="admin-controls">
       <h2 id="admin-controls">

@@ -65,6 +65,29 @@ describe('course runtime authoritative task queue', () => {
     })
   })
 
+  it.each([0, 2, 4])(
+    'keeps the first same-word retry five to eight tasks after primary position %i',
+    async (sourceIndex) => {
+      const fixture = await createFixture(5, 5)
+      const lesson = await fixture.runtime.startLesson(fixture.courseId)
+
+      for (const task of lesson.tasks.slice(0, sourceIndex)) {
+        await submitRecognize(fixture.runtime, lesson.session.id, task.id, 'known')
+      }
+
+      const source = requireTask(lesson.tasks, sourceIndex)
+      await submitRecognize(fixture.runtime, lesson.session.id, source.id, 'learning')
+
+      const restored = await fixture.runtime.getLesson(lesson.session.id)
+      expectFirstSameWordGap(restored.tasks, source.id)
+      expect(
+        restored.tasks
+          .filter((task) => task.role === 'bridge')
+          .every((task) => task.wordId !== source.wordId),
+      ).toBe(true)
+    },
+  )
+
   it('persists an eight-task reflux gap and does not advance mastery for bridge or reflux answers', async () => {
     const fixture = await createFixture(5, 8)
     const lesson = await fixture.runtime.startLesson(fixture.courseId)
@@ -307,8 +330,11 @@ describe('course runtime authoritative task queue', () => {
       primary.id,
       'learning',
     )
+    const afterPrimary = await fixture.runtime.getLesson(lesson.session.id)
 
-    let current = (await fixture.runtime.getLesson(lesson.session.id)).tasks.find(
+    expectFirstSameWordGap(afterPrimary.tasks, primary.id)
+
+    let current = afterPrimary.tasks.find(
       (task) => task.status === 'pending',
     )
     while (current && current.role !== 'reflux') {
@@ -341,6 +367,7 @@ describe('course runtime authoritative task queue', () => {
       required: true,
       refluxSourceTaskId: firstReflux.id,
     })
+    expectFirstSameWordGap(updated.tasks, firstReflux.id)
     expect(refluxResult.wordState).toMatchObject({
       totalAttemptCount: primaryResult.wordState.totalAttemptCount,
       totalWrongCount: primaryResult.wordState.totalWrongCount,
@@ -537,4 +564,25 @@ const requireTask = <T>(tasks: T[], index: number): T => {
   }
 
   return task
+}
+
+const expectFirstSameWordGap = (
+  tasks: Array<{ id: string; wordId: string; orderIndex: number }>,
+  sourceTaskId: string,
+): void => {
+  const ordered = [...tasks].sort((left, right) => left.orderIndex - right.orderIndex)
+  const sourceIndex = ordered.findIndex((task) => task.id === sourceTaskId)
+  const source = ordered[sourceIndex]
+
+  if (!source) {
+    throw new Error(`Expected source task ${sourceTaskId}`)
+  }
+
+  const retryIndex = ordered.findIndex(
+    (task, index) => index > sourceIndex && task.wordId === source.wordId,
+  )
+
+  expect(retryIndex).toBeGreaterThan(sourceIndex)
+  expect(retryIndex - sourceIndex - 1).toBeGreaterThanOrEqual(5)
+  expect(retryIndex - sourceIndex - 1).toBeLessThanOrEqual(8)
 }

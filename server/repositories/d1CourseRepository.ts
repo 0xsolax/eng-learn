@@ -1027,12 +1027,13 @@ const createRecordAnswerStatements = (
 
   return [
     insertReviewLogIfPending(db, input.reviewLog),
-    db
-      .prepare(
-        'UPDATE lesson_tasks SET order_index = -order_index WHERE session_id = ? AND order_index > 0 AND EXISTS (SELECT 1 FROM review_logs WHERE id = ?)',
-      )
-      .bind(input.task.sessionId, input.reviewLog.id),
-    ...createBulkLessonTaskStatements(db, input.tasks, input.reviewLog.id),
+    ...createTemporarilyNegativeOrderStatements(
+      db,
+      input.task.sessionId,
+      input.reorderedExistingTaskIds,
+      input.reviewLog.id,
+    ),
+    ...createBulkLessonTaskStatements(db, input.taskMutations, input.reviewLog.id),
     ...(input.advanceWordState
       ? [updateWordState(db, input.wordState, input.reviewLog.id)]
       : []),
@@ -1041,8 +1042,8 @@ const createRecordAnswerStatements = (
         'UPDATE lesson_sessions SET task_count = ?, completed_task_count = ?, correct_count = correct_count + ?, wrong_count = wrong_count + ? WHERE id = ? AND EXISTS (SELECT 1 FROM review_logs WHERE id = ?)',
       )
       .bind(
-        input.tasks.length,
-        input.tasks.filter((task) => task.status === 'completed').length,
+        input.taskCount,
+        input.completedTaskCount,
         correctIncrement,
         wrongIncrement,
         input.task.sessionId,
@@ -1050,6 +1051,25 @@ const createRecordAnswerStatements = (
       ),
   ]
 }
+
+const createTemporarilyNegativeOrderStatements = (
+  db: D1Database,
+  sessionId: string,
+  taskIds: string[],
+  reviewLogId: string,
+): D1PreparedStatement[] =>
+  chunkArray(
+    createJsonPayloadGroups(taskIds),
+    MAX_SINGLE_PAYLOAD_GROUPS_PER_QUERY,
+  ).map((groups) => {
+    const idsSql = groups.map(() => 'SELECT value FROM json_each(?)').join(' UNION ALL ')
+
+    return db
+      .prepare(
+        `UPDATE lesson_tasks SET order_index = -order_index WHERE session_id = ? AND id IN (${idsSql}) AND order_index > 0 AND EXISTS (SELECT 1 FROM review_logs WHERE id = ?)`,
+      )
+      .bind(sessionId, ...groups, reviewLogId)
+  })
 
 const completionEligibilitySql =
   "EXISTS (SELECT 1 FROM lesson_sessions INNER JOIN courses ON courses.id = lesson_sessions.course_id WHERE lesson_sessions.id = ? AND lesson_sessions.status = 'started' AND courses.status = 'active') AND 5 * (SELECT COUNT(*) FROM lesson_tasks WHERE session_id = ? AND role = 'primary' AND status = 'completed') >= 4 * (SELECT COUNT(*) FROM lesson_tasks WHERE session_id = ? AND role = 'primary') AND NOT EXISTS (SELECT 1 FROM lesson_tasks WHERE session_id = ? AND required = 1 AND status <> 'completed')"

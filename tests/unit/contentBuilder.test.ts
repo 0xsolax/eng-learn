@@ -682,6 +682,39 @@ describe('admin content building workflow', () => {
     )
   })
 
+  it('skips an S5 prompt that would reveal the owning word and reports the explicit gap', async () => {
+    const contentBuilder = createContentBuilder({
+      repository: createInMemoryContentRepository(),
+      now: () => new Date('2026-07-06T00:00:00.000Z'),
+    })
+    const words = createWords(5)
+
+    words[0] = {
+      word: 'apple',
+      meaning: 'ap\u200Bple fruit',
+      exampleSentence: 'I ate an apple.',
+    }
+
+    const draft = await contentBuilder.importWords({
+      sourceName: 'S5 owning-word leak source',
+      words,
+    })
+    const coverage = await contentBuilder.buildExerciseItems(draft.versionId)
+    const items = await contentBuilder.listExerciseItems(draft.versionId)
+
+    expect(
+      items.find(
+        (item) => item.word === 'apple' && item.taskType === 'sentence_output',
+      ),
+    ).toBeUndefined()
+    expect(coverage.missingItems).toContainEqual({
+      word: 'apple',
+      stage: 'S5',
+      taskType: 'sentence_output',
+      reason: 'exercise_item_invalid',
+    })
+  })
+
   it('rejects editing or approving S1/S2 prompts that reveal the owning word', async () => {
     const repository = createInMemoryContentRepository()
     const contentBuilder = createContentBuilder({

@@ -12,6 +12,7 @@ import {
   createdCourseSchema,
   adminCourseListSchema,
   establishedLearnerSessionSchema,
+  lessonReportSchema,
   rotatedAccessCodeSchema,
   restoredLearnerSessionSchema,
   startedLessonSchema,
@@ -203,18 +204,70 @@ test('enforces response-loss replay, token boundaries, and one-winner rotation i
   expect(await failureCode(revokedSession)).toBe('learner_session_revoked')
 })
 
-test('production Vue browser preserves an unknown create and closes learner S0 against Worker and D1', async ({
+test('production Vue browser closes the admin lifecycle, preserves an unknown create, and completes learner S0', async ({
   page,
-  request,
   baseURL,
 }) => {
   if (!baseURL) throw new Error('Expected stack base URL')
-  const originHeaders = { origin: new URL(baseURL).origin }
-  const fixture = await prepareBrowserWalkingSkeleton(request, originHeaders)
+  const sourceName = 'Browser stack source'
+  const csv = [
+    'word,meaning,exampleSentence,partOfSpeech',
+    ...Array.from(
+      { length: 5 },
+      (_, index) =>
+        `browser-word-${String(index + 1)},browser-meaning-${String(index + 1)},I use browser-word-${String(index + 1)} here.,noun`,
+    ),
+  ].join('\n')
 
   await page.goto('/admin/source-versions')
   await expect(page.getByRole('heading', { level: 1, name: '词库版本' })).toBeVisible()
-  await expect(page.getByRole('row').filter({ hasText: fixture.sourceName })).toBeVisible()
+  await page.getByLabel('词库名称').fill(sourceName)
+  await page.locator('input[name="source-file"]').setInputFiles({
+    name: 'browser-stack.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from(csv),
+  })
+  await expect(page.locator('[data-csv-preview]')).toContainText('预览通过 · 5 个词')
+  await page.getByRole('button', { name: '创建草稿版本' }).click()
+  await expect(page.getByText('词表导入完成', { exact: true })).toBeVisible()
+
+  const sourceRow = page.getByRole('row').filter({ hasText: sourceName })
+  await expect(sourceRow).toContainText('草稿')
+  await sourceRow.getByRole('link', { name: '查看详情' }).click()
+  await expect(page.getByRole('heading', { level: 1, name: '版本 v1' })).toBeVisible()
+  await expect(page.locator('[data-publish]')).toBeDisabled()
+
+  await page.locator('[data-build]').click()
+  await expect(
+    page.getByText('构建完成，已重新读取服务端覆盖率。', { exact: true }),
+  ).toBeVisible()
+  await expect(page.locator('[data-select-all]')).toBeVisible()
+  await page.locator('[data-select-all]').check()
+  await page.locator('[data-approve-selected]').click()
+  await expect(
+    page.getByText('已批准 30 个练习项目，并重新读取覆盖率。', { exact: true }),
+  ).toBeVisible()
+  await expect(page.locator('[data-publish]')).toBeEnabled()
+
+  await page.locator('[data-publish]').click()
+  await expect(page.locator('[data-inline-confirmation]')).toContainText('确认发布 v1')
+  await page.locator('[data-confirm-publish]').click()
+  await expect(page.locator('[data-status="published"]')).toContainText('已发布')
+  await expect(
+    page.getByText('该版本不可原地修改。需要调整内容时创建同一词库的下一草稿版本。', {
+      exact: true,
+    }),
+  ).toBeVisible()
+  await expect(page.locator('[data-build]')).toHaveCount(0)
+
+  await page.goto('/admin/courses')
+  await page.getByLabel('学习者姓名').fill('Browser learner')
+  await expect(page.locator('select[name="source-version-id"]')).toHaveValue(/.+/u)
+  await page.getByRole('button', { name: '创建课程并生成学习码' }).click()
+  const firstCode = page.locator('[data-one-time-code] code')
+  await expect(firstCode).toHaveText(/^[A-Z2-9]{10}$/u)
+  const accessCode = (await firstCode.textContent())?.trim()
+  if (!accessCode) throw new Error('Browser-created learning code is required')
 
   const createCommands: unknown[] = []
   let createAttempt = 0
@@ -236,7 +289,6 @@ test('production Vue browser preserves an unknown create and closes learner S0 a
 
     await route.continue()
   })
-  await page.goto('/admin/courses')
   const existingCourse = page.getByRole('row').filter({ hasText: 'Browser learner' })
   await existingCourse.getByRole('button', { name: '轮换学习码' }).click()
   await expect(page.locator('[data-rotate-confirmation]')).toBeVisible()
@@ -253,7 +305,7 @@ test('production Vue browser preserves an unknown create and closes learner S0 a
   await page.goto('/app')
   const accessCodeInput = page.getByLabel('10 位学习码')
   await expect(accessCodeInput).toBeVisible()
-  await accessCodeInput.fill(fixture.accessCode)
+  await accessCodeInput.fill(accessCode)
   await page.getByRole('button', { name: '进入课程' }).click()
   await expect(page).toHaveURL(/\/app\/course$/u)
   await expect(page.getByRole('heading', { level: 1, name: '第 1 课' })).toBeVisible()
@@ -271,8 +323,8 @@ test('production Vue browser preserves an unknown create and closes learner S0 a
   await expect(page).toHaveURL(/\/app\/lesson\/[^/]+$/u)
   await expect(page.getByRole('heading', { level: 2, name: 'browser-word-1' })).toBeVisible()
   await page.getByRole('button', { name: '我认识' }).click()
-  await expect(page.getByRole('status')).toContainText('答对了')
-  await expect(page.getByRole('status')).toContainText('服务端已记录这次判断')
+  await expect(page.getByText('答对了', { exact: true })).toBeVisible()
+  await expect(page.getByText('服务端已记录这次判断。', { exact: true })).toBeVisible()
 })
 
 test('runs admin lifecycle, learner isolation, reflux, recovery, and idempotent completion', async ({
@@ -433,6 +485,20 @@ test('runs admin lifecycle, learner isolation, reflux, recovery, and idempotent 
   )
   expect(completed.course.currentLessonNo).toBe(2)
   expect(completionRetry).toEqual(completed)
+
+  const report = await success(
+    await request.get(`/api/app/lessons/${lesson.session.id}/report`, {
+      headers: originHeaders,
+    }),
+    lessonReportSchema,
+  )
+  expect(report).toMatchObject({
+    lessonNo: 1,
+    completedTaskCount: recovered.tasks.length,
+    totalTaskCount: recovered.tasks.length,
+    nextLessonNo: 2,
+    courseStatus: 'active',
+  })
 })
 
 const answerKnown = (
@@ -447,65 +513,6 @@ const answerKnown = (
       data: { taskType: 'recognize_meaning', response: 'known' },
     })
     .then((response) => success(response, taskAnswerResultSchema))
-
-const prepareBrowserWalkingSkeleton = async (
-  request: APIRequestContext,
-  originHeaders: Record<string, string>,
-): Promise<{ accessCode: string; sourceName: string }> => {
-  const sourceName = 'Browser stack source'
-  const imported = await success(
-    await request.post('/api/admin/source-versions/import', {
-      headers: originHeaders,
-      data: {
-        mode: 'new_source',
-        operationToken: generateAdminOperationToken(),
-        sourceName,
-        words: Array.from({ length: 5 }, (_, index) => ({
-          word: `browser-word-${String(index + 1)}`,
-          meaning: `browser-meaning-${String(index + 1)}`,
-          exampleSentence: `I use browser-word-${String(index + 1)} here.`,
-        })),
-      },
-    }),
-    importedSourceVersionSchema,
-  )
-  await success(
-    await request.post(`/api/admin/source-versions/${imported.versionId}/build`, {
-      headers: originHeaders,
-    }),
-    buildCoverageSchema,
-  )
-  const items = await success(
-    await request.get(`/api/admin/source-versions/${imported.versionId}/exercises`),
-    adminExerciseItemListSchema,
-  )
-  await success(
-    await request.post('/api/admin/exercise-items/batch-approve', {
-      headers: originHeaders,
-      data: { itemIds: items.map((item) => item.id) },
-    }),
-    batchApprovalResultSchema,
-  )
-  await success(
-    await request.post(`/api/admin/source-versions/${imported.versionId}/publish`, {
-      headers: originHeaders,
-    }),
-    publishedSourceVersionSchema,
-  )
-  const course = await success(
-    await request.post('/api/admin/courses', {
-      headers: originHeaders,
-      data: {
-        operationToken: generateAdminOperationToken(),
-        learnerName: 'Browser learner',
-        sourceVersionId: imported.versionId,
-      },
-    }),
-    createdCourseSchema,
-  )
-
-  return { accessCode: course.learner.accessCode, sourceName }
-}
 
 const success = async <TSchema extends z.ZodType>(
   response: APIResponse,

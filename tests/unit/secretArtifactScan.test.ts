@@ -28,15 +28,57 @@ const runScanner = (root: string) =>
   })
 
 describe('secret artifact scanner', () => {
-  it('accepts client and Worker artifacts without secret markers', async () => {
+  it('accepts runtime routes and relative Cloudflare artifact paths', async () => {
     const root = await createArtifactRoot()
     await mkdir(join(root, 'client'), { recursive: true })
-    await writeFile(join(root, 'client', 'index.js'), 'console.log("ready")')
+    await writeFile(join(root, 'client', 'index.js'), 'fetch("/api/app/courses")')
+    await writeFile(
+      join(root, 'wrangler.json'),
+      JSON.stringify({
+        configPath: '../../wrangler.jsonc',
+        userConfigPath: '../../wrangler.jsonc',
+        main: 'index.js',
+        assets: { directory: '../client' },
+        d1_databases: [{ migrations_dir: '../../migrations' }],
+      }),
+    )
 
     const result = runScanner(root)
 
     expect(result.status).toBe(0)
     expect(result.stdout).toContain('Secret artifact scan passed')
+  })
+
+  it('rejects build-machine paths in generated source-region metadata', async () => {
+    const root = await createArtifactRoot()
+    const sentinel = '/Users/build-agent/work/eng-learn/node_modules/example/index.mjs'
+    await writeFile(
+      join(root, 'index.js'),
+      `//#region ../../../../..${sentinel}\nconsole.log("ready")\n//#endregion`,
+    )
+
+    const result = runScanner(root)
+    const output = `${result.stdout}${result.stderr}`
+
+    expect(result.status).toBe(1)
+    expect(output).toContain('host-path-metadata')
+    expect(output).not.toContain(sentinel)
+  })
+
+  it('rejects absolute config paths in generated Wrangler artifacts', async () => {
+    const root = await createArtifactRoot()
+    const sentinel = '/private/var/folders/build/eng-learn/wrangler.jsonc'
+    await writeFile(
+      join(root, 'wrangler.json'),
+      JSON.stringify({ configPath: sentinel, userConfigPath: sentinel, main: 'index.js' }),
+    )
+
+    const result = runScanner(root)
+    const output = `${result.stdout}${result.stderr}`
+
+    expect(result.status).toBe(1)
+    expect(output).toContain('host-path-metadata')
+    expect(output).not.toContain(sentinel)
   })
 
   it('rejects dotenv and preview-secret files without printing their values', async () => {

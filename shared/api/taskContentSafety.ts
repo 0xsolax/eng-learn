@@ -1,8 +1,8 @@
 import type { ExerciseItemContent } from './taskSchemas'
 
 export const containsUnicodeWholeToken = (value: string, target: string): boolean => {
-  const normalizedValue = normalizeTaskSafetyText(value)
-  const normalizedTarget = normalizeTaskSafetyText(target)
+  const normalizedValue = canonicalizeTaskSafetyInspectionText(value)
+  const normalizedTarget = canonicalizeTaskSafetyInspectionText(target)
 
   if (!normalizedTarget) return false
 
@@ -19,8 +19,8 @@ export const canonicalizeLearningText = (value: string): string =>
   normalizeTaskSafetyText(value).toLowerCase()
 
 export const containsNormalizedTaskText = (value: string, target: string): boolean => {
-  const normalizedValue = canonicalizeLearningText(value)
-  const normalizedTarget = canonicalizeLearningText(target)
+  const normalizedValue = canonicalizeTaskSafetyInspectionText(value)
+  const normalizedTarget = canonicalizeTaskSafetyInspectionText(target)
 
   return normalizedTarget.length > 0 && normalizedValue.includes(normalizedTarget)
 }
@@ -37,6 +37,8 @@ export const learnerPromptRevealsAnswer = (
     const referenceSentence = content.answer.referenceSentence
 
     return (
+      containsUnicodeWholeToken(content.prompt.meaning, owningWord) ||
+      containsUnicodeWholeToken(content.prompt.instruction, owningWord) ||
       containsNormalizedTaskText(content.prompt.meaning, referenceSentence) ||
       containsNormalizedTaskText(content.prompt.instruction, referenceSentence)
     )
@@ -44,6 +46,14 @@ export const learnerPromptRevealsAnswer = (
 
   return false
 }
+
+const canonicalizeTaskSafetyInspectionText = (value: string): string =>
+  value
+    .normalize('NFKC')
+    .replace(/\p{Default_Ignorable_Code_Point}/gu, '')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .toLowerCase()
 
 const escapeRegularExpression = (value: string): string =>
   value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')

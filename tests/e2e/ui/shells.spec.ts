@@ -11,6 +11,28 @@ const expectNoHorizontalOverflow = async (page: Page): Promise<void> => {
   expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth)
 }
 
+const expectTwoHundredPercentEquivalentReflow = async (
+  page: Page,
+  nominalViewportWidth: number,
+): Promise<void> => {
+  const metrics = await page.evaluate(() => ({
+    cssViewportWidth: window.innerWidth,
+    devicePixelRatio: window.devicePixelRatio,
+    documentScrollWidth: document.documentElement.scrollWidth,
+    rootZoom: getComputedStyle(document.documentElement).zoom,
+    bodyZoom: getComputedStyle(document.body).zoom,
+  }))
+
+  // This is standards-equivalent reflow coverage, not automation of the
+  // browser UI zoom control: half the nominal CSS viewport plus DPR 2 models
+  // the layout metrics, while CSS zoom is deliberately kept at 1.
+  expect(metrics.cssViewportWidth * 2).toBe(nominalViewportWidth)
+  expect(metrics.devicePixelRatio).toBe(2)
+  expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.cssViewportWidth)
+  expect(metrics.rootZoom).toBe('1')
+  expect(metrics.bodyZoom).toBe('1')
+}
+
 const expectNoSeriousAccessibilityViolations = async (page: Page): Promise<void> => {
   await page.waitForFunction(() =>
     document.getAnimations().every((animation) => animation.playState !== 'running'),
@@ -106,6 +128,18 @@ test('@learner [mocked route fixture] keeps one quiet focus across learner viewp
     Number.parseFloat(getComputedStyle(element).animationDuration),
   )
   expect(motionDuration).toBeLessThanOrEqual(0.001)
+})
+
+test('@learner @reflow-200-learner keeps the learner entry usable with 200%-equivalent reflow metrics', async ({
+  page,
+}) => {
+  await installMockedLearnerApiRouteFixture(page)
+  await page.goto('/app')
+
+  await expect(page.getByRole('heading', { level: 1, name: '进入你的课程' })).toBeVisible()
+  await expect(page.getByLabel('10 位学习码')).toBeVisible()
+  await expect(page.getByRole('button', { name: '进入课程' })).toBeVisible()
+  await expectTwoHundredPercentEquivalentReflow(page, 640)
 })
 
 test('@admin keeps a dense segmented workspace across admin viewports', async ({ page }) => {
@@ -322,6 +356,38 @@ test('@admin keeps a dense segmented workspace across admin viewports', async ({
   await expectNoSeriousAccessibilityViolations(page)
 })
 
+test('@admin @reflow-200-admin keeps the admin shell readable with 200%-equivalent reflow metrics', async ({
+  page,
+}) => {
+  await page.route('**/api/admin/session', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        data: {
+          id: 'fixture-admin',
+          source: 'cloudflare_access',
+          email: 'fixture-admin@example.test',
+        },
+      }),
+    })
+  })
+  await page.route('**/api/admin/source-versions', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, data: [] }),
+    })
+  })
+
+  await page.goto('/admin')
+
+  await expect(page.getByRole('heading', { level: 1, name: '词库版本' })).toBeVisible()
+  await expect(page.locator('.admin-mobile-notice')).toContainText('窄屏可查看')
+  await expectTwoHundredPercentEquivalentReflow(page, 1280)
+})
+
 test('@controls exposes real keyboard, size and forced-colors behavior', async ({ page }) => {
   await page.goto('/tests/e2e/ui/fixtures/basic-controls.html')
 
@@ -349,7 +415,7 @@ test('@controls exposes real keyboard, size and forced-colors behavior', async (
     await contrastRatio(page, '[data-testid="learner-button"]', 'html', 'outlineColor'),
   ).toBeGreaterThanOrEqual(3)
   await page.keyboard.press('Enter')
-  await expect(page.getByRole('status')).toHaveText('学习按钮已激活 1 次')
+  await expect(page.getByTestId('activation-status')).toHaveText('学习按钮已激活 1 次')
 
   await page.keyboard.press('Tab')
   await expect(learnerInput).toBeFocused()
@@ -376,6 +442,115 @@ test('@controls exposes real keyboard, size and forced-colors behavior', async (
     ),
   )
   expect(maximumTransitionDuration).toBeLessThanOrEqual(0.001)
+})
+
+test('@controls keeps long Chinese and English content inside narrow viewports', async ({
+  page,
+}) => {
+  await page.goto('/tests/e2e/ui/fixtures/basic-controls.html')
+
+  const longChineseAction = page.getByTestId('long-chinese-action')
+  const longEnglishStatus = page.getByTestId('long-english-status')
+
+  await expect(longChineseAction).toBeVisible()
+  await expect(longEnglishStatus).toBeVisible()
+  await expectNoHorizontalOverflow(page)
+
+  for (const target of [longChineseAction, longEnglishStatus]) {
+    const metrics = await target.evaluate((element) => {
+      const bounds = element.getBoundingClientRect()
+      return {
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        left: bounds.left,
+        right: bounds.right,
+        viewportWidth: document.documentElement.clientWidth,
+      }
+    })
+
+    expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.clientWidth)
+    expect(metrics.left).toBeGreaterThanOrEqual(0)
+    expect(metrics.right).toBeLessThanOrEqual(metrics.viewportWidth)
+  }
+})
+
+test('@controls keeps state meaning visible when Chromium removes color', async ({ page }) => {
+  const devtools = await page.context().newCDPSession(page)
+  await devtools.send('Emulation.setEmulatedVisionDeficiency', {
+    type: 'achromatopsia',
+  })
+
+  try {
+    await page.goto('/tests/e2e/ui/fixtures/basic-controls.html')
+
+    const correctState = page.getByTestId('state-correct')
+    const errorState = page.getByTestId('state-error')
+    const disabledState = page.getByTestId('state-disabled')
+
+    await expect(correctState).toContainText('回答正确')
+    await expect(errorState).toContainText('回答错误')
+    await expect(errorState).toHaveAttribute('role', 'alert')
+    await expect(disabledState).toBeDisabled()
+    await expect(disabledState).toContainText('已禁用')
+
+    const correctMarker = correctState.locator('.ui-status__marker')
+    const errorMarker = errorState.locator('.ui-status__marker')
+    expect(await correctMarker.evaluate((element) => getComputedStyle(element).transform)).toBe('none')
+    expect(await errorMarker.evaluate((element) => getComputedStyle(element).transform)).not.toBe('none')
+
+    await page.goto('/tests/e2e/ui/fixtures/task-renderers.html')
+    const selectedChoice = page.locator('[data-renderer="s2"] input[value="apple"]')
+    await selectedChoice.check()
+    await expect(selectedChoice).toBeChecked()
+    expect((await selectedChoice.boundingBox())?.width).toBeGreaterThanOrEqual(20)
+
+    await page.route('**/api/admin/session', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          data: {
+            id: 'fixture-admin',
+            source: 'cloudflare_access',
+            email: 'fixture-admin@example.test',
+          },
+        }),
+      })
+    })
+    await page.route('**/api/admin/source-versions', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          data: [
+            {
+              sourceId: 'source-published',
+              sourceName: 'Starter words',
+              versionId: 'version-published',
+              versionNo: 2,
+              status: 'published',
+              wordCount: 20,
+              groupCount: 4,
+              exerciseItemCount: 120,
+              approvedItemCount: 120,
+              createdAt: '2026-07-13T00:00:00.000Z',
+              publishedAt: '2026-07-14T00:00:00.000Z',
+            },
+          ],
+        }),
+      })
+    })
+    await page.goto('/admin/source-versions')
+
+    const publishedState = page.locator('.status-badge[data-status="published"]')
+    await expect(publishedState).toBeVisible()
+    await expect(publishedState).toHaveText('已发布')
+  } finally {
+    await devtools.send('Emulation.setEmulatedVisionDeficiency', { type: 'none' })
+    await devtools.detach()
+  }
 })
 
 test('@renderers keep six task types keyboard-operable and answer-safe', async ({ page }) => {

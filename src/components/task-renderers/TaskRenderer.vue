@@ -16,6 +16,7 @@ withDefaults(
     task: LessonTaskDto
     disabled?: boolean
     referenceSentence?: string
+    recoveryDraft?: string
   }>(),
   { disabled: false },
 )
@@ -81,6 +82,7 @@ void rendererCoverage
     v-bind="{
       ...(referenceSentence === undefined ? {} : { referenceSentence }),
       ...(task.preview === undefined ? {} : { restoredPreview: task.preview }),
+      ...(recoveryDraft === undefined ? {} : { recoveryDraft }),
     }"
     @preview="$emit('preview', $event)"
     @submit="$emit('submit', $event)"

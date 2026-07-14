@@ -15,7 +15,6 @@ import type {
 import { exerciseItemContentSchema } from '../../shared/api/taskSchemas'
 import {
   canonicalizeLearningText,
-  containsNormalizedTaskText,
   containsUnicodeWholeToken,
   learnerPromptRevealsAnswer,
 } from '../../shared/api/taskContentSafety'
@@ -535,45 +534,51 @@ const canBuildTask = (
   word: WordRecord,
   task: (typeof MVP_STAGE_TASKS)[number],
   words: WordRecord[],
-): boolean => {
+): boolean => getTaskBuildBlockReason(word, task, words) === undefined
+
+const getTaskBuildBlockReason = (
+  word: WordRecord,
+  task: (typeof MVP_STAGE_TASKS)[number],
+  words: WordRecord[],
+): CoverageBlockReason | undefined => {
   if (
     (task.taskType === 'recall_word' || task.taskType === 'multiple_choice') &&
     containsUnicodeWholeToken(word.meaning, word.word)
   ) {
-    return false
+    return 'exercise_item_invalid'
   }
 
   if (task.requiresExampleSentence && word.exampleSentence.trim().length === 0) {
-    return false
+    return 'example_sentence_required'
   }
 
   if (
     (task.taskType === 'sentence_build' || task.taskType === 'sentence_output') &&
     !containsUnicodeWholeToken(word.exampleSentence, word.word)
   ) {
-    return false
+    return 'example_sentence_required'
   }
 
   if (
     task.taskType === 'sentence_output' &&
-    containsNormalizedTaskText(word.meaning, word.exampleSentence)
+    generatedTaskRevealsAnswer(word, task, words)
   ) {
-    return false
+    return 'exercise_item_invalid'
   }
 
   if (task.taskType === 'multiple_choice' && words.length < 3) {
-    return false
+    return 'distractors_required'
   }
 
   if (task.taskType === 'fill_blank' && !createFillBlankSentence(word)) {
-    return false
+    return 'example_sentence_required'
   }
 
   if (task.taskType === 'sentence_build' && !hasVisibleSentenceShuffle(word)) {
-    return false
+    return 'sentence_pieces_required'
   }
 
-  return true
+  return undefined
 }
 
 const createCoverageCells = (
@@ -613,24 +618,7 @@ const createCoverageCells = (
         }
       }
 
-      const reason: CoverageBlockReason =
-        (task.taskType === 'recall_word' || task.taskType === 'multiple_choice') &&
-        containsUnicodeWholeToken(word.meaning, word.word)
-          ? 'exercise_item_invalid'
-          : task.taskType === 'sentence_output' &&
-              containsNormalizedTaskText(word.meaning, word.exampleSentence)
-            ? 'exercise_item_invalid'
-          : task.requiresExampleSentence &&
-        (word.exampleSentence.trim().length === 0 ||
-          !containsUnicodeWholeToken(word.exampleSentence, word.word))
-        ? 'example_sentence_required'
-        : task.taskType === 'fill_blank' && !createFillBlankSentence(word)
-          ? 'example_sentence_required'
-        : task.taskType === 'multiple_choice' && words.length < 3
-          ? 'distractors_required'
-          : task.taskType === 'sentence_build' && !hasVisibleSentenceShuffle(word)
-            ? 'sentence_pieces_required'
-            : 'exercise_item_required'
+      const reason = getTaskBuildBlockReason(word, task, words) ?? 'exercise_item_required'
 
       return {
         ...base,
@@ -788,6 +776,18 @@ const createExerciseContent = (
     prompt: createPrompt(word, stage, words),
     answer: createAnswer(word, stage),
   }
+}
+
+const generatedTaskRevealsAnswer = (
+  word: WordRecord,
+  task: (typeof MVP_STAGE_TASKS)[number],
+  words: WordRecord[],
+): boolean => {
+  const content = exerciseItemContentSchema.safeParse(
+    createExerciseContent(word, task.stage, task.taskType, words),
+  )
+
+  return !content.success || learnerPromptRevealsAnswer(content.data, word.word)
 }
 
 const createPrompt = (word: WordRecord, stage: WordStage, words: WordRecord[]): unknown => {

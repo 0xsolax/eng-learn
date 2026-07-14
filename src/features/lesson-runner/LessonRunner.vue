@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { ApiFailureError } from '@/api/errors'
+import { ApiFailureError, ApiNetworkError, InvalidApiResponseError } from '@/api/errors'
 import { isLearnerSessionAccessError } from '@/api/learnerSessionErrors'
 import TaskRenderer from '@/components/task-renderers/TaskRenderer.vue'
 import TaskShell from '@/components/task-renderers/TaskShell.vue'
@@ -23,23 +23,55 @@ type ShellFeedback = {
   title: string
   message: string
 }
-type RetryKind = 'continue' | 'preview' | 'reload' | 'submit'
+type RetryKind = 'continue' | 'preview' | 'reload' | 'submit' | 'sync'
 
 const props = defineProps<{ api: RunnerApi; sessionId: string }>()
 const emit = defineEmits<{
   'access-required': []
-  completed: [lesson: CompletedLessonDto]
+  completed: [lesson?: CompletedLessonDto]
   exit: []
 }>()
 
 const requireNewAccess = (error: unknown): boolean => {
   if (!isLearnerSessionAccessError(error)) return false
+  lesson.value = undefined
+  queuedLesson.value = undefined
+  feedback.value = undefined
+  retryKind.value = undefined
+  retryLabel.value = undefined
+  pendingSubmission.value = undefined
+  pendingResult.value = undefined
+  pendingPreview.value = undefined
+  referenceSentence.value = undefined
+  recoveryDraft.value = undefined
   emit('access-required')
   return true
 }
 
 const isLegacyContentError = (error: unknown): boolean =>
   error instanceof ApiFailureError && error.code === 'legacy_content_incompatible'
+
+const failureCode = (error: unknown): string | undefined => {
+  if (!error || typeof error !== 'object' || !('code' in error)) return undefined
+  return typeof error.code === 'string' ? error.code : undefined
+}
+
+const isTaskAuthorityDrift = (error: unknown): boolean =>
+  ['task_not_current', 'lesson_not_active', 'conflict', 's5_preview_required'].includes(
+    failureCode(error) ?? '',
+  )
+
+const shouldReturnToCourse = (error: unknown): boolean =>
+  failureCode(error) === 'course_unavailable'
+
+const isNonRetryableTaskFailure = (error: unknown): boolean =>
+  ['validation_error', 'task_type_mismatch'].includes(failureCode(error) ?? '')
+
+const isRetryableUnknownResult = (error: unknown): boolean =>
+  error instanceof ApiNetworkError ||
+  (error instanceof InvalidApiResponseError &&
+    ((error.status >= 200 && error.status < 300) || error.status >= 500)) ||
+  (error instanceof ApiFailureError && error.status >= 500)
 
 const lesson = ref<StartedLessonDto>()
 const loading = ref(true)
@@ -60,14 +92,19 @@ const pendingPreview = ref<{
   request: SentenceOutputPreviewRequest
 }>()
 const referenceSentence = ref<string>()
+const recoveryDraft = ref<string>()
+const taskRecoveryGeneration = ref(0)
 const completionBusy = ref(false)
 const completionIssue = ref<{
-  kind: 'incomplete' | 'unknown'
+  kind: 'incomplete' | 'terminal' | 'unknown'
   message: string
 }>()
 const runnerRoot = ref<HTMLElement>()
 const taskRegion = ref<HTMLElement>()
 const currentTask = computed(() => lesson.value?.tasks.find((task) => task.status === 'pending'))
+const taskRendererKey = computed(
+  () => `${currentTask.value?.id ?? 'none'}:${String(taskRecoveryGeneration.value)}`,
+)
 const currentPosition = computed(() => {
   if (!lesson.value || !currentTask.value) return 0
   return lesson.value.tasks.findIndex((task) => task.id === currentTask.value?.id) + 1
@@ -89,16 +126,36 @@ const focusCurrentAction = async (): Promise<void> => {
     return
   }
 
-  runnerRoot.value
-    ?.querySelector<HTMLElement>(
-      '[data-action="reload-lesson"], [data-action="complete-lesson"]',
-    )
-    ?.focus()
+  const primaryAction = runnerRoot.value?.querySelector<HTMLElement>(
+    '[data-action="reload-lesson"], [data-action="complete-lesson"]',
+  )
+  if (primaryAction) {
+    primaryAction.focus()
+    return
+  }
+
+  runnerRoot.value?.querySelector<HTMLElement>('[data-action="exit"]')?.focus()
 }
 
 const focusRetryAction = async (): Promise<void> => {
   await nextTick()
   runnerRoot.value?.querySelector<HTMLElement>('[data-action="retry"]')?.focus()
+}
+
+const routeClosedAuthority = (authoritativeLesson: StartedLessonDto): boolean => {
+  if (authoritativeLesson.session.status === 'completed') {
+    lesson.value = undefined
+    emit('completed')
+    return true
+  }
+
+  if (authoritativeLesson.session.status === 'abandoned') {
+    lesson.value = undefined
+    emit('exit')
+    return true
+  }
+
+  return false
 }
 
 const loadLesson = async (): Promise<void> => {
@@ -107,9 +164,17 @@ const loadLesson = async (): Promise<void> => {
   loadErrorRetryable.value = true
   completionIssue.value = undefined
   try {
-    lesson.value = await props.api.getLesson(props.sessionId)
+    const authoritativeLesson = await props.api.getLesson(props.sessionId)
+
+    if (!routeClosedAuthority(authoritativeLesson)) {
+      lesson.value = authoritativeLesson
+    }
   } catch (error) {
     if (requireNewAccess(error)) return
+    if (shouldReturnToCourse(error)) {
+      emit('exit')
+      return
+    }
     if (isLegacyContentError(error)) {
       loadError.value = '本课内容暂时无法使用，请返回课程并联系课程管理员处理'
       loadErrorRetryable.value = false
@@ -132,6 +197,21 @@ const completeLesson = async (): Promise<void> => {
     emit('completed', completed)
   } catch (error) {
     if (requireNewAccess(error)) return
+    if (shouldReturnToCourse(error)) {
+      emit('exit')
+      return
+    }
+    if (failureCode(error) === 'lesson_not_active') {
+      await syncLesson()
+      return
+    }
+    if (isLegacyContentError(error)) {
+      completionIssue.value = {
+        kind: 'terminal',
+        message: '本课内容暂时无法使用，请返回课程并联系课程管理员处理。',
+      }
+      return
+    }
     if (
       error instanceof ApiFailureError &&
       error.apiError.code === 'lesson_incomplete'
@@ -141,10 +221,15 @@ const completeLesson = async (): Promise<void> => {
         kind: 'incomplete',
         message: `服务端确认仍有 ${String(details.pendingRequiredTaskIds.length)} 道必答任务未完成（主任务 ${String(details.completedPrimary)} / ${String(details.totalPrimary)}）。请重新读取本课。`,
       }
-    } else {
+    } else if (isRetryableUnknownResult(error)) {
       completionIssue.value = {
         kind: 'unknown',
         message: '完成请求尚未确认，本页不会前进。请检查网络后重新确认。',
+      }
+    } else {
+      completionIssue.value = {
+        kind: 'terminal',
+        message: '服务端已返回确定性错误，页面不会循环重试完成请求。请返回课程后重新进入。',
       }
     }
   } finally {
@@ -154,6 +239,8 @@ const completeLesson = async (): Promise<void> => {
 }
 
 const handleCompletionAction = async (): Promise<void> => {
+  if (completionIssue.value?.kind === 'terminal') return
+
   if (completionIssue.value?.kind === 'incomplete') {
     await loadLesson()
     return
@@ -174,10 +261,38 @@ const showAnswerFeedback = async (result: TaskAnswerResult): Promise<void> => {
 
 const reloadAfterAnswer = async (result: TaskAnswerResult): Promise<void> => {
   try {
-    queuedLesson.value = await props.api.getLesson(props.sessionId)
+    const authoritativeLesson = await props.api.getLesson(props.sessionId)
+
+    if (routeClosedAuthority(authoritativeLesson)) return
+
+    queuedLesson.value = authoritativeLesson
     await showAnswerFeedback(result)
   } catch (error) {
     if (requireNewAccess(error)) return
+    if (shouldReturnToCourse(error)) {
+      emit('exit')
+      return
+    }
+    if (isLegacyContentError(error)) {
+      feedback.value = {
+        tone: 'error',
+        title: '本课内容暂时无法使用',
+        message: '请返回课程并联系课程管理员处理。',
+      }
+      retryKind.value = undefined
+      retryLabel.value = undefined
+      return
+    }
+    if (!isRetryableUnknownResult(error)) {
+      feedback.value = {
+        tone: 'error',
+        title: '无法同步服务端状态',
+        message: '服务端已返回确定性错误，页面不会循环重试。请返回课程后重新进入。',
+      }
+      retryKind.value = undefined
+      retryLabel.value = undefined
+      return
+    }
     feedback.value = {
       tone: 'error',
       title: '答案已保存，但同步失败',
@@ -187,6 +302,97 @@ const reloadAfterAnswer = async (result: TaskAnswerResult): Promise<void> => {
     retryLabel.value = '重新同步'
     await focusRetryAction()
   }
+}
+
+const requireLessonSync = async (): Promise<void> => {
+  feedback.value = {
+    tone: 'error',
+    title: '题目状态已更新',
+    message: '当前输入仍保留在页面上，请重新同步本课后继续。',
+  }
+  retryKind.value = 'sync'
+  retryLabel.value = '重新同步本课'
+  await focusRetryAction()
+}
+
+const syncLesson = async (): Promise<void> => {
+  busy.value = true
+  feedback.value = undefined
+  try {
+    const previousTask = currentTask.value
+    const authoritativeLesson = await props.api.getLesson(props.sessionId)
+    const authoritativeTask = authoritativeLesson.tasks.find((task) => task.status === 'pending')
+
+    if (
+      previousTask?.taskType === 'sentence_output' &&
+      authoritativeTask?.taskType === 'sentence_output' &&
+      authoritativeTask.id === previousTask.id
+    ) {
+      recoveryDraft.value = authoritativeTask.preview?.draft ?? pendingSentenceDraft(previousTask.id)
+      taskRecoveryGeneration.value += 1
+    } else {
+      recoveryDraft.value = undefined
+    }
+
+    retryKind.value = undefined
+    retryLabel.value = undefined
+    pendingSubmission.value = undefined
+    pendingPreview.value = undefined
+    referenceSentence.value = undefined
+
+    if (routeClosedAuthority(authoritativeLesson)) return
+
+    lesson.value = authoritativeLesson
+    await focusCurrentAction()
+  } catch (error) {
+    if (requireNewAccess(error)) return
+    if (shouldReturnToCourse(error)) {
+      emit('exit')
+      return
+    }
+    if (isLegacyContentError(error)) {
+      feedback.value = {
+        tone: 'error',
+        title: '本课内容暂时无法使用',
+        message: '请返回课程并联系课程管理员处理。',
+      }
+      retryKind.value = undefined
+      retryLabel.value = undefined
+      return
+    }
+    if (!isRetryableUnknownResult(error)) {
+      feedback.value = {
+        tone: 'error',
+        title: '无法同步服务端状态',
+        message: '服务端已返回确定性错误，页面不会循环重试。请返回课程后重新进入。',
+      }
+      retryKind.value = undefined
+      retryLabel.value = undefined
+      return
+    }
+    feedback.value = {
+      tone: 'error',
+      title: '暂时无法同步本课',
+      message: '当前输入仍保留，请检查网络后重新同步。',
+    }
+    retryKind.value = 'sync'
+    retryLabel.value = '重新同步本课'
+    await focusRetryAction()
+  } finally {
+    busy.value = false
+  }
+}
+
+const pendingSentenceDraft = (taskId: string): string | undefined => {
+  if (pendingPreview.value?.taskId === taskId) {
+    return pendingPreview.value.request.draft
+  }
+
+  const pending = pendingSubmission.value
+
+  return pending?.taskId === taskId && pending.submission.taskType === 'sentence_output'
+    ? pending.submission.draft
+    : undefined
 }
 
 const submitAnswer = async (submission: SubmitTaskAnswerRequest): Promise<void> => {
@@ -207,6 +413,34 @@ const submitAnswer = async (submission: SubmitTaskAnswerRequest): Promise<void> 
     await reloadAfterAnswer(result)
   } catch (error) {
     if (requireNewAccess(error)) return
+    if (shouldReturnToCourse(error)) {
+      emit('exit')
+      return
+    }
+    if (isTaskAuthorityDrift(error)) {
+      await requireLessonSync()
+      return
+    }
+    if (isNonRetryableTaskFailure(error)) {
+      feedback.value = {
+        tone: 'error',
+        title: '当前答案无法提交',
+        message: '服务端已明确拒绝当前题目或答案格式，请返回课程后重新进入。',
+      }
+      retryKind.value = undefined
+      retryLabel.value = undefined
+      return
+    }
+    if (!isRetryableUnknownResult(error)) {
+      feedback.value = {
+        tone: 'error',
+        title: '当前请求无法安全重试',
+        message: '服务端已返回确定性错误，页面不会重复提交当前答案。请返回课程后重新进入。',
+      }
+      retryKind.value = undefined
+      retryLabel.value = undefined
+      return
+    }
     feedback.value = {
       tone: 'error',
       title: '答案尚未提交',
@@ -239,6 +473,24 @@ const previewSentenceOutput = async (
     retryKind.value = undefined
   } catch (error) {
     if (requireNewAccess(error)) return
+    if (shouldReturnToCourse(error)) {
+      emit('exit')
+      return
+    }
+    if (isTaskAuthorityDrift(error)) {
+      await requireLessonSync()
+      return
+    }
+    if (!isRetryableUnknownResult(error)) {
+      feedback.value = {
+        tone: 'error',
+        title: '当前参考句无法读取',
+        message: '服务端已返回确定性错误，页面不会重复请求参考句。请返回课程后重新进入。',
+      }
+      retryKind.value = undefined
+      retryLabel.value = undefined
+      return
+    }
     feedback.value = {
       tone: 'error',
       title: '参考句尚未读取',
@@ -265,6 +517,7 @@ const handleShellAction = async (): Promise<void> => {
     pendingResult.value = undefined
     pendingPreview.value = undefined
     referenceSentence.value = undefined
+    recoveryDraft.value = undefined
     await focusCurrentAction()
     return
   }
@@ -277,6 +530,11 @@ const handleShellAction = async (): Promise<void> => {
     } finally {
       busy.value = false
     }
+    return
+  }
+
+  if (action === 'sync') {
+    await syncLesson()
     return
   }
 
@@ -361,11 +619,15 @@ watch(() => props.sessionId, loadLesson, { immediate: true })
     >
       <div ref="taskRegion">
         <TaskRenderer
+          :key="taskRendererKey"
           :task="currentTask"
           :disabled="busy || feedback !== undefined"
-          v-bind="visibleReferenceSentence === undefined
-            ? {}
-            : { referenceSentence: visibleReferenceSentence }"
+          v-bind="{
+            ...(visibleReferenceSentence === undefined
+              ? {}
+              : { referenceSentence: visibleReferenceSentence }),
+            ...(recoveryDraft === undefined ? {} : { recoveryDraft }),
+          }"
           @preview="previewSentenceOutput"
           @submit="submitAnswer"
         />
@@ -386,6 +648,7 @@ watch(() => props.sessionId, loadLesson, { immediate: true })
           {{ completionIssue?.message ?? '请让服务端确认本课是否满足完成条件。' }}
         </UiStatusMessage>
         <UiButton
+          v-if="completionIssue?.kind !== 'terminal'"
           context="learner"
           data-action="complete-lesson"
           :loading="completionBusy"

@@ -20,6 +20,7 @@ import type {
   CourseRepository,
   LessonSessionRecord,
   LessonTaskRecord,
+  RecordAnswerInput,
   UserWordStateRecord,
 } from '../repositories/courseRepository'
 import type { ContentRepository, SourceVersionSnapshot } from '../repositories/contentRepository'
@@ -465,6 +466,7 @@ export const createCourseRuntime = ({
             createdAt,
           })
         : completedQueue
+    const taskDelta = createRecordAnswerTaskDelta(lessonTasks, nextQueue)
     const recorded = await courseRepository.recordAnswer({
       task: completedTask,
       wordState: updatedWordState,
@@ -482,7 +484,7 @@ export const createCourseRuntime = ({
         lessonNo: session.lessonNo,
         createdAt,
       },
-      tasks: nextQueue,
+      ...taskDelta,
       advanceWordState,
     })
 
@@ -561,6 +563,52 @@ export const createCourseRuntime = ({
     completeLesson,
   }
 }
+
+const createRecordAnswerTaskDelta = (
+  before: LessonTaskRecord[],
+  after: LessonTaskRecord[],
+): Pick<
+  RecordAnswerInput,
+  | 'taskMutations'
+  | 'reorderedExistingTaskIds'
+  | 'taskCount'
+  | 'completedTaskCount'
+> => {
+  const beforeById = new Map(before.map((task) => [task.id, task]))
+  const taskMutations: LessonTaskRecord[] = []
+  const reorderedExistingTaskIds: string[] = []
+
+  for (const task of after) {
+    const previous = beforeById.get(task.id)
+
+    if (previous && previous.orderIndex !== task.orderIndex) {
+      reorderedExistingTaskIds.push(task.id)
+    }
+
+    if (!previous || hasMutableTaskColumnChange(previous, task)) {
+      taskMutations.push(task)
+    }
+  }
+
+  return {
+    taskMutations,
+    reorderedExistingTaskIds,
+    taskCount: after.length,
+    completedTaskCount: after.filter((task) => task.status === 'completed').length,
+  }
+}
+
+const hasMutableTaskColumnChange = (
+  before: LessonTaskRecord,
+  after: LessonTaskRecord,
+): boolean =>
+  before.orderIndex !== after.orderIndex ||
+  before.status !== after.status ||
+  before.role !== after.role ||
+  before.required !== after.required ||
+  before.refluxSourceTaskId !== after.refluxSourceTaskId ||
+  before.draftAnswer !== after.draftAnswer ||
+  before.referenceRevealedAt !== after.referenceRevealedAt
 
 const replayCreatedCourse = async (
   repository: CourseRepository,
@@ -798,7 +846,12 @@ const scheduleWrongAnswerReflux = (input: {
   gap: number
   createdAt: string
 }): LessonTaskRecord[] => {
-  const bridgeSources = input.tasks.filter((task) => task.role === 'primary')
+  const primarySources = input.tasks.filter((task) => task.role === 'primary')
+  const differentWordSources = primarySources.filter(
+    (task) => task.wordId !== input.task.wordId,
+  )
+  const bridgeSources =
+    differentWordSources.length > 0 ? differentWordSources : primarySources
 
   if (bridgeSources.length === 0) {
     throw new DomainError('course_unavailable', 'No lesson snapshot is available for bridge tasks')

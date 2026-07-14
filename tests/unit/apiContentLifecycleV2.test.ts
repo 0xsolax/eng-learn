@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { z } from 'zod'
 import { createTestWorkerApp, type WorkerApp } from '../../server/app'
+import { routeAdminContentRequest } from '../../server/http/adminRoutes'
+import { toApiErrorResponse } from '../../server/http/apiResponse'
+import { createInMemoryContentRepository } from '../../server/repositories/inMemoryContentRepository'
+import { createContentBuilder, type ContentBuilder } from '../../server/services/ContentBuilder'
 import {
   adminExerciseItemListSchema,
   buildCoverageSchema,
@@ -126,6 +130,135 @@ describe('worker admin content lifecycle contract', () => {
     )
     expect(versions.map((version) => version.versionNo)).toEqual([3, 2, 1])
   })
+
+  it('fails closed at edit, approve, coverage and publish boundaries for S5 owning-word leaks', async () => {
+    const repository = createInMemoryContentRepository()
+    const contentBuilder = createContentBuilder({
+      repository,
+      now: () => new Date('2026-07-13T00:00:00.000Z'),
+    })
+    const app = createAdminContentBoundaryApp(contentBuilder)
+    const sourceWords = words(5)
+
+    sourceWords[0] = {
+      word: 'apple',
+      meaning: '苹果',
+      exampleSentence: 'I ate an apple.',
+    }
+
+    const draft = await contentBuilder.importWords({
+      sourceName: 'S5 owning-word boundary source',
+      words: sourceWords,
+    })
+
+    await contentBuilder.buildExerciseItems(draft.versionId)
+
+    const items = await contentBuilder.listExerciseItems(draft.versionId)
+    const item = items.find(
+      (candidate) => candidate.word === 'apple' && candidate.taskType === 'sentence_output',
+    )
+
+    if (!item) throw new Error('Expected an S5 exercise item')
+
+    const editResponse = await app.fetch(
+      request(`/api/admin/exercise-items/${item.id}`, {
+        method: 'PUT',
+        body: {
+          content: {
+            stage: 'S5',
+            taskType: 'sentence_output',
+            prompt: {
+              meaning: '请使用 ap\u200Bple 完成一句话',
+              instruction: 'Write one complete English sentence.',
+            },
+            answer: { referenceSentence: 'I ate an apple.' },
+          },
+        },
+      }),
+    )
+    const editPayload = await editResponse.json()
+
+    expect(editResponse.status).toBe(400)
+    expect(editPayload).toMatchObject({
+      ok: false,
+      error: { code: 'validation_error' },
+    })
+    expect(JSON.stringify(editPayload)).not.toContain('ap\u200Bple')
+    expect(await contentBuilder.getExerciseItem(item.id)).toEqual(item)
+
+    await contentBuilder.approveExerciseItems(
+      items.filter((candidate) => candidate.id !== item.id).map((candidate) => candidate.id),
+    )
+
+    let snapshot = await repository.getSourceVersion(draft.versionId)
+    let storedItem = await repository.getExerciseItem(item.id)
+
+    if (!snapshot || !storedItem) throw new Error('Expected the stored S5 exercise item')
+
+    await repository.updateExerciseItems(
+      draft.versionId,
+      [
+        {
+          ...storedItem,
+          prompt: {
+            meaning: '苹果',
+            instruction: 'Write one sentence with ａｐｐｌｅ.',
+          },
+        },
+      ],
+      snapshot.version.contentRevision,
+    )
+
+    const approveResponse = await app.fetch(
+      request(`/api/admin/exercise-items/${item.id}/approve`, { method: 'POST' }),
+    )
+    const approvePayload = await approveResponse.json()
+
+    expect(approveResponse.status).toBe(400)
+    expect(approvePayload).toMatchObject({
+      ok: false,
+      error: { code: 'validation_error' },
+    })
+    expect(JSON.stringify(approvePayload)).not.toContain('ａｐｐｌｅ')
+
+    const coverage = await success(
+      await app.fetch(request(`/api/admin/source-versions/${draft.versionId}/coverage`)),
+      buildCoverageSchema,
+    )
+
+    expect(coverage.cells).toContainEqual(
+      expect.objectContaining({
+        word: 'apple',
+        stage: 'S5',
+        taskType: 'sentence_output',
+        status: 'draft',
+        reason: 'exercise_item_invalid',
+      }),
+    )
+
+    snapshot = await repository.getSourceVersion(draft.versionId)
+    storedItem = await repository.getExerciseItem(item.id)
+
+    if (!snapshot || !storedItem) throw new Error('Expected the stored S5 exercise item')
+
+    await repository.updateExerciseItems(
+      draft.versionId,
+      [{ ...storedItem, status: 'approved' }],
+      snapshot.version.contentRevision,
+    )
+
+    const publishResponse = await app.fetch(
+      request(`/api/admin/source-versions/${draft.versionId}/publish`, { method: 'POST' }),
+    )
+    const publishPayload = await publishResponse.json()
+
+    expect(publishResponse.status).toBe(409)
+    expect(publishPayload).toMatchObject({
+      ok: false,
+      error: { code: 'coverage_incomplete' },
+    })
+    expect((await repository.getSourceVersion(draft.versionId))?.version.status).toBe('draft')
+  })
 })
 
 const createAdminTestApp = (): WorkerApp =>
@@ -133,6 +266,19 @@ const createAdminTestApp = (): WorkerApp =>
     adminIdentity: { id: 'admin-1', email: 'admin@example.test' },
     allowedOrigin: ORIGIN,
   })
+
+const createAdminContentBoundaryApp = (contentBuilder: ContentBuilder): WorkerApp => ({
+  async fetch(request) {
+    try {
+      return (
+        (await routeAdminContentRequest(request, new URL(request.url), contentBuilder)) ??
+        new Response(null, { status: 404 })
+      )
+    } catch (error) {
+      return toApiErrorResponse(error)
+    }
+  },
+})
 
 const importVersion = (
   app: WorkerApp,

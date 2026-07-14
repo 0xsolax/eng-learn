@@ -4,6 +4,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import process from 'node:process'
+import { sanitizeGeneratedReleaseMetadata } from './release-metadata-sanitizer.mjs'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, '..')
@@ -81,6 +82,10 @@ try {
 
   await run(join(repositoryRoot, 'node_modules', '.bin', 'vite'), ['build'], {
     env: environment,
+  })
+  await sanitizeGeneratedReleaseMetadata({
+    workerPath: join(projectRoot, 'dist', 'eng_learn', 'index.js'),
+    outputConfigPath: join(projectRoot, 'dist', 'eng_learn', 'wrangler.json'),
   })
   await run(process.execPath, [
     join(repositoryRoot, 'scripts', 'check-no-secret-artifacts.mjs'),
