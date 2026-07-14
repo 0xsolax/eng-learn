@@ -9,7 +9,8 @@ import { pathToFileURL } from 'node:url'
 import { promisify } from 'node:util'
 
 const pbkdf2Async = promisify(pbkdf2)
-const ITERATIONS = 600_000
+const CONFIG_VERSION = 2
+const ITERATIONS = 100_000
 const ALGORITHM = 'PBKDF2-HMAC-SHA256'
 const USERNAME_PATTERN = /^[A-Za-z0-9._+@-]+$/
 const NON_VISIBLE_CHARACTER_PATTERN = /[\p{C}\p{Zl}\p{Zp}]/u
@@ -27,7 +28,7 @@ export const createSerializedAdminConfig = async (input) => {
   const salt = randomBytes(16)
   const verifier = await pbkdf2Async(input.password, salt, ITERATIONS, 32, 'sha256')
   const config = {
-    version: 1,
+    version: CONFIG_VERSION,
     username,
     displayName,
     credentialId: randomUUID(),
@@ -37,11 +38,11 @@ export const createSerializedAdminConfig = async (input) => {
     verifier: verifier.toString('base64url'),
     rateLimitKey: randomBytes(32).toString('base64url'),
   }
-  return `v1.${Buffer.from(JSON.stringify(config), 'utf8').toString('base64url')}`
+  return `v${String(CONFIG_VERSION)}.${Buffer.from(JSON.stringify(config), 'utf8').toString('base64url')}`
 }
 
 export const replaceAdminAuthConfig = (current, encoded) => {
-  if (!/^v1\.[A-Za-z0-9_-]+$/.test(encoded)) {
+  if (!/^v[12]\.[A-Za-z0-9_-]+$/.test(encoded)) {
     throw new Error('Refusing to write an invalid ADMIN_AUTH_CONFIG value')
   }
 
@@ -151,8 +152,8 @@ const validateDisplayName = (candidate) => {
 
 const validatePassword = (password, username, displayName) => {
   const length = Array.from(password).length
-  if (length < 15 || length > 128) {
-    throw new Error('Admin password must contain 15 to 128 Unicode code points')
+  if (length < 10 || length > 128) {
+    throw new Error('Admin password must contain 10 to 128 Unicode code points')
   }
   const normalized = password.toLocaleLowerCase('en-US')
   const blocked = new Set([
@@ -202,13 +203,13 @@ export const putRemoteSecret = async (encoded, command = 'pnpm') =>
   new Promise((resolvePromise, reject) => {
     const child = spawn(
       command,
-      ['exec', 'wrangler', 'secret', 'put', 'ADMIN_AUTH_CONFIG'],
+      ['exec', 'wrangler', 'versions', 'secret', 'put', 'ADMIN_AUTH_CONFIG'],
       { stdio: ['pipe', 'inherit', 'inherit'] },
     )
     child.once('error', reject)
     child.once('exit', (code, signal) => {
       if (code === 0) resolvePromise()
-      else reject(new Error(`Wrangler secret put failed (${signal ?? code ?? 'unknown'})`))
+      else reject(new Error(`Wrangler versions secret put failed (${signal ?? code ?? 'unknown'})`))
     })
     child.stdin.end(`${encoded}\n`)
   })
@@ -251,7 +252,9 @@ const run = async () => {
   }
 
   await putRemoteSecret(encoded)
-  process.stdout.write('Remote administrator authentication configuration updated\n')
+  process.stdout.write(
+    'Remote administrator authentication candidate version created without deployment\n',
+  )
 }
 
 const isMain =

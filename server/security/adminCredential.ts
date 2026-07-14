@@ -1,6 +1,7 @@
 import { z } from 'zod'
 
-export const ADMIN_PASSWORD_ITERATIONS = 600_000
+export const ADMIN_PASSWORD_ITERATIONS = 100_000
+export const LEGACY_ADMIN_PASSWORD_ITERATIONS = 600_000
 export const ADMIN_PASSWORD_ALGORITHM = 'PBKDF2-HMAC-SHA256' as const
 const NON_VISIBLE_CHARACTER_PATTERN = /[\p{C}\p{Zl}\p{Zp}]/u
 
@@ -32,19 +33,36 @@ const displayNameSchema = z
     message: 'Admin display name must contain at most 64 Unicode code points',
   })
 
-const adminAuthConfigSchema = z
+const adminAuthConfigFields = {
+  username: usernameSchema,
+  displayName: displayNameSchema,
+  credentialId: z.uuid(),
+  algorithm: z.literal(ADMIN_PASSWORD_ALGORITHM),
+  salt: base64UrlBytes(16),
+  verifier: base64UrlBytes(32),
+  rateLimitKey: base64UrlBytes(32),
+}
+
+const legacyAdminAuthConfigSchema = z
   .object({
     version: z.literal(1),
-    username: usernameSchema,
-    displayName: displayNameSchema,
-    credentialId: z.uuid(),
-    algorithm: z.literal(ADMIN_PASSWORD_ALGORITHM),
-    iterations: z.literal(ADMIN_PASSWORD_ITERATIONS),
-    salt: base64UrlBytes(16),
-    verifier: base64UrlBytes(32),
-    rateLimitKey: base64UrlBytes(32),
+    ...adminAuthConfigFields,
+    iterations: z.literal(LEGACY_ADMIN_PASSWORD_ITERATIONS),
   })
   .strict()
+
+const currentAdminAuthConfigSchema = z
+  .object({
+    version: z.literal(2),
+    ...adminAuthConfigFields,
+    iterations: z.literal(ADMIN_PASSWORD_ITERATIONS),
+  })
+  .strict()
+
+const adminAuthConfigSchema = z.discriminatedUnion('version', [
+  legacyAdminAuthConfigSchema,
+  currentAdminAuthConfigSchema,
+])
 
 export type AdminAuthConfig = z.infer<typeof adminAuthConfigSchema>
 
@@ -60,7 +78,7 @@ export const createAdminAuthConfig = async (input: {
   const verifier = await derivePassword(input.password, salt, ADMIN_PASSWORD_ITERATIONS)
 
   return {
-    version: 1,
+    version: 2,
     username,
     displayName,
     credentialId: crypto.randomUUID(),
@@ -75,11 +93,16 @@ export const createAdminAuthConfig = async (input: {
 export const encodeAdminAuthConfig = (input: AdminAuthConfig): string => {
   const config = adminAuthConfigSchema.parse(input)
   const canonicalJson = canonicalAdminAuthConfigJson(config)
-  return `v1.${encodeBase64Url(new TextEncoder().encode(canonicalJson))}`
+  return `v${String(config.version)}.${encodeBase64Url(new TextEncoder().encode(canonicalJson))}`
 }
 
 export const parseAdminAuthConfig = (encoded: string): AdminAuthConfig => {
-  if (!encoded.startsWith('v1.')) {
+  const encodedVersion = encoded.startsWith('v1.')
+    ? 1
+    : encoded.startsWith('v2.')
+      ? 2
+      : undefined
+  if (encodedVersion === undefined) {
     throw new Error('Unsupported admin authentication configuration version')
   }
 
@@ -100,6 +123,9 @@ export const parseAdminAuthConfig = (encoded: string): AdminAuthConfig => {
   }
 
   const config = adminAuthConfigSchema.parse(candidate)
+  if (config.version !== encodedVersion) {
+    throw new Error('Admin authentication configuration version does not match its prefix')
+  }
   if (canonicalAdminAuthConfigJson(config) !== decodedJson) {
     throw new Error('Admin authentication configuration is not canonical')
   }
@@ -142,8 +168,8 @@ export const assertStrongAdminPassword = (
   displayName: string,
 ): void => {
   const codePointLength = Array.from(password).length
-  if (codePointLength < 15 || codePointLength > 128) {
-    throw new Error('Admin password must contain 15 to 128 Unicode code points')
+  if (codePointLength < 10 || codePointLength > 128) {
+    throw new Error('Admin password must contain 10 to 128 Unicode code points')
   }
 
   const normalizedPassword = password.toLocaleLowerCase('en-US')

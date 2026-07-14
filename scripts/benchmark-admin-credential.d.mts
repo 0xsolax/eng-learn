@@ -8,8 +8,8 @@ export type AdminCredentialBenchmarkSummary = {
 }
 
 export type AdminCredentialBenchmarkResult = {
-  algorithm: 'PBKDF2-HMAC-SHA256'
-  iterations: 600_000
+  algorithm: AdminAuthConfig['algorithm']
+  iterations: AdminAuthConfig['iterations']
   samplesPerOutcome: 100
   success: AdminCredentialBenchmarkSummary
   failure: AdminCredentialBenchmarkSummary

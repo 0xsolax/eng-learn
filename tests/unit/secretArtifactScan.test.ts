@@ -231,4 +231,17 @@ describe('secret artifact scanner', () => {
     for (const name of Object.keys(files)) expect(output).toContain(name)
     for (const canary of Object.values(canaries)) expect(output).not.toContain(canary)
   })
+
+  it('rejects a long v2 administrator configuration without echoing it', async () => {
+    const root = await createArtifactRoot()
+    const adminAuthConfig = `v2.${randomBytes(96).toString('base64url')}`
+    await writeFile(join(root, 'admin-config-v2.log'), `ADMIN_AUTH_CONFIG=${adminAuthConfig}`)
+
+    const result = runScanner(root)
+    const output = `${result.stdout}${result.stderr}`
+
+    expect(result.status).toBe(1)
+    expect(output).toContain('sensitive-assignment')
+    expect(output).not.toContain(adminAuthConfig)
+  })
 })

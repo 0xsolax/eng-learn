@@ -61,6 +61,48 @@ describe('administrator credential benchmark', () => {
     })
   })
 
+  it('reports the algorithm and iterations from each measured credential config', async () => {
+    const baseConfig = {
+      username: 'benchmark-admin',
+      displayName: 'Benchmark admin',
+      credentialId: '00000000-0000-4000-8000-000000000000',
+      algorithm: 'PBKDF2-HMAC-SHA256' as const,
+      salt: 'AAAAAAAAAAAAAAAAAAAAAA',
+      verifier: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      rateLimitKey: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+    }
+    const configs: AdminAuthConfig[] = [
+      { ...baseConfig, version: 1, iterations: 600_000 },
+      { ...baseConfig, version: 2, iterations: 100_000 },
+    ]
+    const verifyCredential = vi.fn(
+      (_config: AdminAuthConfig, _username: string, password: string) =>
+        Promise.resolve(password === 'correct benchmark password'),
+    )
+
+    const results = []
+    for (const config of configs) {
+      let timestamp = 0
+      results.push(
+        await measureAdminCredentialBenchmark({
+          config,
+          username: config.username,
+          correctPassword: 'correct benchmark password',
+          incorrectPassword: 'incorrect benchmark password',
+          verifyCredential,
+          now: () => timestamp++,
+        }),
+      )
+    }
+
+    expect(
+      results.map(({ algorithm, iterations }) => ({ algorithm, iterations })),
+    ).toEqual([
+      { algorithm: 'PBKDF2-HMAC-SHA256', iterations: 600_000 },
+      { algorithm: 'PBKDF2-HMAC-SHA256', iterations: 100_000 },
+    ])
+  })
+
   it('formats only aggregate timing results', () => {
     const output = formatAdminCredentialBenchmark({
       algorithm: 'PBKDF2-HMAC-SHA256',

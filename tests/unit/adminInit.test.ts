@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
-import { parseAdminAuthConfig } from '../../server/security/adminCredential'
+import {
+  encodeAdminAuthConfig,
+  parseAdminAuthConfig,
+  verifyAdminCredential,
+} from '../../server/security/adminCredential'
 
 interface AdminInitModule {
   createSerializedAdminConfig: (input: {
@@ -41,6 +45,32 @@ afterEach(async () => {
 })
 
 describe('admin initialization command', () => {
+  it('accepts a 10-code-point administrator password', async () => {
+    const password = 'ten-chars!'
+
+    await expect(
+      createSerializedAdminConfig({
+        username: 'admin',
+        displayName: 'Solazhu',
+        password,
+        confirmation: password,
+      }),
+    ).resolves.toMatch(/^v2\.[A-Za-z0-9_-]+$/)
+  })
+
+  it('rejects a 9-code-point administrator password', async () => {
+    const password = 'nine-char'
+
+    await expect(
+      createSerializedAdminConfig({
+        username: 'admin',
+        displayName: 'Solazhu',
+        password,
+        confirmation: password,
+      }),
+    ).rejects.toThrow('Admin password must contain 10 to 128 Unicode code points')
+  })
+
   it('creates a versioned config without returning the raw password', async () => {
     const password = 'correct horse battery staple'
     const encoded = await createSerializedAdminConfig({
@@ -50,8 +80,14 @@ describe('admin initialization command', () => {
       confirmation: password,
     })
 
-    expect(encoded).toMatch(/^v1\.[A-Za-z0-9_-]+$/)
+    expect(encoded).toMatch(/^v2\.[A-Za-z0-9_-]+$/)
     expect(encoded).not.toContain(password)
+    const parsed = parseAdminAuthConfig(encoded)
+    expect(parsed).toMatchObject({ version: 2, iterations: 100_000 })
+    expect(encodeAdminAuthConfig(parsed)).toBe(encoded)
+    await expect(
+      verifyAdminCredential(parsed, 'admin.example', password),
+    ).resolves.toBe(true)
   })
 
   it('produces a Worker-readable config for a 64-code-point display name', async () => {
@@ -108,17 +144,23 @@ describe('admin initialization command', () => {
 
   it('replaces only one config line and preserves all other bytes', () => {
     const current = '# local config\nAPP_ORIGIN=https://example.test\nADMIN_AUTH_CONFIG=old\n\n'
-    const next = replaceAdminAuthConfig(current, 'v1.replacement')
+    const next = replaceAdminAuthConfig(current, 'v2.replacement')
 
     expect(next).toBe(
-      '# local config\nAPP_ORIGIN=https://example.test\nADMIN_AUTH_CONFIG=v1.replacement\n\n',
+      '# local config\nAPP_ORIGIN=https://example.test\nADMIN_AUTH_CONFIG=v2.replacement\n\n',
     )
+    expect(
+      replaceAdminAuthConfig('ADMIN_AUTH_CONFIG=v2.current\n', 'v1.replacement'),
+    ).toBe('ADMIN_AUTH_CONFIG=v1.replacement\n')
     expect(() =>
       replaceAdminAuthConfig(
         'ADMIN_AUTH_CONFIG=first\nADMIN_AUTH_CONFIG=second\n',
         'v1.replacement',
       ),
     ).toThrow()
+    expect(() => replaceAdminAuthConfig(current, 'v3.replacement')).toThrow(
+      'Refusing to write an invalid ADMIN_AUTH_CONFIG value',
+    )
   })
 
   it('preserves LF, CRLF, and a missing final newline when appending config', () => {
@@ -156,10 +198,10 @@ describe('admin initialization command', () => {
     const path = join(root, '.dev.vars')
     await writeFile(path, '# keep this comment\n')
 
-    await writeLocalAdminConfig(path, 'v1.generated')
+    await writeLocalAdminConfig(path, 'v2.generated')
 
     expect(await readFile(path, 'utf8')).toBe(
-      '# keep this comment\nAPP_ORIGIN=https://127.0.0.1:8787\nADMIN_BROWSER_AUTH_MODE=application_session\nADMIN_AUTH_CONFIG=v1.generated\n',
+      '# keep this comment\nAPP_ORIGIN=https://127.0.0.1:8787\nADMIN_BROWSER_AUTH_MODE=application_session\nADMIN_AUTH_CONFIG=v2.generated\n',
     )
     expect((await stat(path)).mode & 0o777).toBe(0o600)
   })
@@ -307,6 +349,7 @@ process.stdin.on('end', () => {
     expect(capture.argv).toEqual([
       'exec',
       'wrangler',
+      'versions',
       'secret',
       'put',
       'ADMIN_AUTH_CONFIG',

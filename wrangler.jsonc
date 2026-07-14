@@ -15,6 +15,10 @@
     "enabled": true,
     "head_sampling_rate": 1
   },
+  "vars": {
+    "APP_ORIGIN": "https://eng-learn.0xsolax.workers.dev",
+    "ADMIN_BROWSER_AUTH_MODE": "application_session"
+  },
   "d1_databases": [
     {
       "binding": "DB",

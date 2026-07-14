@@ -8,8 +8,8 @@ const secretFileName = /^(?:\.dev\.vars(?:\..+)?|\.env(?:\..+)?)$/i
 const sensitiveTestArtifact = /^(?:trace\.zip|.+\.har|storage[-_.]?state(?:\..+)?\.json)$/i
 const sensitiveAssignments = [
   /\b(?:ADMIN_API_TOKEN|CF_ACCESS_CLIENT_SECRET|CLOUDFLARE_ACCESS_CLIENT_SECRET)\s*[:=]\s*(?:["'`][^"'`\r\n]{8,}["'`]|[^\s"'`]{8,})/i,
-  /\bADMIN_AUTH_CONFIG\s*[:=]\s*["'`]?v1\.[A-Za-z0-9_-]{32,}(?=["'`\s,}]|$)/i,
-  /\bv1\.[A-Za-z0-9_-]{128,}(?=["'`\s,}]|$)/,
+  /\bADMIN_AUTH_CONFIG\s*[:=]\s*["'`]?v(?:1|2)\.[A-Za-z0-9_-]{32,}(?=["'`\s,}]|$)/i,
+  /\bv(?:1|2)\.[A-Za-z0-9_-]{128,}(?=["'`\s,}]|$)/,
   /["']?authorization["']?\s*[:=]\s*["'`]?(?:Bearer|Basic)\s+[^\s"'`]{8,}/i,
   /["']?x-admin-token["']?\s*[:=]\s*["'`]?[^\s"'`]{8,}/i,
   /["']?cf-access-jwt-assertion["']?\s*[:=]\s*["'`]?eyJ[^\s"'`]{8,}/i,

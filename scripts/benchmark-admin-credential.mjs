@@ -4,8 +4,6 @@ import process from 'node:process'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
-  ADMIN_PASSWORD_ALGORITHM,
-  ADMIN_PASSWORD_ITERATIONS,
   createAdminAuthConfig,
   verifyAdminCredential,
 } from '../server/security/adminCredential.ts'
@@ -62,8 +60,8 @@ export const measureAdminCredentialBenchmark = async ({
   const successSummary = summarizeBenchmarkDurations(successDurations)
   const failureSummary = summarizeBenchmarkDurations(failureDurations)
   return {
-    algorithm: ADMIN_PASSWORD_ALGORITHM,
-    iterations: ADMIN_PASSWORD_ITERATIONS,
+    algorithm: config.algorithm,
+    iterations: config.iterations,
     samplesPerOutcome: ADMIN_BENCHMARK_SAMPLE_COUNT,
     success: successSummary,
     failure: failureSummary,
