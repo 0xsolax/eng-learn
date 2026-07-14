@@ -13,8 +13,12 @@ import {
   sourceVersionListSchema,
 } from '@shared/api/contentSchemas'
 import {
-  adminCourseListSchema,
+  adminLoginRequestSchema,
+  adminLogoutResultSchema,
   adminSessionSchema,
+} from '@shared/api/adminAuthSchemas'
+import {
+  adminCourseListSchema,
   createdCourseSchema,
   rotatedAccessCodeSchema,
 } from '@shared/api/courseSchemas'
@@ -24,8 +28,11 @@ import {
   rotateAccessCodeRequestSchema,
 } from '@shared/api/schemas'
 import { z } from 'zod'
-import { reportAdminAuthorizationFailure } from './adminAuthorizationBoundary'
-import { ApiFailureError, InvalidApiResponseError } from './errors'
+import {
+  isAdminSessionFailureCode,
+  reportAdminAuthorizationFailure,
+} from './adminAuthorizationBoundary'
+import { ApiFailureError } from './errors'
 import { createHttpClient, type HttpRequestOptions } from './httpClient'
 
 type HttpClient = ReturnType<typeof createHttpClient>
@@ -36,27 +43,51 @@ export type ApproveExerciseItemsRequest = z.input<
 >
 export type CreateCourseRequest = z.input<typeof createCourseRequestSchema>
 export type RotateAccessCodeRequest = z.input<typeof rotateAccessCodeRequestSchema>
+export type AdminLoginRequest = z.input<typeof adminLoginRequestSchema>
 const resourceIdSchema = z.string().trim().min(1)
 
 export const createAdminApi = (client: HttpClient = createHttpClient()) => {
   const request = async <TSchema extends z.ZodType>(
     path: string,
     options: HttpRequestOptions<TSchema>,
+    broadcastSessionFailure = true,
   ): Promise<z.output<TSchema>> => {
     try {
       return await client.request(path, options)
     } catch (error) {
       if (
-        (error instanceof ApiFailureError || error instanceof InvalidApiResponseError) &&
-        (error.status === 401 || error.status === 403)
+        broadcastSessionFailure &&
+        error instanceof ApiFailureError &&
+        isAdminSessionFailureCode(error.code)
       ) {
-        reportAdminAuthorizationFailure(error.status)
+        reportAdminAuthorizationFailure(error.code)
       }
       throw error
     }
   }
 
   return {
+    loginAdmin(command: AdminLoginRequest) {
+      return request(
+        '/api/admin/auth/login',
+        {
+          dataSchema: adminSessionSchema,
+          method: 'POST',
+          json: adminLoginRequestSchema.parse(command),
+        },
+        false,
+      )
+    },
+    logoutAdmin() {
+      return request(
+        '/api/admin/auth/logout',
+        {
+          dataSchema: adminLogoutResultSchema,
+          method: 'POST',
+        },
+        false,
+      )
+    },
     getAdminSession() {
       return request('/api/admin/session', {
         dataSchema: adminSessionSchema,

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { matchedRouteKey, onBeforeRouteLeave } from 'vue-router'
 import type {
   AdminExerciseItemDto,
   SourceVersionDetailDto,
@@ -9,6 +10,7 @@ import { createAdminApi } from '@/api/adminApi'
 import { ApiFailureError } from '@/api/errors'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
+import { useAdminPageContext } from '@/features/admin-auth/adminPageContext'
 import ExerciseItemEditor from '@/features/admin-content/ExerciseItemEditor.vue'
 
 type ExerciseItemApi = Pick<
@@ -29,6 +31,7 @@ const props = defineProps<{
 }>()
 
 const api = props.api ?? createAdminApi()
+const pageContext = useAdminPageContext()
 const pageState = ref<PageState>('loading')
 const actionState = ref<ActionState>('idle')
 const version = ref<SourceVersionDetailDto | null>(null)
@@ -36,6 +39,10 @@ const item = ref<AdminExerciseItemDto | null>(null)
 const actionError = ref('')
 const actionSuccess = ref('')
 const showDisableConfirmation = ref(false)
+const isDirty = ref(false)
+const isMobileReadonly = ref(false)
+const pageRoot = ref<HTMLElement | null>(null)
+let disableTrigger: HTMLElement | null = null
 
 const readonly = computed(() => version.value?.status !== 'draft')
 
@@ -46,10 +53,12 @@ const loadPage = async (): Promise<void> => {
 
   try {
     await refreshResources()
+    isDirty.value = false
     pageState.value = 'ready'
   } catch {
     version.value = null
     item.value = null
+    pageContext.clearPageContext()
     pageState.value = 'error'
   }
 }
@@ -62,6 +71,7 @@ const save = async (content: ExerciseItemContent): Promise<void> => {
 
   try {
     item.value = await api.editExerciseItem(props.itemId, { content })
+    isDirty.value = false
     actionSuccess.value = '练习内容已保存，项目状态以服务端返回为准。'
   } catch (error) {
     await handleWriteError(error, '保存未完成，当前表单内容仍保留。')
@@ -121,6 +131,7 @@ const handleWriteError = async (error: unknown, fallback: string): Promise<void>
 
     try {
       await refreshResources()
+      isDirty.value = false
     } catch {
       pageState.value = 'error'
     }
@@ -148,6 +159,7 @@ const recoverItemTransition = async (input: {
     item.value = null
     showDisableConfirmation.value = false
     actionError.value = '操作结果无法确认且重新读取失败。'
+    pageContext.clearPageContext()
     pageState.value = 'error'
     return
   }
@@ -188,16 +200,96 @@ const refreshResources = async (): Promise<void> => {
 
   version.value = nextVersion
   item.value = nextItem
+  reportPageContext(nextVersion, nextItem)
+}
+
+const reportPageContext = (
+  nextVersion: SourceVersionDetailDto,
+  nextItem: AdminExerciseItemDto,
+): void => {
+  pageContext.setPageContext({
+    breadcrumbs: [
+      '词库工作台',
+      nextVersion.sourceName,
+      `v${String(nextVersion.versionNo)}`,
+      nextItem.word,
+      nextItem.stage,
+    ],
+    confirmLeave,
+  })
 }
 
 const statusLabel = (status: AdminExerciseItemDto['status']): string =>
   ({ draft: '草稿', approved: '已批准', disabled: '已禁用' })[status]
 
-onMounted(loadPage)
+const openDisableConfirmation = async (event: MouseEvent): Promise<void> => {
+  disableTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  showDisableConfirmation.value = true
+  await nextTick()
+  pageRoot.value?.querySelector<HTMLElement>('[data-disable-confirmation]')?.focus()
+}
+
+const closeDisableConfirmation = async (): Promise<void> => {
+  showDisableConfirmation.value = false
+  await nextTick()
+  disableTrigger?.focus()
+}
+
+const handleBeforeUnload = (event: BeforeUnloadEvent): void => {
+  event.preventDefault()
+  Reflect.set(event, 'returnValue', '')
+}
+
+const confirmLeave = (): boolean => {
+  if (!isDirty.value) return true
+  const focusedElement = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null
+  const shouldLeave = window.confirm('当前练习有未保存修改，确定离开吗？')
+  if (!shouldLeave) focusedElement?.focus()
+  return shouldLeave
+}
+
+watch(
+  isDirty,
+  (dirty) => {
+    if (dirty) {
+      window.addEventListener('beforeunload', handleBeforeUnload)
+    } else {
+      window.removeEventListener('beforeunload', handleBeforeUnload)
+    }
+  },
+  { flush: 'sync' },
+)
+
+const matchedRoute = inject(matchedRouteKey, null)
+if (matchedRoute) {
+  onBeforeRouteLeave(confirmLeave)
+}
+
+const syncViewport = (): void => {
+  isMobileReadonly.value = window.innerWidth < 480
+  if (isMobileReadonly.value) showDisableConfirmation.value = false
+}
+
+onMounted(() => {
+  syncViewport()
+  window.addEventListener('resize', syncViewport)
+  void loadPage()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', syncViewport)
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+  pageContext.clearPageContext()
+})
 </script>
 
 <template>
-  <section class="admin-page page-enter">
+  <section
+    ref="pageRoot"
+    class="admin-page page-enter"
+  >
     <ui-status-message
       v-if="pageState === 'loading'"
       tone="info"
@@ -250,6 +342,15 @@ onMounted(loadPage)
       </ui-status-message>
 
       <ui-status-message
+        v-if="isMobileReadonly"
+        data-mobile-readonly
+        tone="info"
+        title="当前视口仅支持查看"
+      >
+        请使用至少 480px 宽的设备编辑、批准或禁用练习项目。
+      </ui-status-message>
+
+      <ui-status-message
         v-if="actionError"
         tone="error"
         title="练习操作未完成"
@@ -265,85 +366,123 @@ onMounted(loadPage)
         {{ actionSuccess }}
       </ui-status-message>
 
-      <section
-        class="editor-section"
-        aria-labelledby="editor-title"
+      <div
+        data-exercise-workbench
+        class="exercise-workbench"
       >
-        <header class="section-heading">
+        <section
+          class="editor-section"
+          aria-labelledby="editor-title"
+        >
+          <header class="section-heading">
+            <div>
+              <h2 id="editor-title">
+                结构化内容
+              </h2>
+              <p>表单字段由当前题型决定，不接受原始 JSON 编辑。</p>
+            </div>
+          </header>
+
+          <exercise-item-editor
+            :item="item"
+            :readonly="readonly"
+            :mobile-readonly="isMobileReadonly"
+            :saving="actionState === 'saving'"
+            @dirty-change="isDirty = $event"
+            @save="save"
+          />
+        </section>
+
+        <aside
+          class="review-panel"
+          aria-labelledby="review-title"
+        >
           <div>
-            <h2 id="editor-title">
-              结构化内容
+            <h2 id="review-title">
+              审核状态
             </h2>
-            <p>表单字段由当前题型决定，不接受原始 JSON 编辑。</p>
+            <p>批准后计入覆盖；禁用后退出发布覆盖。</p>
           </div>
-        </header>
+          <dl class="review-facts">
+            <div>
+              <dt>版本</dt>
+              <dd>v{{ version.versionNo }}</dd>
+            </div>
+            <div>
+              <dt>单词</dt>
+              <dd lang="en">
+                {{ item.word }}
+              </dd>
+            </div>
+            <div>
+              <dt>阶段</dt>
+              <dd>{{ item.stage }}</dd>
+            </div>
+            <div>
+              <dt>题型</dt>
+              <dd>{{ item.taskType }}</dd>
+            </div>
+            <div>
+              <dt>状态</dt>
+              <dd>{{ statusLabel(item.status) }}</dd>
+            </div>
+          </dl>
 
-        <exercise-item-editor
-          :item="item"
-          :readonly="readonly"
-          :saving="actionState === 'saving'"
-          @save="save"
-        />
-      </section>
+          <div
+            v-if="!readonly && !isMobileReadonly"
+            class="review-actions__buttons"
+          >
+            <ui-button
+              v-if="item.status === 'draft'"
+              data-approve
+              :loading="actionState === 'approving'"
+              :disabled="actionState !== 'idle'"
+              @click="approve"
+            >
+              批准项目
+            </ui-button>
+            <ui-button
+              v-if="item.status !== 'disabled'"
+              variant="secondary"
+              :disabled="actionState !== 'idle'"
+              @click="openDisableConfirmation"
+            >
+              禁用项目
+            </ui-button>
+          </div>
 
-      <section
-        v-if="!readonly"
-        class="review-actions"
-        aria-labelledby="review-title"
-      >
-        <div>
-          <h2 id="review-title">
-            审核状态
-          </h2>
-          <p>批准后计入覆盖；禁用后退出发布覆盖。</p>
-        </div>
-        <div class="review-actions__buttons">
-          <ui-button
-            v-if="item.status === 'draft'"
-            data-approve
-            :loading="actionState === 'approving'"
-            :disabled="actionState !== 'idle'"
-            @click="approve"
+          <section
+            v-if="showDisableConfirmation && !isMobileReadonly"
+            data-disable-confirmation
+            class="confirmation"
+            role="region"
+            aria-live="polite"
+            aria-atomic="true"
+            aria-labelledby="disable-title"
+            tabindex="-1"
+            @keydown.esc="closeDisableConfirmation"
           >
-            批准项目
-          </ui-button>
-          <ui-button
-            v-if="item.status !== 'disabled'"
-            variant="secondary"
-            :disabled="actionState !== 'idle'"
-            @click="showDisableConfirmation = true"
-          >
-            禁用项目
-          </ui-button>
-        </div>
-      </section>
-
-      <section
-        v-if="showDisableConfirmation"
-        data-disable-confirmation
-        class="confirmation"
-        role="region"
-        aria-labelledby="disable-title"
-      >
-        <h2 id="disable-title">
-          确认禁用练习项目
-        </h2>
-        <p>禁用后该项目不再计入发布覆盖，但不会修改已经生成的课时任务快照。</p>
-        <div>
-          <ui-button
-            variant="secondary"
-            @click="showDisableConfirmation = false"
-          >
-            取消
-          </ui-button>
-          <ui-button
-            :loading="actionState === 'disabling'"
-            @click="disable"
-          >
-            确认禁用
-          </ui-button>
-        </div>
-      </section>
+            <h2 id="disable-title">
+              确认禁用练习项目
+            </h2>
+            <p>禁用后该项目不再计入发布覆盖，但不会修改已经生成的课时任务快照。</p>
+            <div>
+              <ui-button
+                variant="secondary"
+                @click="closeDisableConfirmation"
+              >
+                取消
+              </ui-button>
+              <ui-button
+                :loading="actionState === 'disabling'"
+                @click="disable"
+              >
+                确认禁用
+              </ui-button>
+            </div>
+          </section>
+        </aside>
+      </div>
     </template>
   </section>
 </template>
@@ -351,6 +490,8 @@ onMounted(loadPage)
 <style scoped>
 .admin-page,
 .editor-section,
+.exercise-workbench,
+.review-panel,
 .error-actions {
   display: grid;
   gap: var(--space-4);
@@ -362,7 +503,6 @@ onMounted(loadPage)
 
 .page-heading,
 .section-heading,
-.review-actions,
 .review-actions__buttons,
 .confirmation > div {
   display: flex;
@@ -375,8 +515,8 @@ onMounted(loadPage)
 .page-heading h1,
 .section-heading h2,
 .section-heading p,
-.review-actions h2,
-.review-actions p,
+.review-panel h2,
+.review-panel p,
 .confirmation h2,
 .confirmation p {
   margin: 0;
@@ -398,7 +538,7 @@ onMounted(loadPage)
 }
 
 .page-heading h1 {
-  font-size: 26px;
+  font-size: 24px;
 }
 
 .status-badge {
@@ -425,18 +565,18 @@ onMounted(loadPage)
 }
 
 .editor-section,
-.review-actions {
+.review-panel {
   padding-top: var(--space-4);
   border-top: 1px solid var(--color-line-strong);
 }
 
 .section-heading h2,
-.review-actions h2 {
+.review-panel h2 {
   font-size: 18px;
 }
 
 .section-heading p,
-.review-actions p {
+.review-panel p {
   margin-top: 2px;
   color: var(--color-muted);
   font-size: 13px;
@@ -444,7 +584,38 @@ onMounted(loadPage)
 }
 
 .review-actions__buttons {
+  margin-top: var(--space-4);
   justify-content: flex-end;
+}
+
+.review-facts {
+  display: grid;
+  margin: var(--space-4) 0 0;
+  border-top: 1px solid var(--color-line);
+}
+
+.review-facts > div {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.4fr) minmax(0, 1fr);
+  gap: var(--space-3);
+  padding-block: var(--space-3);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.review-facts dt,
+.review-facts dd {
+  margin: 0;
+  font-size: 13px;
+}
+
+.review-facts dt {
+  color: var(--color-muted);
+  font-weight: 700;
+}
+
+.review-facts dd {
+  overflow-wrap: anywhere;
+  font-weight: 650;
 }
 
 .confirmation {
@@ -477,14 +648,26 @@ onMounted(loadPage)
 
 @media (max-width: 767px) {
   .page-heading,
-  .section-heading,
-  .review-actions {
+  .section-heading {
     display: grid;
   }
 
   .review-actions__buttons {
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+}
+
+@media (min-width: 1280px) {
+  .exercise-workbench {
+    grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+    align-items: start;
+    gap: var(--space-6);
+  }
+
+  .review-panel {
+    position: sticky;
+    top: var(--space-6);
   }
 }
 </style>

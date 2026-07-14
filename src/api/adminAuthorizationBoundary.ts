@@ -1,8 +1,18 @@
-export type AdminAuthorizationFailureStatus = 401 | 403
+export const ADMIN_SESSION_FAILURE_CODES = [
+  'admin_session_required',
+  'admin_session_expired',
+  'admin_session_revoked',
+  'admin_identity_invalid',
+] as const
 
-type AdminAuthorizationFailureListener = (
-  status: AdminAuthorizationFailureStatus,
-) => void
+export type AdminSessionFailureCode = (typeof ADMIN_SESSION_FAILURE_CODES)[number]
+
+export const isAdminSessionFailureCode = (
+  code: string,
+): code is AdminSessionFailureCode =>
+  (ADMIN_SESSION_FAILURE_CODES as readonly string[]).includes(code)
+
+type AdminAuthorizationFailureListener = (code: AdminSessionFailureCode) => void
 
 const listeners = new Set<AdminAuthorizationFailureListener>()
 
@@ -14,9 +24,9 @@ export const subscribeAdminAuthorizationFailure = (
 }
 
 export const reportAdminAuthorizationFailure = (
-  status: AdminAuthorizationFailureStatus,
+  code: AdminSessionFailureCode,
 ): void => {
   for (const listener of listeners) {
-    listener(status)
+    listener(code)
   }
 }

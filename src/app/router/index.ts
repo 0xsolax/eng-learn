@@ -14,24 +14,34 @@ export const createAppRouter = (history: RouterHistory = createWebHistory()): Ro
         redirect: '/app',
       },
       {
+        path: '/admin/login',
+        name: 'admin-login',
+        component: () => import('../../pages/admin/AdminLoginPage.vue'),
+        meta: { requiresAdmin: false },
+      },
+      {
         path: '/admin',
         name: 'admin-gate',
         component: () => import('../AdminGate.vue'),
+        meta: { requiresAdmin: true },
         children: [
           {
             path: '',
             name: 'admin',
             component: () => import('../layouts/AdminLayout.vue'),
+            meta: { requiresAdmin: true },
             children: [
               {
                 path: '',
                 name: 'admin-home',
                 redirect: { name: 'admin-source-versions' },
+                meta: { requiresAdmin: true },
               },
               {
                 path: 'source-versions',
                 name: 'admin-source-versions',
                 component: () => import('../../pages/admin/SourceVersionsPage.vue'),
+                meta: { requiresAdmin: true },
                 props: (route) => ({
                   initialMode:
                     route.query.mode === 'next_version'
@@ -48,17 +58,20 @@ export const createAppRouter = (history: RouterHistory = createWebHistory()): Ro
                 name: 'admin-source-version-detail',
                 component: () => import('../../pages/admin/SourceVersionDetailPage.vue'),
                 props: true,
+                meta: { requiresAdmin: true },
               },
               {
                 path: 'source-versions/:versionId/exercises/:itemId',
                 name: 'admin-exercise-item',
                 component: () => import('../../pages/admin/ExerciseItemPage.vue'),
                 props: true,
+                meta: { requiresAdmin: true },
               },
               {
                 path: 'courses',
                 name: 'admin-courses',
                 component: () => import('../../pages/admin/CoursesPage.vue'),
+                meta: { requiresAdmin: true },
               },
             ],
           },

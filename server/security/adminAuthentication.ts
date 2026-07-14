@@ -1,8 +1,9 @@
 import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose'
 
 export type AdminIdentity = {
-  source: 'cloudflare_access' | 'service_token'
+  source: 'cloudflare_access' | 'application_session' | 'service_token'
   subject: string
+  displayName?: string
   email?: string
 }
 

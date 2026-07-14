@@ -251,7 +251,7 @@ describe('worker api workflow', () => {
     const failure = await readFailure(response)
 
     expect(response.status).toBe(401)
-    expect(failure.error.code).toBe('unauthorized')
+    expect(failure.error.code).toBe('admin_session_required')
   })
 })
 

@@ -31,10 +31,47 @@ const exerciseItem = {
 } as const
 
 describe('admin API client', () => {
+  it('logs in and out through same-origin credential requests', async () => {
+    const session = {
+      id: 'credential-1',
+      source: 'application_session',
+      displayName: 'Solazhu',
+    } as const
+    const fetchImpl = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValueOnce(Response.json({ ok: true, data: session }))
+      .mockResolvedValueOnce(Response.json({ ok: true, data: { loggedOut: true } }))
+    const api = createAdminApi(createHttpClient(fetchImpl))
+
+    await expect(
+      api.loginAdmin({ username: ' Admin ', password: '  exact password  ' }),
+    ).resolves.toEqual(session)
+    await expect(api.logoutAdmin()).resolves.toEqual({ loggedOut: true })
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(1, '/api/admin/auth/login', {
+      credentials: 'same-origin',
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-requested-with': 'XMLHttpRequest',
+      },
+      body: JSON.stringify({
+        username: 'admin',
+        password: '  exact password  ',
+      }),
+    })
+    expect(fetchImpl).toHaveBeenNthCalledWith(2, '/api/admin/auth/logout', {
+      credentials: 'same-origin',
+      method: 'POST',
+      headers: { 'x-requested-with': 'XMLHttpRequest' },
+    })
+  })
+
   it('restores the authenticated admin session through the admin namespace', async () => {
     const session = {
       id: 'admin-1',
       source: 'cloudflare_access',
+      displayName: 'admin@example.test',
       email: 'admin@example.test',
     } as const
     const fetchImpl = vi

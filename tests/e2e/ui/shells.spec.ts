@@ -46,7 +46,10 @@ const expectNoSeriousAccessibilityViolations = async (page: Page): Promise<void>
     blocking.map((violation) => ({
       id: violation.id,
       impact: violation.impact,
-      targets: violation.nodes.map((node) => node.target),
+      nodes: violation.nodes.map((node) => ({
+        target: node.target,
+        failureSummary: node.failureSummary,
+      })),
     })),
   ).toEqual([])
 }
@@ -153,13 +156,13 @@ test('@admin keeps a dense segmented workspace across admin viewports', async ({
     const key = `${request.method()} ${url.pathname}`
     adminRequests.push(key)
 
-    if (expireAdminBusinessRequest && key !== 'GET /api/admin/session') {
+    if (expireAdminBusinessRequest) {
       await route.fulfill({
         status: 401,
         contentType: 'application/json',
         body: JSON.stringify({
           ok: false,
-          error: { code: 'unauthorized', message: 'Admin identity expired' },
+          error: { code: 'admin_session_expired', message: 'Admin session expired' },
         }),
       })
       return
@@ -174,6 +177,7 @@ test('@admin keeps a dense segmented workspace across admin viewports', async ({
           data: {
             id: 'fixture-admin',
             source: 'cloudflare_access',
+            displayName: '内容管理员',
             email: 'fixture-admin@example.test',
           },
         }),
@@ -293,7 +297,13 @@ test('@admin keeps a dense segmented workspace across admin viewports', async ({
   await expect(page.getByRole('heading', { level: 1, name: '词库版本' })).toBeVisible()
   await expect(page.getByRole('navigation', { name: '管理端主导航' })).toBeVisible()
   await expect(page.getByRole('heading', { level: 3, name: '还没有词库版本' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '创建草稿版本' })).toBeDisabled()
+  const createDraftButton = page.getByRole('button', { name: '创建草稿版本' })
+  const currentViewportWidth = page.viewportSize()?.width ?? 0
+  if (currentViewportWidth < 480) {
+    await expect(createDraftButton).toHaveCount(0)
+  } else {
+    await expect(createDraftButton).toBeDisabled()
+  }
   expect(adminRequests.slice(0, 2)).toEqual([
     'GET /api/admin/session',
     'GET /api/admin/source-versions',
@@ -325,7 +335,7 @@ test('@admin keeps a dense segmented workspace across admin viewports', async ({
 
   if ((viewportWidth ?? 0) >= 1200) {
     expect(
-      await contrastRatio(page, '.admin-sidebar__meta', '.admin-sidebar'),
+      await contrastRatio(page, '.admin-identity--sidebar span', '.admin-sidebar'),
     ).toBeGreaterThanOrEqual(4.5)
   }
 
@@ -336,24 +346,134 @@ test('@admin keeps a dense segmented workspace across admin viewports', async ({
   await expect(page.getByRole('heading', { level: 1, name: '版本 v1' })).toBeVisible()
   await expectNoSeriousAccessibilityViolations(page)
   const reviewLink = page.getByRole('link', { name: '先查看' })
-  await expect(reviewLink).toBeVisible()
-  expect((await reviewLink.boundingBox())?.height).toBeGreaterThanOrEqual(40)
+  if ((viewportWidth ?? 0) < 480) {
+    await expect(reviewLink).toHaveCount(0)
+  } else {
+    await expect(reviewLink).toBeVisible()
+    expect((await reviewLink.boundingBox())?.height).toBeGreaterThanOrEqual(40)
+  }
 
   const discardButton = page.getByRole('button', { name: '丢弃草稿' })
-  await discardButton.click()
-  const confirmation = page.locator('[data-inline-confirmation]')
-  await expect(confirmation).toHaveAttribute('aria-live', 'polite')
-  await expect(confirmation).toBeFocused()
-  await page.keyboard.press('Escape')
-  await expect(confirmation).toBeHidden()
-  await expect(discardButton).toBeFocused()
+  if ((viewportWidth ?? 0) < 480) {
+    await expect(discardButton).toHaveCount(0)
+  } else {
+    await discardButton.click()
+    const confirmation = page.locator('[data-inline-confirmation]')
+    await expect(confirmation).toHaveAttribute('aria-live', 'polite')
+    await expect(confirmation).toBeFocused()
+    await page.keyboard.press('Escape')
+    await expect(confirmation).toBeHidden()
+    await expect(discardButton).toBeFocused()
+  }
 
   expireAdminBusinessRequest = true
   await page.getByRole('link', { name: '课程工作台' }).click()
-  await expect(page.getByRole('heading', { level: 1, name: '管理端身份验证' })).toBeVisible()
-  await expect(page.getByRole('alert')).toContainText('管理员身份未通过')
+  await expect(page).toHaveURL(/\/admin\/login\?.*reason=expired/u)
+  await expect(page.getByRole('heading', { level: 1, name: '管理员登录' })).toBeVisible()
+  await expect(page.getByRole('status')).toContainText('登录已过期')
   await expect(page.locator('[data-layout="admin"]')).toHaveCount(0)
   await expectNoSeriousAccessibilityViolations(page)
+})
+
+test('@admin keeps login, session mount and logout keyboard-usable', async ({ page }) => {
+  let authenticated = false
+  const fixturePassword = ['fixture', 'only', 'value'].join('-')
+
+  await page.route('**/api/admin/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const key = `${request.method()} ${url.pathname}`
+
+    if (key === 'GET /api/admin/session') {
+      await route.fulfill({
+        status: authenticated ? 200 : 401,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          authenticated
+            ? {
+                ok: true,
+                data: {
+                  id: 'fixture-admin',
+                  source: 'application_session',
+                  displayName: 'Solazhu',
+                },
+              }
+            : {
+                ok: false,
+                error: {
+                  code: 'admin_session_required',
+                  message: 'Admin session is required',
+                },
+              },
+        ),
+      })
+      return
+    }
+
+    if (key === 'POST /api/admin/auth/login') {
+      expect(request.postDataJSON()).toEqual({
+        username: 'solazhu',
+        password: fixturePassword,
+      })
+      authenticated = true
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          data: {
+            id: 'fixture-admin',
+            source: 'application_session',
+            displayName: 'Solazhu',
+          },
+        }),
+      })
+      return
+    }
+
+    if (key === 'POST /api/admin/auth/logout') {
+      authenticated = false
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, data: { loggedOut: true } }),
+      })
+      return
+    }
+
+    if (key === 'GET /api/admin/source-versions') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, data: [] }),
+      })
+      return
+    }
+
+    await route.abort('failed')
+  })
+
+  await page.goto('/admin/login')
+  const usernameInput = page.getByLabel('管理员账号')
+  const passwordInput = page.getByLabel('密码')
+  await expect(page.getByRole('heading', { level: 1, name: '管理员登录' })).toBeVisible()
+  await expect(usernameInput).toBeVisible()
+  await expect(passwordInput).toBeVisible()
+  await expectNoHorizontalOverflow(page)
+  await expectNoSeriousAccessibilityViolations(page)
+
+  await usernameInput.fill('solazhu')
+  await passwordInput.fill(fixturePassword)
+  await passwordInput.press('Enter')
+
+  await expect(page).toHaveURL(/\/admin\/source-versions$/u)
+  await expect(page.getByRole('heading', { level: 1, name: '词库版本' })).toBeVisible()
+  await expect(page.getByText('Solazhu', { exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: '退出' }).click()
+  await expect(page).toHaveURL(/\/admin\/login\?reason=logged_out$/u)
+  await expect(page.getByRole('status')).toContainText('已安全退出')
+  await expect(page.locator('[data-layout="admin"]')).toHaveCount(0)
 })
 
 test('@admin @reflow-200-admin keeps the admin shell readable with 200%-equivalent reflow metrics', async ({
@@ -368,6 +488,7 @@ test('@admin @reflow-200-admin keeps the admin shell readable with 200%-equivale
         data: {
           id: 'fixture-admin',
           source: 'cloudflare_access',
+          displayName: '内容管理员',
           email: 'fixture-admin@example.test',
         },
       }),
@@ -513,6 +634,7 @@ test('@controls keeps state meaning visible when Chromium removes color', async 
           data: {
             id: 'fixture-admin',
             source: 'cloudflare_access',
+            displayName: '内容管理员',
             email: 'fixture-admin@example.test',
           },
         }),

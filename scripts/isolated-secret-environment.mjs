@@ -1,0 +1,19 @@
+export const SECRET_ENVIRONMENT_NAMES = Object.freeze([
+  'ADMIN_API_TOKEN',
+  'ADMIN_AUTH_CONFIG',
+  'CF_API_KEY',
+  'CF_API_TOKEN',
+  'CF_ACCESS_CLIENT_SECRET',
+  'CLOUDFLARE_ACCOUNT_ID',
+  'CLOUDFLARE_API_KEY',
+  'CLOUDFLARE_API_TOKEN',
+  'CLOUDFLARE_ACCESS_CLIENT_SECRET',
+  'CLOUDFLARE_EMAIL',
+  'WRANGLER_API_TOKEN',
+])
+const SECRET_ENVIRONMENT_NAME_SET = new Set(SECRET_ENVIRONMENT_NAMES)
+
+export const createSecretFreeEnvironment = (source) =>
+  Object.fromEntries(
+    Object.entries(source).filter(([name]) => !SECRET_ENVIRONMENT_NAME_SET.has(name)),
+  )

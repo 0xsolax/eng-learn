@@ -1,0 +1,4220 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>eng learn 管理端视觉审阅稿 v1</title>
+    <link rel="icon" href="data:," />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Fredoka:wght@600;700&amp;family=Noto+Sans+SC:wght@400;500;600;700&amp;display=swap"
+      rel="stylesheet"
+    />
+    <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.js"></script>
+    <style>
+      :root {
+        color-scheme: light;
+        --color-brand: #13998d;
+        --color-brand-strong: #0a746c;
+        --color-brand-strong-hover: #075f59;
+        --color-brand-soft: #d7f4ef;
+        --color-coral: #f56a5d;
+        --color-coral-strong: #a23f38;
+        --color-coral-soft: #fde5e1;
+        --color-sun: #f4c64e;
+        --color-sun-soft: #fff5cf;
+        --color-sky: #4fa7d9;
+        --color-sky-soft: #e5f4fc;
+        --color-ink: #23343a;
+        --color-muted: #60737a;
+        --color-canvas: #f4f8f7;
+        --color-surface: #ffffff;
+        --color-line: #dde8e5;
+        --color-line-strong: #b9ceca;
+        --color-focus: #0a746c;
+        --font-sans: "PingFang SC", "Noto Sans SC", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        --font-display: "Fredoka", var(--font-sans);
+        --space-1: 4px;
+        --space-2: 8px;
+        --space-3: 12px;
+        --space-4: 16px;
+        --space-6: 24px;
+        --space-8: 32px;
+        --space-12: 48px;
+        --radius-xs: 4px;
+        --radius-sm: 8px;
+        --shadow-low: 0 2px 8px rgb(35 52 58 / 8%);
+        --shadow-high: 0 16px 48px rgb(35 52 58 / 16%);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      html {
+        scroll-behavior: smooth;
+      }
+
+      body {
+        margin: 0;
+        overflow-x: hidden;
+        background: var(--color-canvas);
+        color: var(--color-ink);
+        font-family: var(--font-sans);
+        font-size: 14px;
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+
+      button,
+      a {
+        touch-action: manipulation;
+      }
+
+      button:focus-visible,
+      a:focus-visible,
+      input:focus-visible,
+      select:focus-visible,
+      textarea:focus-visible,
+      [tabindex]:focus-visible {
+        outline: 3px solid color-mix(in srgb, var(--color-sky) 58%, white);
+        outline-offset: 2px;
+      }
+
+      a {
+        color: inherit;
+      }
+
+      svg {
+        width: 18px;
+        height: 18px;
+        stroke-width: 2;
+      }
+
+      .skip-link {
+        position: fixed;
+        top: 0;
+        left: 16px;
+        z-index: 200;
+        transform: translateY(-120%);
+        padding: 8px 12px;
+        background: var(--color-ink);
+        border-radius: var(--radius-xs);
+        color: white;
+        text-decoration: none;
+      }
+
+      .skip-link:focus {
+        transform: translateY(12px);
+      }
+
+      .visually-hidden {
+        position: absolute !important;
+        width: 1px !important;
+        height: 1px !important;
+        padding: 0 !important;
+        margin: -1px !important;
+        overflow: hidden !important;
+        clip: rect(0, 0, 0, 0) !important;
+        white-space: nowrap !important;
+        border: 0 !important;
+      }
+
+      .review-bar {
+        position: sticky;
+        top: 0;
+        z-index: 100;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 64px;
+        padding: 0 28px;
+        background: rgb(255 255 255 / 94%);
+        border-bottom: 1px solid var(--color-line);
+        backdrop-filter: blur(14px);
+      }
+
+      .review-brand,
+      .product-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .review-brand strong,
+      .product-brand strong {
+        font-family: var(--font-display);
+        font-size: 16px;
+        line-height: 1;
+      }
+
+      .word-mark {
+        display: grid;
+        place-items: center;
+        width: 36px;
+        height: 36px;
+        background: var(--color-brand-strong);
+        border-radius: var(--radius-sm);
+        color: white;
+        font-family: var(--font-display);
+        font-size: 17px;
+        font-weight: 700;
+      }
+
+      .review-meta {
+        color: var(--color-muted);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .review-nav {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .review-nav a {
+        min-height: 40px;
+        padding: 9px 10px;
+        border-radius: var(--radius-sm);
+        color: var(--color-muted);
+        font-size: 12px;
+        font-weight: 600;
+        text-decoration: none;
+      }
+
+      .review-nav a:hover {
+        background: var(--color-brand-soft);
+        color: var(--color-brand-strong);
+      }
+
+      .review-main {
+        width: min(1480px, calc(100% - 40px));
+        margin: 0 auto;
+        padding: 36px 0 72px;
+      }
+
+      .review-section {
+        scroll-margin-top: 78px;
+        padding: 42px 0 52px;
+        border-bottom: 1px solid var(--color-line);
+      }
+
+      .review-section:first-child {
+        padding-top: 8px;
+      }
+
+      .section-kicker {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 8px;
+        color: var(--color-brand-strong);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .section-kicker::before {
+        width: 24px;
+        height: 4px;
+        background: var(--color-sun);
+        border-radius: 999px;
+        content: "";
+      }
+
+      .section-title {
+        max-width: 900px;
+        margin: 0;
+        font-size: clamp(28px, 3vw, 36px);
+        line-height: 1.25;
+        letter-spacing: -0.02em;
+      }
+
+      .section-lead {
+        max-width: 820px;
+        margin: 14px 0 0;
+        color: var(--color-muted);
+        font-size: 16px;
+        line-height: 1.8;
+      }
+
+      .decision-grid,
+      .state-grid,
+      .responsive-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        margin-top: 26px;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+      }
+
+      .decision-card,
+      .state-card,
+      .responsive-card {
+        min-width: 0;
+        padding: 22px;
+      }
+
+      .decision-card + .decision-card,
+      .state-card + .state-card,
+      .responsive-card + .responsive-card {
+        border-left: 1px solid var(--color-line);
+      }
+
+      .responsive-card:nth-child(3n + 1) {
+        border-left: 0;
+      }
+
+      .responsive-card:nth-child(n + 4) {
+        border-top: 1px solid var(--color-line);
+      }
+
+      .decision-card svg {
+        color: var(--color-brand-strong);
+      }
+
+      .decision-card strong,
+      .state-card strong,
+      .responsive-card strong {
+        display: block;
+        margin: 10px 0 5px;
+        font-size: 15px;
+      }
+
+      .decision-card p,
+      .state-card p,
+      .responsive-card p {
+        margin: 0;
+        color: var(--color-muted);
+        font-size: 13px;
+      }
+
+      .review-note {
+        display: flex;
+        gap: 12px;
+        max-width: 820px;
+        margin-top: 24px;
+        padding: 16px;
+        background: var(--color-sky-soft);
+        border: 1px solid color-mix(in srgb, var(--color-sky) 32%, white);
+        border-radius: var(--radius-sm);
+      }
+
+      .review-note svg {
+        flex: 0 0 auto;
+        color: var(--color-sky);
+      }
+
+      .review-note strong,
+      .review-note span {
+        display: block;
+      }
+
+      .review-note span {
+        margin-top: 2px;
+        color: var(--color-muted);
+        font-size: 13px;
+      }
+
+      .mock-stage {
+        margin-top: 26px;
+        padding: 28px;
+        overflow-x: auto;
+        background: #e8efed;
+        border-radius: var(--radius-sm);
+        overscroll-behavior-x: contain;
+      }
+
+      .screen-label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: min(1280px, 100%);
+        min-width: 960px;
+        margin: 0 auto 10px;
+        color: var(--color-muted);
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .screen-label span:last-child {
+        font-variant-numeric: tabular-nums;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        min-height: 40px;
+        padding: 0 14px;
+        border: 1px solid transparent;
+        border-radius: var(--radius-sm);
+        background: var(--color-surface);
+        color: var(--color-ink);
+        font-size: 13px;
+        font-weight: 650;
+        cursor: pointer;
+        transition: background 140ms ease, transform 140ms ease;
+      }
+
+      .button:active {
+        transform: scale(0.97);
+      }
+
+      .button.primary {
+        background: var(--color-brand-strong);
+        border-color: var(--color-brand-strong);
+        color: white;
+      }
+
+      .button.primary:hover {
+        background: var(--color-brand-strong-hover);
+      }
+
+      .button.secondary {
+        border-color: var(--color-line-strong);
+      }
+
+      .button.quiet {
+        background: transparent;
+        color: var(--color-brand-strong);
+      }
+
+      .button.danger {
+        border-color: var(--color-coral);
+        color: var(--color-coral-strong);
+      }
+
+      .button[disabled] {
+        background: var(--color-line);
+        border-color: var(--color-line);
+        color: var(--color-muted);
+        cursor: not-allowed;
+        opacity: 0.72;
+        transform: none;
+      }
+
+      .button.icon-only {
+        width: 40px;
+        padding: 0;
+      }
+
+      .field {
+        display: grid;
+        gap: 6px;
+      }
+
+      .field label,
+      .field-label {
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .field input,
+      .field select,
+      .field textarea {
+        width: 100%;
+        min-height: 40px;
+        padding: 8px 11px;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line-strong);
+        border-radius: var(--radius-sm);
+        color: var(--color-ink);
+      }
+
+      .field textarea {
+        min-height: 96px;
+        resize: vertical;
+      }
+
+      .field .hint,
+      .field .error-copy {
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .field .error-copy {
+        color: var(--color-coral-strong);
+      }
+
+      .field.has-error input,
+      .field.has-error textarea {
+        border-color: var(--color-coral);
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        width: max-content;
+        min-height: 24px;
+        padding: 2px 8px;
+        border: 1px solid transparent;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .status::before {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        content: "";
+      }
+
+      .status.draft {
+        background: var(--color-sun-soft);
+        border-color: color-mix(in srgb, var(--color-sun) 50%, white);
+        color: #71550a;
+      }
+
+      .status.draft::before {
+        background: var(--color-sun);
+      }
+
+      .status.success {
+        background: var(--color-brand-soft);
+        border-color: color-mix(in srgb, var(--color-brand) 30%, white);
+        color: var(--color-brand-strong);
+      }
+
+      .status.success::before {
+        background: var(--color-brand);
+      }
+
+      .status.blocked {
+        background: var(--color-coral-soft);
+        border-color: color-mix(in srgb, var(--color-coral) 32%, white);
+        color: var(--color-coral-strong);
+      }
+
+      .status.blocked::before {
+        background: var(--color-coral);
+      }
+
+      .status.neutral {
+        background: var(--color-canvas);
+        border-color: var(--color-line);
+        color: var(--color-muted);
+      }
+
+      .status.neutral::before {
+        background: var(--color-muted);
+      }
+
+      .auth-preview {
+        display: grid;
+        grid-template-columns: minmax(520px, 1fr) 360px;
+        width: 1120px;
+        min-height: 660px;
+        margin: 0 auto;
+        background: var(--color-canvas);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+        box-shadow: var(--shadow-high);
+        overflow: hidden;
+      }
+
+      .auth-canvas {
+        display: grid;
+        place-items: center;
+        padding: 48px;
+      }
+
+      .login-card {
+        width: 420px;
+        padding: 30px;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+        box-shadow: var(--shadow-low);
+      }
+
+      .login-brand {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 26px;
+      }
+
+      .login-brand-copy strong,
+      .login-brand-copy span {
+        display: block;
+      }
+
+      .login-brand-copy strong {
+        font-family: var(--font-display);
+        line-height: 1.1;
+      }
+
+      .login-brand-copy span {
+        margin-top: 3px;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .login-card h3 {
+        margin: 0;
+        font-size: 24px;
+        line-height: 1.3;
+      }
+
+      .login-card > p {
+        margin: 8px 0 22px;
+        color: var(--color-muted);
+      }
+
+      .login-form {
+        display: grid;
+        gap: 16px;
+      }
+
+      .session-checking {
+        display: grid;
+        grid-template-columns: 20px 1fr;
+        gap: 9px;
+        margin-bottom: 18px;
+        padding: 14px;
+        background: var(--color-sky-soft);
+        border: 1px solid color-mix(in srgb, var(--color-sky) 32%, white);
+        border-radius: var(--radius-sm);
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .session-checking[hidden] {
+        display: none;
+      }
+
+      .form-alert {
+        padding: 10px 12px;
+        background: var(--color-coral-soft);
+        border: 1px solid color-mix(in srgb, var(--color-coral) 35%, white);
+        border-radius: var(--radius-sm);
+        color: var(--color-coral-strong);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .form-alert[hidden] {
+        display: none;
+      }
+
+      .form-alert.warning {
+        background: var(--color-sun-soft);
+        border-color: color-mix(in srgb, var(--color-sun) 50%, white);
+        color: #71550a;
+      }
+
+      .form-alert.info {
+        background: var(--color-sky-soft);
+        border-color: color-mix(in srgb, var(--color-sky) 32%, white);
+        color: var(--color-muted);
+      }
+
+      .form-alert.success {
+        background: var(--color-brand-soft);
+        border-color: color-mix(in srgb, var(--color-brand) 30%, white);
+        color: var(--color-brand-strong);
+      }
+
+      .login-form .button.primary {
+        width: 100%;
+        margin-top: 2px;
+      }
+
+      .student-link {
+        display: inline-flex;
+        margin-top: 18px;
+        color: var(--color-brand-strong);
+        font-size: 13px;
+        font-weight: 650;
+        text-decoration: none;
+      }
+
+      .auth-state-panel {
+        padding: 28px 24px;
+        background: var(--color-surface);
+        border-left: 1px solid var(--color-line);
+      }
+
+      .auth-state-panel h4 {
+        margin: 0;
+        font-size: 18px;
+      }
+
+      .auth-state-panel > p {
+        margin: 6px 0 18px;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .state-switcher {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px;
+      }
+
+      .state-switcher button {
+        min-height: 34px;
+        padding: 0 10px;
+        background: var(--color-canvas);
+        border: 1px solid var(--color-line);
+        border-radius: 999px;
+        color: var(--color-muted);
+        font-size: 12px;
+        font-weight: 650;
+        cursor: pointer;
+      }
+
+      .state-switcher button[aria-pressed="true"] {
+        background: var(--color-brand-soft);
+        border-color: var(--color-brand);
+        color: var(--color-brand-strong);
+      }
+
+      .login-state-detail {
+        display: none;
+        gap: 12px;
+        margin-top: 18px;
+        padding: 16px;
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+      }
+
+      .login-state-detail.active {
+        display: grid;
+        grid-template-columns: 22px 1fr;
+      }
+
+      .login-state-detail.error {
+        background: var(--color-coral-soft);
+        border-color: color-mix(in srgb, var(--color-coral) 35%, white);
+      }
+
+      .login-state-detail.warning {
+        background: var(--color-sun-soft);
+        border-color: color-mix(in srgb, var(--color-sun) 55%, white);
+      }
+
+      .login-state-detail.info {
+        background: var(--color-sky-soft);
+      }
+
+      .login-state-detail.success {
+        background: var(--color-brand-soft);
+      }
+
+      .login-state-detail strong,
+      .login-state-detail span {
+        display: block;
+      }
+
+      .login-state-detail span {
+        margin-top: 3px;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .admin-shell {
+        display: grid;
+        grid-template-columns: 224px minmax(0, 1fr);
+        width: 1280px;
+        min-height: 760px;
+        margin: 0 auto;
+        background: var(--color-canvas);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+        box-shadow: var(--shadow-high);
+        overflow: hidden;
+      }
+
+      .admin-sidebar {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        padding: 18px 14px 14px;
+        background: var(--color-surface);
+        border-right: 1px solid var(--color-line);
+      }
+
+      .admin-sidebar .product-brand {
+        padding: 2px 10px 22px;
+      }
+
+      .product-brand-copy span {
+        display: block;
+        margin-top: 3px;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .admin-nav {
+        display: grid;
+        align-content: start;
+        gap: 4px;
+      }
+
+      .admin-nav a {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 40px;
+        padding: 0 10px;
+        border-radius: var(--radius-sm);
+        color: var(--color-muted);
+        font-size: 13px;
+        font-weight: 650;
+        text-decoration: none;
+      }
+
+      .admin-nav a.active {
+        background: var(--color-brand-soft);
+        color: var(--color-brand-strong);
+      }
+
+      .admin-profile {
+        padding: 14px 10px 2px;
+        border-top: 1px solid var(--color-line);
+      }
+
+      .admin-profile-name {
+        display: flex;
+        gap: 9px;
+        align-items: center;
+      }
+
+      .admin-initial {
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        background: var(--color-ink);
+        border-radius: 50%;
+        color: white;
+        font-family: var(--font-display);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .admin-profile strong,
+      .admin-profile span {
+        display: block;
+      }
+
+      .admin-profile strong {
+        font-size: 12px;
+      }
+
+      .admin-profile span {
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .logout-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 40px;
+        margin-top: 8px;
+        padding: 0;
+        background: transparent;
+        border: 0;
+        color: var(--color-muted);
+        font-size: 12px;
+        font-weight: 650;
+        cursor: pointer;
+      }
+
+      .logout-link svg {
+        width: 15px;
+        height: 15px;
+      }
+
+      .admin-workspace {
+        min-width: 0;
+      }
+
+      .admin-topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 64px;
+        padding: 0 24px;
+        background: var(--color-surface);
+        border-bottom: 1px solid var(--color-line);
+      }
+
+      .topbar-admin-profile {
+        display: none;
+        align-items: center;
+        gap: 12px;
+        margin-left: auto;
+      }
+
+      .topbar-admin-profile > span,
+      .topbar-admin-profile strong {
+        display: block;
+      }
+
+      .topbar-admin-profile > span {
+        color: var(--color-muted);
+        font-size: 11px;
+        line-height: 1.35;
+        text-align: right;
+      }
+
+      .topbar-admin-profile strong {
+        color: var(--color-ink);
+        font-size: 12px;
+      }
+
+      .topbar-admin-profile .logout-link {
+        width: auto;
+        min-height: 40px;
+        margin: 0;
+        padding: 0 8px;
+        font-size: 12px;
+      }
+
+      .crumbs {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .crumbs strong {
+        color: var(--color-ink);
+      }
+
+      .admin-page {
+        padding: 22px 24px 30px;
+      }
+
+      .page-heading {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 20px;
+      }
+
+      .page-heading h3 {
+        margin: 0;
+        font-size: 24px;
+        line-height: 1.3;
+      }
+
+      .page-heading p {
+        margin: 6px 0 0;
+        color: var(--color-muted);
+        font-size: 14px;
+      }
+
+      .heading-title {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        flex-wrap: wrap;
+      }
+
+      .heading-actions,
+      .toolbar-actions,
+      .form-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        flex-wrap: wrap;
+      }
+
+      .surface {
+        margin-top: 18px;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+      }
+
+      .surface-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 56px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--color-line);
+      }
+
+      .surface-head h4 {
+        margin: 0;
+        font-size: 18px;
+      }
+
+      .surface-head p {
+        margin: 2px 0 0;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .import-panel {
+        display: grid;
+        grid-template-columns: 1.1fr 0.9fr;
+        border-bottom: 1px solid var(--color-line);
+      }
+
+      .import-panel[hidden] {
+        display: none;
+      }
+
+      .import-form,
+      .import-preview {
+        padding: 18px;
+      }
+
+      .import-preview {
+        background: var(--color-canvas);
+        border-left: 1px solid var(--color-line);
+      }
+
+      .segmented {
+        display: inline-grid;
+        grid-template-columns: 1fr 1fr;
+        padding: 3px;
+        background: var(--color-canvas);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+      }
+
+      .segmented button {
+        min-height: 40px;
+        padding: 0 12px;
+        background: transparent;
+        border: 0;
+        border-radius: 6px;
+        color: var(--color-muted);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .segmented button.active {
+        background: var(--color-surface);
+        color: var(--color-ink);
+      }
+
+      .compact-form {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+        margin-top: 14px;
+      }
+
+      .form-actions {
+        grid-column: 1 / -1;
+        padding-top: 2px;
+      }
+
+      .form-actions.spaced {
+        margin-top: 14px;
+      }
+
+      .preview-summary {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .preview-summary strong {
+        font-size: 14px;
+      }
+
+      .preview-list {
+        display: grid;
+        gap: 6px;
+        margin: 14px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+
+      .preview-list li {
+        display: grid;
+        grid-template-columns: 28px 1fr auto;
+        gap: 10px;
+        align-items: center;
+        min-height: 36px;
+        padding: 0 9px;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-xs);
+        font-size: 12px;
+      }
+
+      .preview-list li span:first-child {
+        color: var(--color-muted);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .preview-list li strong {
+        font-family: var(--font-display);
+      }
+
+      .table-scroll,
+      .matrix-scroll {
+        overflow: auto;
+        overscroll-behavior: contain;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        min-height: 44px;
+        padding: 11px 14px;
+        border-bottom: 1px solid var(--color-line);
+        text-align: left;
+        vertical-align: middle;
+      }
+
+      th {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        background: var(--color-surface);
+        color: var(--color-muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      tbody tr:last-child td,
+      tbody tr:last-child th {
+        border-bottom: 0;
+      }
+
+      .numeric {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+
+      td.action-cell {
+        padding-block: 2px;
+      }
+
+      .row-main strong,
+      .row-main span {
+        display: block;
+      }
+
+      .row-main span {
+        margin-top: 2px;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .table-link {
+        color: var(--color-brand-strong);
+        font-weight: 700;
+        text-decoration: none;
+      }
+
+      .command-bar {
+        position: sticky;
+        top: 0;
+        z-index: 3;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        min-height: 58px;
+        margin-top: 18px;
+        padding: 8px 12px 8px 16px;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+      }
+
+      .command-copy strong,
+      .command-copy span {
+        display: block;
+      }
+
+      .command-copy span {
+        color: var(--color-coral-strong);
+        font-size: 12px;
+      }
+
+      .pipeline {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        margin-top: 14px;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+      }
+
+      .pipeline-step {
+        display: grid;
+        grid-template-columns: 28px 1fr;
+        gap: 9px;
+        min-height: 76px;
+        padding: 14px;
+      }
+
+      .pipeline-step + .pipeline-step {
+        border-left: 1px solid var(--color-line);
+      }
+
+      .pipeline-mark {
+        display: grid;
+        place-items: center;
+        width: 27px;
+        height: 27px;
+        background: var(--color-canvas);
+        border: 1px solid var(--color-line);
+        border-radius: 50%;
+        color: var(--color-muted);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .pipeline-step.complete .pipeline-mark {
+        background: var(--color-brand-soft);
+        border-color: var(--color-brand);
+        color: var(--color-brand-strong);
+      }
+
+      .pipeline-step.blocked .pipeline-mark {
+        background: var(--color-coral-soft);
+        border-color: var(--color-coral);
+        color: var(--color-coral-strong);
+      }
+
+      .pipeline-step strong,
+      .pipeline-step span {
+        display: block;
+      }
+
+      .pipeline-step strong {
+        font-size: 13px;
+      }
+
+      .pipeline-step span {
+        margin-top: 2px;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .coverage-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 276px;
+        gap: 14px;
+        margin-top: 14px;
+      }
+
+      .coverage-panel,
+      .blocker-panel {
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+      }
+
+      .matrix-table {
+        min-width: 700px;
+        table-layout: fixed;
+      }
+
+      .matrix-table th:not(:first-child),
+      .matrix-table td:not(:first-child) {
+        text-align: center;
+      }
+
+      .matrix-table th:first-child {
+        width: 156px;
+      }
+
+      .stage-cell {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        min-width: 56px;
+        min-height: 27px;
+        padding: 0 6px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .stage-cell svg {
+        width: 13px;
+        height: 13px;
+      }
+
+      .stage-cell.approved {
+        background: var(--color-brand-soft);
+        color: var(--color-brand-strong);
+      }
+
+      .stage-cell.draft {
+        background: var(--color-sun-soft);
+        color: #71550a;
+      }
+
+      .stage-cell.missing {
+        background: var(--color-coral-soft);
+        color: var(--color-coral-strong);
+      }
+
+      .blocker-panel .surface-head {
+        background: var(--color-coral-soft);
+      }
+
+      .blocker-list {
+        display: grid;
+        gap: 14px;
+        margin: 0;
+        padding: 16px;
+        list-style: none;
+      }
+
+      .blocker-list li {
+        display: grid;
+        grid-template-columns: 20px 1fr;
+        gap: 9px;
+      }
+
+      .blocker-list svg {
+        color: var(--color-coral-strong);
+      }
+
+      .blocker-list strong,
+      .blocker-list span,
+      .blocker-list a {
+        display: block;
+      }
+
+      .blocker-list strong {
+        font-size: 12px;
+      }
+
+      .blocker-list span {
+        margin-top: 2px;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .blocker-list a {
+        margin-top: 5px;
+        color: var(--color-brand-strong);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .batch-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        min-height: 54px;
+        margin-top: 12px;
+        padding: 8px 12px;
+        background: var(--color-sky-soft);
+        border: 1px solid color-mix(in srgb, var(--color-sky) 30%, white);
+        border-radius: var(--radius-sm);
+      }
+
+      .batch-bar strong,
+      .batch-bar span {
+        display: block;
+      }
+
+      .batch-bar span {
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .exercise-layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 310px;
+        gap: 16px;
+        margin-top: 18px;
+      }
+
+      .editor-panel,
+      .review-panel {
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+      }
+
+      .editor-body,
+      .review-body {
+        padding: 18px;
+      }
+
+      .editor-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+
+      .editor-grid .full {
+        grid-column: 1 / -1;
+      }
+
+      .review-panel {
+        align-self: start;
+      }
+
+      .review-facts {
+        display: grid;
+        gap: 0;
+        margin: 0;
+      }
+
+      .review-facts div {
+        display: grid;
+        grid-template-columns: 76px 1fr;
+        gap: 8px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--color-line);
+      }
+
+      .review-facts dt {
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .review-facts dd {
+        margin: 0;
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .inline-notice {
+        display: grid;
+        grid-template-columns: 20px 1fr;
+        gap: 9px;
+        margin-top: 14px;
+        padding: 12px;
+        background: var(--color-sun-soft);
+        border: 1px solid color-mix(in srgb, var(--color-sun) 50%, white);
+        border-radius: var(--radius-sm);
+        color: #71550a;
+        font-size: 12px;
+      }
+
+      .inline-notice.error {
+        background: var(--color-coral-soft);
+        border-color: color-mix(in srgb, var(--color-coral) 35%, white);
+        color: var(--color-coral-strong);
+      }
+
+      .course-create {
+        display: grid;
+        grid-template-columns: 1fr 1.2fr auto;
+        gap: 12px;
+        align-items: end;
+        padding: 18px;
+        border-bottom: 1px solid var(--color-line);
+      }
+
+      .course-create[hidden] {
+        display: none;
+      }
+
+      dialog {
+        width: min(460px, calc(100% - 32px));
+        padding: 0;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+        box-shadow: var(--shadow-high);
+        color: var(--color-ink);
+      }
+
+      dialog::backdrop {
+        background: rgb(35 52 58 / 42%);
+      }
+
+      .code-dialog-head,
+      .code-dialog-body,
+      .code-dialog-actions {
+        padding: 18px 20px;
+      }
+
+      .code-dialog-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        border-bottom: 1px solid var(--color-line);
+      }
+
+      .code-dialog-head h4 {
+        margin: 0;
+        font-size: 18px;
+      }
+
+      .code-dialog-head p {
+        margin: 3px 0 0;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .one-time-code {
+        display: grid;
+        gap: 8px;
+        margin-top: 12px;
+        padding: 18px;
+        background: var(--color-sun-soft);
+        border: 1px solid color-mix(in srgb, var(--color-sun) 55%, white);
+        border-radius: var(--radius-sm);
+      }
+
+      .one-time-code small {
+        color: #71550a;
+        font-weight: 700;
+      }
+
+      .code-value {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 26px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .code-caption {
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .code-caption.copy-success {
+        color: var(--color-brand-strong);
+        font-weight: 650;
+      }
+
+      .code-caption.copy-error {
+        color: var(--color-coral-strong);
+        font-weight: 650;
+      }
+
+      .code-dialog-actions {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        border-top: 1px solid var(--color-line);
+      }
+
+      .responsive-card {
+        min-height: 240px;
+      }
+
+      .breakpoint-list {
+        display: grid;
+        gap: 10px;
+        margin-top: 16px;
+        padding: 0;
+        list-style: none;
+      }
+
+      .breakpoint-list li {
+        display: grid;
+        grid-template-columns: 18px 1fr;
+        gap: 8px;
+        align-items: start;
+        padding: 10px;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-xs);
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .breakpoint-list svg {
+        width: 16px;
+        height: 16px;
+        color: var(--color-brand-strong);
+      }
+
+      .responsive-live {
+        display: grid;
+        min-height: 188px;
+        margin-top: 14px;
+        background: var(--color-canvas);
+        border: 1px solid var(--color-line-strong);
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+        font-size: 10px;
+      }
+
+      .responsive-live.desktop-live {
+        grid-template-columns: 84px 1fr;
+      }
+
+      .responsive-live.tablet-live {
+        grid-template-columns: 44px 1fr;
+      }
+
+      .live-sidebar {
+        padding: 10px 7px;
+        background: var(--color-surface);
+        border-right: 1px solid var(--color-line);
+      }
+
+      .live-brand {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-family: var(--font-display);
+        font-weight: 700;
+      }
+
+      .live-mark {
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        background: var(--color-brand-strong);
+        border-radius: 5px;
+        color: white;
+        font-size: 9px;
+      }
+
+      .live-nav {
+        display: grid;
+        gap: 4px;
+        margin-top: 14px;
+      }
+
+      .live-nav span {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        min-height: 26px;
+        padding: 0 5px;
+        border-radius: 5px;
+        color: var(--color-muted);
+        font-weight: 650;
+      }
+
+      .live-nav span.active {
+        background: var(--color-brand-soft);
+        color: var(--color-brand-strong);
+      }
+
+      .live-nav svg {
+        width: 13px;
+        height: 13px;
+      }
+
+      .tablet-live .live-brand {
+        justify-content: center;
+      }
+
+      .tablet-live .live-brand > span:last-child,
+      .tablet-live .live-nav span > span {
+        display: none;
+      }
+
+      .tablet-live .live-nav span {
+        justify-content: center;
+        padding: 0;
+      }
+
+      .live-workspace {
+        min-width: 0;
+      }
+
+      .live-topbar {
+        display: flex;
+        align-items: center;
+        min-height: 30px;
+        padding: 0 10px;
+        background: var(--color-surface);
+        border-bottom: 1px solid var(--color-line);
+        color: var(--color-muted);
+      }
+
+      .live-content {
+        padding: 10px;
+      }
+
+      .live-heading {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+      }
+
+      .live-heading.reflow-heading {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .live-heading strong {
+        font-size: 12px;
+      }
+
+      .live-cta {
+        min-height: 26px;
+        padding: 0 7px;
+        background: var(--color-brand-strong);
+        border: 0;
+        border-radius: 5px;
+        color: white;
+        font-size: 9px;
+        font-weight: 700;
+      }
+
+      .live-table {
+        margin-top: 10px;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        font-size: 9px;
+      }
+
+      .live-table th,
+      .live-table td {
+        min-height: 28px;
+        padding: 6px;
+      }
+
+      .responsive-live.mobile-live {
+        display: block;
+      }
+
+      .live-mobile-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        min-height: 34px;
+        padding: 0 9px;
+        background: var(--color-surface);
+        border-bottom: 1px solid var(--color-line);
+      }
+
+      .live-mobile-nav {
+        display: flex;
+        gap: 4px;
+        padding: 5px 8px;
+        overflow-x: auto;
+        background: var(--color-surface);
+        border-bottom: 1px solid var(--color-line);
+      }
+
+      .live-mobile-nav span {
+        min-width: max-content;
+        padding: 4px 7px;
+        border-radius: 5px;
+        color: var(--color-muted);
+        font-weight: 650;
+      }
+
+      .live-mobile-nav span.active {
+        background: var(--color-brand-soft);
+        color: var(--color-brand-strong);
+      }
+
+      .live-readonly-note {
+        margin-top: 8px;
+        padding: 8px;
+        background: var(--color-sun-soft);
+        border: 1px solid color-mix(in srgb, var(--color-sun) 50%, white);
+        border-radius: 5px;
+        color: #71550a;
+        font-size: 9px;
+        font-weight: 650;
+      }
+
+      .responsive-live.mobile-login-live {
+        display: block;
+        width: min(100%, 375px);
+        min-height: 330px;
+        margin-inline: auto;
+        padding: 18px;
+      }
+
+      .mobile-login-card {
+        padding: 16px;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+        box-shadow: var(--shadow-low);
+      }
+
+      .mobile-login-card h5 {
+        margin: 14px 0 4px;
+        font-size: 24px;
+      }
+
+      .mobile-login-card p {
+        margin: 0 0 12px;
+        color: var(--color-muted);
+        font-size: 14px;
+      }
+
+      .mobile-login-card label {
+        display: block;
+        margin: 8px 0 4px;
+        font-size: 13px;
+        font-weight: 650;
+      }
+
+      .mobile-login-card input,
+      .mobile-login-card button {
+        width: 100%;
+        min-height: 40px;
+        border-radius: var(--radius-sm);
+      }
+
+      .mobile-login-card input {
+        padding: 0 9px;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line-strong);
+      }
+
+      .mobile-login-card button {
+        margin-top: 12px;
+        background: var(--color-brand-strong);
+        border: 0;
+        color: white;
+        font-weight: 700;
+      }
+
+      .state-grid {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+
+      .scenario-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        margin-top: 26px;
+      }
+
+      .scenario-panel {
+        min-width: 0;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+        overflow: hidden;
+      }
+
+      .scenario-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 58px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--color-line);
+      }
+
+      .scenario-head strong,
+      .scenario-head span {
+        display: block;
+      }
+
+      .scenario-head strong {
+        font-size: 16px;
+      }
+
+      .scenario-head span {
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .scenario-body {
+        padding: 16px;
+      }
+
+      .empty-state {
+        display: grid;
+        place-items: center;
+        min-height: 190px;
+        padding: 24px;
+        text-align: center;
+      }
+
+      .empty-state svg {
+        width: 28px;
+        height: 28px;
+        color: var(--color-brand-strong);
+      }
+
+      .empty-state strong {
+        margin-top: 10px;
+        font-size: 16px;
+      }
+
+      .empty-state p {
+        max-width: 360px;
+        margin: 5px 0 14px;
+        color: var(--color-muted);
+        font-size: 13px;
+      }
+
+      .empty-matrix {
+        min-width: 560px;
+      }
+
+      .empty-matrix td {
+        height: 116px;
+        color: var(--color-muted);
+        text-align: center;
+      }
+
+      .approval-result {
+        display: grid;
+        grid-template-columns: 36px 1fr;
+        gap: 12px;
+        padding: 16px;
+        background: var(--color-brand-soft);
+        border: 1px solid color-mix(in srgb, var(--color-brand) 30%, white);
+        border-radius: var(--radius-sm);
+      }
+
+      .approval-result svg {
+        width: 28px;
+        height: 28px;
+        color: var(--color-brand-strong);
+      }
+
+      .approval-result strong,
+      .approval-result span {
+        display: block;
+      }
+
+      .approval-result span {
+        margin-top: 3px;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .readonly-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 220px;
+        gap: 12px;
+      }
+
+      .readonly-fields {
+        display: grid;
+        gap: 10px;
+      }
+
+      .readonly-field {
+        padding: 10px 12px;
+        background: var(--color-canvas);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+      }
+
+      .readonly-field strong,
+      .readonly-field span {
+        display: block;
+      }
+
+      .readonly-field strong {
+        font-size: 12px;
+      }
+
+      .readonly-field span {
+        margin-top: 2px;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .readonly-actions {
+        padding: 12px;
+        background: var(--color-canvas);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+      }
+
+      .readonly-actions p {
+        margin: 8px 0 12px;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .state-card {
+        min-height: 180px;
+      }
+
+      .state-card:nth-child(4n + 1) {
+        border-left: 0;
+      }
+
+      .state-card:nth-child(n + 5) {
+        border-top: 1px solid var(--color-line);
+      }
+
+      .state-icon {
+        display: grid;
+        place-items: center;
+        width: 34px;
+        height: 34px;
+        background: var(--color-canvas);
+        border-radius: 50%;
+      }
+
+      .state-card.error .state-icon {
+        background: var(--color-coral-soft);
+        color: var(--color-coral-strong);
+      }
+
+      .state-card.info .state-icon {
+        background: var(--color-sky-soft);
+        color: var(--color-sky);
+      }
+
+      .state-card.success .state-icon {
+        background: var(--color-brand-soft);
+        color: var(--color-brand-strong);
+      }
+
+      .state-card.warning .state-icon {
+        background: var(--color-sun-soft);
+        color: #71550a;
+      }
+
+      .state-card .mini-action {
+        display: inline-flex;
+        align-items: center;
+        min-height: 40px;
+        margin-top: 12px;
+        padding: 0;
+        background: transparent;
+        border: 0;
+        color: var(--color-brand-strong);
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .state-card .mini-action + .mini-action {
+        margin-left: 10px;
+      }
+
+      .checklist {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px 28px;
+        margin: 26px 0 0;
+        padding: 22px;
+        background: var(--color-surface);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+      }
+
+      .checklist div {
+        display: grid;
+        grid-template-columns: 20px 1fr;
+        gap: 9px;
+        align-items: start;
+      }
+
+      .checklist svg {
+        color: var(--color-brand-strong);
+      }
+
+      .checklist strong,
+      .checklist span {
+        display: block;
+      }
+
+      .checklist strong {
+        font-size: 13px;
+      }
+
+      .checklist span {
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .review-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        padding-top: 30px;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .mobile-readonly-banner {
+        display: none;
+        align-items: flex-start;
+        gap: 9px;
+        margin: 12px 16px 0;
+        padding: 11px 12px;
+        background: var(--color-sun-soft);
+        border: 1px solid color-mix(in srgb, var(--color-sun) 55%, white);
+        border-radius: var(--radius-sm);
+        color: #71550a;
+        font-size: 12px;
+      }
+
+      .mobile-readonly-banner svg {
+        flex: 0 0 auto;
+        width: 17px;
+        height: 17px;
+      }
+
+      .scenario-form {
+        display: grid;
+        gap: 14px;
+        padding: 18px;
+      }
+
+      .scenario-form .compact-form {
+        align-items: end;
+      }
+
+      .selected-file {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        min-height: 42px;
+        padding: 0 12px;
+        background: var(--color-canvas);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      .validation-table td:last-child {
+        color: var(--color-coral-strong);
+        font-weight: 650;
+      }
+
+      .publish-confirmation {
+        display: grid;
+        gap: 16px;
+        padding: 18px;
+      }
+
+      .publish-facts {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1px;
+        overflow: hidden;
+        background: var(--color-line);
+        border: 1px solid var(--color-line);
+        border-radius: var(--radius-sm);
+      }
+
+      .publish-facts div {
+        padding: 14px;
+        background: var(--color-surface);
+      }
+
+      .publish-facts strong,
+      .publish-facts span {
+        display: block;
+      }
+
+      .publish-facts strong {
+        font-family: var(--font-display);
+        font-size: 22px;
+      }
+
+      .publish-facts span {
+        margin-top: 2px;
+        color: var(--color-muted);
+        font-size: 12px;
+      }
+
+      @media (min-width: 1200px) and (max-width: 1279px) {
+        .screen-label,
+        .admin-shell {
+          width: 100%;
+          min-width: 0;
+        }
+
+        .coverage-layout {
+          grid-template-columns: 1fr;
+        }
+
+        .blocker-panel {
+          grid-row: 1;
+        }
+
+        .coverage-panel {
+          grid-row: 2;
+        }
+
+        .command-bar {
+          flex-wrap: wrap;
+        }
+      }
+
+      @media (min-width: 768px) and (max-width: 1199px) {
+        .admin-sidebar .admin-profile {
+          display: none;
+        }
+
+        .topbar-admin-profile {
+          display: flex;
+        }
+      }
+
+      @media (max-width: 1199px) {
+        .screen-label {
+          width: 100%;
+          min-width: 0;
+        }
+
+        .admin-shell {
+          grid-template-columns: 72px minmax(0, 1fr);
+          width: 100%;
+        }
+
+        .admin-sidebar {
+          padding: 16px 8px 12px;
+        }
+
+        .admin-sidebar .product-brand,
+        .admin-nav a,
+        .logout-link {
+          justify-content: center;
+        }
+
+        .product-brand-copy,
+        .admin-nav a span,
+        .admin-profile-name {
+          display: none;
+        }
+
+        .admin-nav a {
+          padding: 0;
+        }
+
+        .admin-profile {
+          padding-inline: 8px;
+        }
+
+        .logout-link {
+          width: 40px;
+          font-size: 0;
+        }
+
+        .coverage-layout,
+        .exercise-layout,
+        .import-panel {
+          grid-template-columns: 1fr;
+        }
+
+        .blocker-panel {
+          grid-row: 1;
+        }
+
+        .coverage-panel {
+          grid-row: 2;
+        }
+
+        .import-preview {
+          border-top: 1px solid var(--color-line);
+          border-left: 0;
+        }
+
+        .course-create {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .course-create .button {
+          grid-column: 1 / -1;
+        }
+
+        .pipeline {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .pipeline-step:nth-child(3) {
+          border-top: 1px solid var(--color-line);
+          border-left: 0;
+        }
+
+        .pipeline-step:nth-child(4) {
+          border-top: 1px solid var(--color-line);
+        }
+      }
+
+      @media (max-width: 767px) {
+        .auth-preview {
+          grid-template-columns: 1fr;
+          width: 100%;
+        }
+
+        .auth-canvas {
+          padding: 24px;
+        }
+
+        .login-card {
+          width: min(100%, 440px);
+        }
+
+        .auth-state-panel {
+          border-top: 1px solid var(--color-line);
+          border-left: 0;
+        }
+
+        .admin-shell {
+          grid-template-columns: 1fr;
+        }
+
+        .admin-sidebar {
+          display: grid;
+          grid-template-rows: 1fr;
+          grid-template-columns: auto 1fr auto;
+          gap: 12px;
+          align-items: center;
+          padding: 10px 12px;
+          border-right: 0;
+          border-bottom: 1px solid var(--color-line);
+        }
+
+        .admin-sidebar .product-brand {
+          padding: 0;
+        }
+
+        .product-brand-copy {
+          display: block;
+        }
+
+        .admin-nav {
+          display: flex;
+          justify-content: flex-start;
+          gap: 4px;
+          overflow-x: auto;
+        }
+
+        .admin-nav a {
+          justify-content: flex-start;
+          min-width: max-content;
+          padding: 0 10px;
+        }
+
+        .admin-nav a span {
+          display: inline;
+        }
+
+        .admin-profile {
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 9px;
+          padding: 0;
+          border-top: 0;
+        }
+
+        .admin-profile-name {
+          display: flex;
+        }
+
+        .admin-profile-name .admin-initial,
+        .admin-profile-name > span:last-child > span {
+          display: none;
+        }
+
+        .logout-link {
+          width: auto;
+          margin: 0;
+          font-size: 12px;
+        }
+
+        .admin-topbar {
+          min-height: 52px;
+          padding: 0 16px;
+        }
+
+        .admin-page {
+          padding: 18px 16px 24px;
+        }
+
+        .page-heading,
+        .command-bar,
+        .batch-bar {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        .heading-actions,
+        .toolbar-actions,
+        .form-actions {
+          justify-content: flex-start;
+        }
+
+        .pipeline,
+        .compact-form,
+        .course-create,
+        .editor-grid,
+        .readonly-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .pipeline-step + .pipeline-step {
+          border-top: 1px solid var(--color-line);
+          border-left: 0;
+        }
+
+        .course-create .button {
+          grid-column: auto;
+        }
+      }
+
+      @media (max-width: 479px) {
+        .auth-state-panel {
+          display: none;
+        }
+
+        .auth-canvas {
+          padding: 16px;
+        }
+
+        .login-card {
+          padding: 24px 20px;
+        }
+
+        .admin-sidebar {
+          grid-template-columns: auto 1fr;
+          grid-template-rows: auto auto;
+        }
+
+        .admin-sidebar .product-brand {
+          grid-column: 1;
+          grid-row: 1;
+        }
+
+        .admin-sidebar .product-brand-copy {
+          display: none;
+        }
+
+        .admin-profile {
+          grid-column: 2;
+          grid-row: 1;
+          justify-self: end;
+        }
+
+        .admin-nav {
+          grid-column: 1 / -1;
+          grid-row: 2;
+        }
+
+        .mobile-readonly-banner {
+          display: flex;
+        }
+
+        .admin-shell input[readonly],
+        .admin-shell textarea[readonly],
+        .admin-shell select:disabled {
+          background: var(--color-canvas);
+          color: var(--color-muted);
+          cursor: not-allowed;
+        }
+
+        .admin-page > .page-heading > .button,
+        .command-bar .toolbar-actions,
+        .batch-bar,
+        .course-create,
+        .import-panel,
+        .open-rotate,
+        .editor-body .form-actions,
+        .review-body .form-actions {
+          display: none;
+        }
+      }
+
+      @media (max-width: 1080px) {
+        .review-nav {
+          display: none;
+        }
+
+        .decision-grid,
+        .responsive-grid,
+        .scenario-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .decision-card + .decision-card,
+        .responsive-card + .responsive-card {
+          border-top: 1px solid var(--color-line);
+          border-left: 0;
+        }
+
+        .state-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .state-card:nth-child(odd) {
+          border-left: 0;
+        }
+
+        .state-card:nth-child(even) {
+          border-left: 1px solid var(--color-line);
+        }
+
+        .state-card:nth-child(n + 3) {
+          border-top: 1px solid var(--color-line);
+        }
+      }
+
+      @media (max-width: 640px) {
+        .review-bar {
+          min-height: 58px;
+          padding: 0 14px;
+        }
+
+        .review-meta {
+          display: none;
+        }
+
+        .review-main {
+          width: calc(100% - 24px);
+          padding-top: 22px;
+        }
+
+        .review-section {
+          padding: 32px 0 40px;
+        }
+
+        .section-title {
+          font-size: 27px;
+        }
+
+        .section-lead {
+          font-size: 14px;
+        }
+
+        .mock-stage {
+          margin-right: -12px;
+          margin-left: -12px;
+          padding: 20px 12px;
+          border-radius: 0;
+        }
+
+        .state-grid,
+        .checklist,
+        .readonly-grid,
+        .publish-facts {
+          grid-template-columns: 1fr;
+        }
+
+        .state-card,
+        .state-card:nth-child(even),
+        .state-card:nth-child(odd) {
+          border-left: 0;
+        }
+
+        .state-card + .state-card {
+          border-top: 1px solid var(--color-line);
+        }
+
+        .review-footer {
+          display: grid;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        html {
+          scroll-behavior: auto;
+        }
+
+        *,
+        *::before,
+        *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+        }
+      }
+
+      @media (forced-colors: active) {
+        .status,
+        .stage-cell,
+        .login-state-detail,
+        .inline-notice {
+          border: 1px solid CanvasText;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+    <header class="review-bar">
+      <div class="review-brand">
+        <span class="word-mark" aria-hidden="true">Aa</span>
+        <strong>eng learn</strong>
+        <span class="review-meta">管理端视觉审阅稿 · v1</span>
+      </div>
+      <nav class="review-nav" aria-label="审阅稿章节">
+        <a href="#direction">设计方向</a>
+        <a href="#login">登录</a>
+        <a href="#sources">词库</a>
+        <a href="#version">版本审核</a>
+        <a href="#exercise">练习</a>
+        <a href="#courses">课程</a>
+        <a href="#states">状态</a>
+        <a href="./DESIGN_0714_管理员登录与高效内容工作台_v1.md">设计方案</a>
+      </nav>
+    </header>
+
+    <main id="main-content" class="review-main">
+      <section id="direction" class="review-section">
+        <p class="section-kicker">01 · 设计方向</p>
+        <h1 class="section-title">安静、高密度、可行动的内容工作台</h1>
+        <p class="section-lead">
+          管理端与学生端共享青绿色品牌、清晰状态和可见焦点，但不共享儿童端的大按钮、奖励氛围与单任务窄列。后台把对象、状态、阻断原因和下一步动作放在同一判断路径中。
+        </p>
+
+        <div class="decision-grid">
+          <article class="decision-card">
+            <i data-lucide="scan-text"></i>
+            <strong>先读事实，再做动作</strong>
+            <p>表格、覆盖率矩阵和阻断列表承担主要信息，不使用装饰性数据卡片墙。</p>
+          </article>
+          <article class="decision-card">
+            <i data-lucide="panel-left"></i>
+            <strong>只有两个真实入口</strong>
+            <p>词库工作台、课程工作台。没有概览、通知、设置或权限等死入口。</p>
+          </article>
+          <article class="decision-card">
+            <i data-lucide="shield-check"></i>
+            <strong>高风险状态稳定呈现</strong>
+            <p>发布阻断、结果未知、会话失效和一次性学习码不依赖自动消失提示。</p>
+          </article>
+        </div>
+
+        <div class="review-note">
+          <i data-lucide="info"></i>
+          <span>
+            <strong>审阅边界</strong>
+            <span>这是视觉与交互方向稿，不连接真实 API、不包含真实管理员凭证或学习码，也不授权生产编码。</span>
+          </span>
+        </div>
+      </section>
+
+      <section id="login" class="review-section">
+        <p class="section-kicker">02 · 管理员登录</p>
+        <h2 class="section-title">账号入口必须与 10 位学习码入口彻底分开</h2>
+        <p class="section-lead">
+          未认证时只显示独立登录表面，不加载侧栏、课程、词库或任何业务数据。右侧状态切换用于审阅会话检查、提交中、登录错误、冷却、未初始化、服务异常、会话过期和安全退出。
+        </p>
+
+        <div class="mock-stage">
+          <div class="screen-label"><span>管理员登录 · 独立认证表面</span><span>1280 × 800</span></div>
+          <div class="auth-preview">
+            <div class="auth-canvas">
+              <section class="login-card" aria-labelledby="login-title">
+                <div class="login-brand">
+                  <span class="word-mark" aria-hidden="true">Aa</span>
+                  <span class="login-brand-copy">
+                    <strong>eng learn</strong>
+                    <span>内容管理</span>
+                  </span>
+                </div>
+                <h3 id="login-title">管理员登录</h3>
+                <p>使用已在终端初始化的管理员账号进入内容工作台。</p>
+                <div id="session-checking" class="session-checking" hidden role="status">
+                  <i data-lucide="loader-circle"></i>
+                  <span>正在检查管理员会话…检查完成前不挂载可编辑字段。</span>
+                </div>
+                <form id="login-form" class="login-form">
+                  <div class="field">
+                    <label for="admin-account">管理员账号</label>
+                    <input id="admin-account" name="username" autocomplete="username" placeholder="输入管理员账号" />
+                  </div>
+                  <div class="field">
+                    <label for="admin-password">密码</label>
+                    <input id="admin-password" name="password" type="password" autocomplete="current-password" placeholder="输入管理员密码" />
+                  </div>
+                  <div id="login-inline-status" class="form-alert" role="alert" hidden></div>
+                  <button class="button primary" id="login-submit" type="submit">
+                    <i data-lucide="log-in"></i>
+                    <span id="login-submit-label">登录管理台</span>
+                  </button>
+                </form>
+                <a class="student-link" href="/app">前往学生学习端</a>
+              </section>
+            </div>
+
+            <aside class="auth-state-panel" aria-label="登录状态审阅">
+              <h4>关键状态</h4>
+              <p>选择状态，检查文案层级、恢复动作和业务壳是否被正确卸载。</p>
+              <div class="state-switcher" role="group" aria-label="选择登录状态">
+                <button type="button" data-login-state="default" aria-pressed="true">默认</button>
+                <button type="button" data-login-state="checking" aria-pressed="false">检查会话</button>
+                <button type="button" data-login-state="submitting" aria-pressed="false">提交中</button>
+                <button type="button" data-login-state="credentials" aria-pressed="false">凭证错误</button>
+                <button type="button" data-login-state="cooldown" aria-pressed="false">临时冷却</button>
+                <button type="button" data-login-state="uninitialized" aria-pressed="false">未初始化</button>
+                <button type="button" data-login-state="network" aria-pressed="false">网络失败</button>
+                <button type="button" data-login-state="service" aria-pressed="false">服务异常</button>
+                <button type="button" data-login-state="expired" aria-pressed="false">会话过期</button>
+                <button type="button" data-login-state="logout" aria-pressed="false">已安全退出</button>
+              </div>
+
+              <div class="login-state-detail info active" data-login-detail="default">
+                <i data-lucide="log-in"></i>
+                <span>
+                  <strong>等待管理员输入</strong>
+                  <span>账号与密码可编辑；按 Enter 或点击主按钮均进入同一提交状态。</span>
+                </span>
+              </div>
+              <div class="login-state-detail info" data-login-detail="checking">
+                <i data-lucide="loader-circle"></i>
+                <span>
+                  <strong>正在检查管理员会话…</strong>
+                  <span>保留稳定登录表面，但不挂载账号、密码或后台业务壳。</span>
+                </span>
+              </div>
+              <div class="login-state-detail info" data-login-detail="submitting">
+                <i data-lucide="loader-circle"></i>
+                <span>
+                  <strong>正在登录…</strong>
+                  <span>账号、密码和提交按钮同时禁用，防止重复提交。</span>
+                </span>
+              </div>
+              <div class="login-state-detail error" data-login-detail="credentials">
+                <i data-lucide="circle-alert"></i>
+                <span>
+                  <strong>账号或密码不正确</strong>
+                  <span>保留账号、清空密码，焦点返回密码输入框。不得区分账号不存在或密码错误。</span>
+                </span>
+              </div>
+              <div class="login-state-detail warning" data-login-detail="cooldown">
+                <i data-lucide="timer"></i>
+                <span>
+                  <strong>尝试次数过多，请在 08:42 后重试</strong>
+                  <span>重试时间来自服务端；按钮禁用，不在浏览器本地自行计数。</span>
+                </span>
+              </div>
+              <div class="login-state-detail warning" data-login-detail="uninitialized">
+                <i data-lucide="terminal"></i>
+                <span>
+                  <strong>管理员登录尚未配置</strong>
+                  <span>请先在部署终端完成初始化。页面不展示默认账号或测试密码。</span>
+                </span>
+              </div>
+              <div class="login-state-detail error" data-login-detail="network">
+                <i data-lucide="wifi-off"></i>
+                <span>
+                  <strong>无法连接服务器</strong>
+                  <span>账号输入继续保留，可重新提交；页面不猜测认证结果。</span>
+                </span>
+              </div>
+              <div class="login-state-detail error" data-login-detail="service">
+                <i data-lucide="server-off"></i>
+                <span>
+                  <strong>登录服务暂不可用，请稍后重试</strong>
+                  <span>保留账号、清空密码；不显示内部异常，也不把服务错误当成会话失效。</span>
+                </span>
+              </div>
+              <div class="login-state-detail info" data-login-detail="expired">
+                <i data-lucide="shield-alert"></i>
+                <span>
+                  <strong>登录已过期，请重新登录</strong>
+                  <span>业务壳已完整卸载；重新登录后重新读取服务端状态。</span>
+                </span>
+              </div>
+              <div class="login-state-detail success" data-login-detail="logout">
+                <i data-lucide="check-circle-2"></i>
+                <span>
+                  <strong>已安全退出</strong>
+                  <span>浏览器后退不会恢复旧工作台；再次进入需要重新确认会话。</span>
+                </span>
+              </div>
+            </aside>
+          </div>
+        </div>
+      </section>
+
+      <section id="sources" class="review-section">
+        <p class="section-kicker">03 · 词库版本工作台</p>
+        <h2 class="section-title">版本表格是主体，导入在需要时展开</h2>
+        <p class="section-lead">
+          已有版本时先展示可扫描列表；“导入词表”展开同页稳定工作区，承载 CSV 预览、字段错误和结果未知，不使用短暂弹窗。
+        </p>
+
+        <div class="mock-stage">
+          <div class="screen-label"><span>词库工作台 · 版本列表与导入预览</span><span>1280 × 800</span></div>
+          <div class="admin-shell">
+            <aside class="admin-sidebar">
+              <div class="product-brand">
+                <span class="word-mark" aria-hidden="true">Aa</span>
+                <span class="product-brand-copy"><strong>eng learn</strong><span>内容管理</span></span>
+              </div>
+              <nav class="admin-nav" aria-label="后台导航">
+                <a class="active" href="#sources"><i data-lucide="library-big"></i><span>词库工作台</span></a>
+                <a href="#courses"><i data-lucide="users-round"></i><span>课程工作台</span></a>
+              </nav>
+              <div class="admin-profile">
+                <div class="admin-profile-name">
+                  <span class="admin-initial">SZ</span>
+                  <span><strong>Solazhu</strong><span>内容管理员</span></span>
+                </div>
+                <button class="logout-link" type="button"><i data-lucide="log-out"></i>退出</button>
+              </div>
+            </aside>
+
+            <div class="admin-workspace">
+              <header class="admin-topbar">
+                <div class="crumbs"><span>词库工作台</span><i data-lucide="chevron-right"></i><strong>词库版本</strong></div>
+                <div class="topbar-admin-profile">
+                  <span><strong>Solazhu</strong>内容管理员</span>
+                  <button class="logout-link" type="button"><i data-lucide="log-out"></i>退出</button>
+                </div>
+              </header>
+              <div class="mobile-readonly-banner" role="status">
+                <i data-lucide="monitor-up"></i>
+                <span>当前屏幕仅供查看。请使用宽度至少 480px 的设备完成内容编辑、导入和发布。</span>
+              </div>
+              <div class="admin-page">
+                <div class="page-heading">
+                  <div>
+                    <h3>词库版本</h3>
+                    <p>导入词表、构建练习并发布不可变版本。</p>
+                  </div>
+                  <button class="button primary" id="toggle-import" type="button" aria-expanded="true" aria-controls="import-panel">
+                    <i data-lucide="upload"></i>
+                    收起导入
+                  </button>
+                </div>
+
+                <section class="surface">
+                  <div id="import-panel" class="import-panel">
+                    <div class="import-form">
+                      <div class="segmented" role="group" aria-label="版本创建方式">
+                        <button class="active" type="button" data-import-mode="new" aria-pressed="true">新词库</button>
+                        <button type="button" data-import-mode="next" aria-pressed="false">同词库下一版本</button>
+                      </div>
+                      <div class="compact-form">
+                        <div class="field" id="new-source-field">
+                          <label for="source-title">词库名称</label>
+                          <input id="source-title" value="小学英语三年级上册" />
+                        </div>
+                        <div class="field" id="next-source-field" hidden>
+                          <label for="existing-source">目标词库</label>
+                          <select id="existing-source">
+                            <option>小学英语三年级上册 · 当前 v2</option>
+                            <option>核心词汇 · 当前 v1</option>
+                          </select>
+                        </div>
+                        <div class="field">
+                          <label for="source-file">CSV 文件</label>
+                          <input id="source-file" type="file" accept=".csv,text/csv" />
+                          <span class="hint" id="source-file-status">尚未选择文件。选择后才显示预览并允许创建草稿。</span>
+                        </div>
+                        <div class="form-actions">
+                          <button class="button primary" id="create-source-version" type="button" data-demo-action="创建词库草稿版本" aria-describedby="source-file-status" disabled>创建草稿版本</button>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="import-preview" aria-live="polite">
+                      <div class="preview-summary">
+                        <strong id="import-preview-title">等待选择 CSV</strong>
+                        <span class="status neutral" id="import-preview-status">尚未预览</span>
+                      </div>
+                      <p class="hint" id="import-preview-help">这里将在文件选择后展示字段预览；无文件时不伪造“预览通过”。</p>
+                      <ul class="preview-list" id="import-preview-list" hidden>
+                        <li><span>01</span><strong>apple</strong><span>苹果</span></li>
+                        <li><span>02</span><strong>book</strong><span>书</span></li>
+                        <li><span>03</span><strong>school</strong><span>学校</span></li>
+                        <li><span>04</span><strong>teacher</strong><span>老师</span></li>
+                        <li><span>05</span><strong>pencil</strong><span>铅笔</span></li>
+                      </ul>
+                    </div>
+                  </div>
+
+                  <div class="surface-head">
+                    <div><h4>全部版本</h4><p>3 个版本，按服务端创建时间显示</p></div>
+                  </div>
+                  <div class="table-scroll">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th scope="col">词库</th>
+                          <th scope="col">版本</th>
+                          <th scope="col">状态</th>
+                          <th scope="col" class="numeric">词数</th>
+                          <th scope="col" class="numeric">分组</th>
+                          <th scope="col" class="numeric">审核进度</th>
+                          <th scope="col">创建 / 发布时间</th>
+                          <th scope="col">操作</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <th scope="row" class="row-main"><strong>小学英语三年级上册</strong><span>练习构建进行中</span></th>
+                          <td>v3</td>
+                          <td><span class="status draft">草稿</span></td>
+                          <td class="numeric">20</td>
+                          <td class="numeric">4</td>
+                          <td class="numeric">112 / 120</td>
+                          <td>2026-07-14 09:32</td>
+                          <td><a class="table-link" href="#version">查看详情</a></td>
+                        </tr>
+                        <tr>
+                          <th scope="row" class="row-main"><strong>小学英语三年级上册</strong><span>课程可使用</span></th>
+                          <td>v2</td>
+                          <td><span class="status success">已发布</span></td>
+                          <td class="numeric">20</td>
+                          <td class="numeric">4</td>
+                          <td class="numeric">120 / 120</td>
+                          <td>2026-07-12 16:08</td>
+                          <td><a class="table-link" href="#version">查看详情</a></td>
+                        </tr>
+                        <tr>
+                          <th scope="row" class="row-main"><strong>核心词汇试验集</strong><span>未影响已发布版本</span></th>
+                          <td>v1</td>
+                          <td><span class="status neutral">已丢弃</span></td>
+                          <td class="numeric">12</td>
+                          <td class="numeric">3</td>
+                          <td class="numeric">0 / 72</td>
+                          <td>2026-07-10 11:20</td>
+                          <td><a class="table-link" href="#version">查看详情</a></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="version" class="review-section">
+        <p class="section-kicker">04 · 版本构建与发布</p>
+        <h2 class="section-title">把阻断原因放在发布动作旁边</h2>
+        <p class="section-lead">
+          四步流水线只表达服务端事实，不由前端猜测“当前步骤”。覆盖率采用“单词 × S0–S5”矩阵，右侧阻断项给出对象、阶段、题型、原因和处理入口。
+        </p>
+
+        <div class="mock-stage">
+          <div class="screen-label"><span>草稿版本 · 存在发布阻断</span><span>1280 × 900</span></div>
+          <div class="admin-shell">
+            <aside class="admin-sidebar">
+              <div class="product-brand">
+                <span class="word-mark" aria-hidden="true">Aa</span>
+                <span class="product-brand-copy"><strong>eng learn</strong><span>内容管理</span></span>
+              </div>
+              <nav class="admin-nav" aria-label="后台导航">
+                <a class="active" href="#sources"><i data-lucide="library-big"></i><span>词库工作台</span></a>
+                <a href="#courses"><i data-lucide="users-round"></i><span>课程工作台</span></a>
+              </nav>
+              <div class="admin-profile">
+                <div class="admin-profile-name">
+                  <span class="admin-initial">SZ</span>
+                  <span><strong>Solazhu</strong><span>内容管理员</span></span>
+                </div>
+                <button class="logout-link" type="button"><i data-lucide="log-out"></i>退出</button>
+              </div>
+            </aside>
+
+            <div class="admin-workspace">
+              <header class="admin-topbar">
+                <div class="crumbs">
+                  <span>词库工作台</span><i data-lucide="chevron-right"></i><span>小学英语三年级上册</span><i data-lucide="chevron-right"></i><strong>v3</strong>
+                </div>
+                <div class="topbar-admin-profile">
+                  <span><strong>Solazhu</strong>内容管理员</span>
+                  <button class="logout-link" type="button"><i data-lucide="log-out"></i>退出</button>
+                </div>
+              </header>
+              <div class="mobile-readonly-banner" role="status">
+                <i data-lucide="monitor-up"></i>
+                <span>当前屏幕仅供查看。请使用宽度至少 480px 的设备完成构建、审核、发布或丢弃。</span>
+              </div>
+              <div class="admin-page">
+                <div class="page-heading">
+                  <div>
+                    <div class="heading-title">
+                      <h3>小学英语三年级上册 · v3</h3>
+                      <span class="status draft">草稿</span>
+                    </div>
+                    <p>20 个单词，4 个分组；当前有 8 个待审批项目和 2 个发布阻断项。</p>
+                  </div>
+                </div>
+
+                <div class="command-bar">
+                  <div class="command-copy">
+                    <strong>版本命令</strong>
+                    <span>发布已锁定：2 个 S4 练习缺失</span>
+                  </div>
+                  <div class="toolbar-actions">
+                    <button class="button secondary" type="button" data-demo-action="重新构建当前版本缺失练习"><i data-lucide="hammer"></i>重新构建缺口</button>
+                    <button class="button danger" type="button" data-demo-action="打开丢弃当前草稿确认"><i data-lucide="archive-x"></i>丢弃草稿</button>
+                    <button class="button primary" type="button" disabled aria-describedby="publish-reason"><i data-lucide="send"></i>发布版本</button>
+                  </div>
+                </div>
+                <span id="publish-reason" class="visually-hidden">存在两个缺失练习，当前不能发布。</span>
+
+                <div class="pipeline" aria-label="版本构建事实">
+                  <div class="pipeline-step complete">
+                    <span class="pipeline-mark"><i data-lucide="check"></i></span>
+                    <span><strong>导入</strong><span>20 个词，字段有效</span></span>
+                  </div>
+                  <div class="pipeline-step complete">
+                    <span class="pipeline-mark"><i data-lucide="check"></i></span>
+                    <span><strong>构建</strong><span>已生成 118 个项目</span></span>
+                  </div>
+                  <div class="pipeline-step blocked">
+                    <span class="pipeline-mark"><i data-lucide="circle-alert"></i></span>
+                    <span><strong>审阅</strong><span>8 个待审批，2 个缺失</span></span>
+                  </div>
+                  <div class="pipeline-step">
+                    <span class="pipeline-mark">4</span>
+                    <span><strong>发布</strong><span>readyToPublish：否</span></span>
+                  </div>
+                </div>
+
+                <div class="coverage-layout">
+                  <section class="coverage-panel">
+                    <div class="surface-head">
+                      <div><h4>阶段覆盖率</h4><p>状态含文字与图标，不只依赖颜色</p></div>
+                      <button class="button secondary" id="gap-filter" type="button" aria-pressed="false">
+                        <i data-lucide="list-filter"></i>
+                        只看缺口
+                      </button>
+                    </div>
+                    <div class="matrix-scroll">
+                      <table class="matrix-table">
+                        <thead>
+                          <tr><th scope="col">单词</th><th scope="col">S0</th><th scope="col">S1</th><th scope="col">S2</th><th scope="col">S3</th><th scope="col">S4</th><th scope="col">S5</th></tr>
+                        </thead>
+                        <tbody>
+                          <tr data-gap="false">
+                            <th scope="row" class="row-main"><strong>apple</strong><span>苹果 · Group 1</span></th>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                          </tr>
+                          <tr data-gap="true">
+                            <th scope="row" class="row-main"><strong>book</strong><span>书 · Group 1</span></th>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell draft"><i data-lucide="clock-3"></i>草稿</span></td>
+                            <td><a class="stage-cell missing" href="#exercise"><i data-lucide="minus"></i>缺失</a></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                          </tr>
+                          <tr data-gap="true">
+                            <th scope="row" class="row-main"><strong>school</strong><span>学校 · Group 1</span></th>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell draft"><i data-lucide="clock-3"></i>草稿</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><a class="stage-cell missing" href="#exercise"><i data-lucide="minus"></i>缺失</a></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                          </tr>
+                          <tr data-gap="false">
+                            <th scope="row" class="row-main"><strong>teacher</strong><span>老师 · Group 1</span></th>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                            <td><span class="stage-cell approved"><i data-lucide="check"></i>已批</span></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+
+                  <aside class="blocker-panel">
+                    <div class="surface-head"><div><h4>发布阻断项</h4><p>2 项需要处理</p></div></div>
+                    <ul class="blocker-list">
+                      <li>
+                        <i data-lucide="circle-alert"></i>
+                        <span><strong>book · S4 · 句子拼装</strong><span>内容缺失，必须创建并批准。</span><a href="#exercise">打开对应练习</a></span>
+                      </li>
+                      <li>
+                        <i data-lucide="circle-alert"></i>
+                        <span><strong>school · S4 · 句子拼装</strong><span>内容缺失，必须创建并批准。</span><a href="#exercise">打开对应练习</a></span>
+                      </li>
+                    </ul>
+                  </aside>
+                </div>
+
+                <div class="batch-bar">
+                  <div><strong>已选 8 / 当前待审批 8</strong><span>全选只作用于服务端返回的 draft 集合；超过 500 项按稳定批次提交。</span></div>
+                  <div class="toolbar-actions">
+                    <button class="button quiet" type="button" data-demo-action="清除当前批量选择">清除选择</button>
+                    <button class="button primary" type="button" data-demo-action="批准当前所选 8 个练习项目">批准所选 8 项</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="exercise" class="review-section">
+        <p class="section-kicker">05 · 练习项目审核</p>
+        <h2 class="section-title">结构化编辑在左，审核事实与动作在右</h2>
+        <p class="section-lead">
+          页面不暴露原始 JSON，也不伪造“上一项、下一项”顺序。字段错误紧邻输入；未保存离开、并发变化和已发布只读都有明确恢复路径。
+        </p>
+
+        <div class="mock-stage">
+          <div class="screen-label"><span>单项审核 · 字段错误与未保存修改</span><span>1280 × 800</span></div>
+          <div class="admin-shell">
+            <aside class="admin-sidebar">
+              <div class="product-brand">
+                <span class="word-mark" aria-hidden="true">Aa</span>
+                <span class="product-brand-copy"><strong>eng learn</strong><span>内容管理</span></span>
+              </div>
+              <nav class="admin-nav" aria-label="后台导航">
+                <a class="active" href="#sources"><i data-lucide="library-big"></i><span>词库工作台</span></a>
+                <a href="#courses"><i data-lucide="users-round"></i><span>课程工作台</span></a>
+              </nav>
+              <div class="admin-profile">
+                <div class="admin-profile-name">
+                  <span class="admin-initial">SZ</span>
+                  <span><strong>Solazhu</strong><span>内容管理员</span></span>
+                </div>
+                <button class="logout-link" type="button"><i data-lucide="log-out"></i>退出</button>
+              </div>
+            </aside>
+
+            <div class="admin-workspace">
+              <header class="admin-topbar">
+                <div class="crumbs"><span>小学英语三年级上册</span><i data-lucide="chevron-right"></i><span>v3</span><i data-lucide="chevron-right"></i><span>book</span><i data-lucide="chevron-right"></i><strong>S4</strong></div>
+                <div class="topbar-admin-profile">
+                  <span><strong>Solazhu</strong>内容管理员</span>
+                  <button class="logout-link" type="button"><i data-lucide="log-out"></i>退出</button>
+                </div>
+              </header>
+              <div class="mobile-readonly-banner" role="status">
+                <i data-lucide="monitor-up"></i>
+                <span>当前屏幕仅供查看。请使用宽度至少 480px 的设备编辑、保存、批准或禁用练习。</span>
+              </div>
+              <div class="admin-page">
+                <div class="page-heading">
+                  <div>
+                    <div class="heading-title"><h3>book · S4 句子拼装</h3><span class="status draft">草稿</span></div>
+                    <p>编辑结构化题目内容，保存后再进行单项批准。</p>
+                  </div>
+                </div>
+
+                <div class="exercise-layout">
+                  <section class="editor-panel">
+                    <div class="surface-head"><div><h4>练习内容</h4><p>按题型显示真实字段</p></div></div>
+                    <div class="editor-body">
+                      <div class="editor-grid">
+                        <div class="field">
+                          <label for="exercise-prompt">题目说明</label>
+                          <input id="exercise-prompt" value="按正确顺序组成句子" />
+                        </div>
+                        <div class="field">
+                          <label for="exercise-answer">标准答案</label>
+                          <input id="exercise-answer" value="This is my book." />
+                        </div>
+                        <div class="field full has-error">
+                          <label for="exercise-blocks">可拖动词块</label>
+                          <textarea id="exercise-blocks">This | is | my</textarea>
+                          <span class="error-copy">缺少答案中的词块“book”。请补齐后保存。</span>
+                        </div>
+                        <div class="field full">
+                          <label for="exercise-note">答后说明</label>
+                          <textarea id="exercise-note">book 表示“书”。</textarea>
+                          <span class="hint">只显示给学习者可理解的说明，不暴露内部字段名。</span>
+                        </div>
+                      </div>
+                      <div class="inline-notice" role="status">
+                        <i data-lucide="pencil-line"></i>
+                        <span>有未保存修改。离开本页前必须确认，取消后焦点返回继续编辑位置。</span>
+                      </div>
+                      <div class="form-actions spaced">
+                        <button class="button secondary" type="button" data-demo-action="丢弃当前未保存修改">取消修改</button>
+                        <button class="button primary" type="button" data-demo-action="保存当前练习内容">保存练习</button>
+                      </div>
+                    </div>
+                  </section>
+
+                  <aside class="review-panel">
+                    <div class="surface-head"><div><h4>审核</h4><p>当前对象与权威状态</p></div></div>
+                    <div class="review-body">
+                      <dl class="review-facts">
+                        <div><dt>版本</dt><dd>v3 · 草稿</dd></div>
+                        <div><dt>单词</dt><dd>book / 书</dd></div>
+                        <div><dt>阶段</dt><dd>S4</dd></div>
+                        <div><dt>题型</dt><dd>句子拼装</dd></div>
+                        <div><dt>状态</dt><dd>草稿 · 存在字段错误</dd></div>
+                      </dl>
+                      <div class="inline-notice" role="alert">
+                        <i data-lucide="circle-alert"></i>
+                        <span>保存并通过服务端校验后，才能批准当前项目。</span>
+                      </div>
+                      <div class="form-actions spaced">
+                        <button class="button danger" type="button" data-demo-action="打开禁用当前练习项目确认">禁用项目</button>
+                        <button class="button primary" type="button" disabled>批准项目</button>
+                      </div>
+                    </div>
+                  </aside>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="courses" class="review-section">
+        <p class="section-kicker">06 · 课程工作台</p>
+        <h2 class="section-title">课程列表保持简单，学习码只在生成时出现一次</h2>
+        <p class="section-lead">
+          创建表单在同页展开；课程列表不提供搜索、排序或多条件筛选。一次性学习码使用稳定对话框，关闭后不可从列表恢复。
+        </p>
+
+        <div class="mock-stage">
+          <div class="screen-label"><span>课程工作台 · 创建、列表与轮换确认</span><span>1280 × 800</span></div>
+          <div class="admin-shell">
+            <aside class="admin-sidebar">
+              <div class="product-brand">
+                <span class="word-mark" aria-hidden="true">Aa</span>
+                <span class="product-brand-copy"><strong>eng learn</strong><span>内容管理</span></span>
+              </div>
+              <nav class="admin-nav" aria-label="后台导航">
+                <a href="#sources"><i data-lucide="library-big"></i><span>词库工作台</span></a>
+                <a class="active" href="#courses"><i data-lucide="users-round"></i><span>课程工作台</span></a>
+              </nav>
+              <div class="admin-profile">
+                <div class="admin-profile-name">
+                  <span class="admin-initial">SZ</span>
+                  <span><strong>Solazhu</strong><span>内容管理员</span></span>
+                </div>
+                <button class="logout-link" type="button"><i data-lucide="log-out"></i>退出</button>
+              </div>
+            </aside>
+
+            <div class="admin-workspace">
+              <header class="admin-topbar">
+                <div class="crumbs"><span>课程工作台</span><i data-lucide="chevron-right"></i><strong>学习者与课程</strong></div>
+                <div class="topbar-admin-profile">
+                  <span><strong>Solazhu</strong>内容管理员</span>
+                  <button class="logout-link" type="button"><i data-lucide="log-out"></i>退出</button>
+                </div>
+              </header>
+              <div class="mobile-readonly-banner" role="status">
+                <i data-lucide="monitor-up"></i>
+                <span>当前屏幕仅供查看。请使用宽度至少 480px 的设备创建课程或轮换学习码。</span>
+              </div>
+              <div class="admin-page">
+                <div class="page-heading">
+                  <div>
+                    <h3>学习者与课程</h3>
+                    <p>创建课程、交付一次性学习码，并在必要时轮换凭证。</p>
+                  </div>
+                  <button class="button primary" id="toggle-course-create" type="button" aria-expanded="true" aria-controls="course-create">
+                    <i data-lucide="user-plus"></i>
+                    收起创建
+                  </button>
+                </div>
+
+                <section class="surface">
+                  <div id="course-create" class="course-create">
+                    <div class="field">
+                      <label for="learner-name">学习者姓名</label>
+                      <input id="learner-name" value="小明" />
+                    </div>
+                    <div class="field">
+                      <label for="course-source">已发布词库版本</label>
+                      <select id="course-source">
+                        <option>小学英语三年级上册 · v2</option>
+                      </select>
+                    </div>
+                    <button class="button primary" id="create-course" type="button">创建课程并生成学习码</button>
+                  </div>
+                  <div class="surface-head"><div><h4>全部课程</h4><p>学习码关闭后不在列表恢复</p></div></div>
+                  <div class="table-scroll">
+                    <table>
+                      <thead>
+                        <tr><th scope="col">学习者</th><th scope="col">词库版本</th><th scope="col" class="numeric">当前课时</th><th scope="col">状态</th><th scope="col">操作</th></tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <th scope="row">小明</th>
+                          <td>小学英语三年级上册 · v2</td>
+                          <td class="numeric">第 8 课</td>
+                          <td><span class="status success">学习中</span></td>
+                          <td class="action-cell"><button class="button quiet open-rotate" type="button" data-learner="小明" data-course-context="小学英语三年级上册 v2 · 当前第 8 课">轮换学习码</button></td>
+                        </tr>
+                        <tr>
+                          <th scope="row">小雨</th>
+                          <td>小学英语三年级上册 · v2</td>
+                          <td class="numeric">第 5 课</td>
+                          <td><span class="status draft">已暂停</span></td>
+                          <td class="action-cell"><button class="button quiet open-rotate" type="button" data-learner="小雨" data-course-context="小学英语三年级上册 v2 · 当前第 5 课">轮换学习码</button></td>
+                        </tr>
+                        <tr>
+                          <th scope="row">小杰</th>
+                          <td>核心词汇 · v1</td>
+                          <td class="numeric">第 12 课</td>
+                          <td><span class="status neutral">已完成</span></td>
+                          <td class="action-cell"><button class="button quiet open-rotate" type="button" data-learner="小杰" data-course-context="核心词汇 v1 · 当前第 12 课">轮换学习码</button></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <dialog id="code-dialog" aria-labelledby="code-dialog-title">
+          <div class="code-dialog-head">
+            <div>
+              <h4 id="code-dialog-title">课程创建成功</h4>
+              <p id="code-dialog-context">小明 · 小学英语三年级上册 v2</p>
+            </div>
+          </div>
+          <div class="code-dialog-body">
+            <div class="one-time-code" role="status" aria-live="polite">
+              <small>仅本次显示，请现在安全记录</small>
+              <span class="code-value">•••• •••• ••</span>
+              <span class="code-caption">视觉占位符，不是真实学习码。真实界面在此显示 10 位学习码。</span>
+            </div>
+            <p id="copy-status" class="code-caption" aria-live="polite">复制成功不等于已安全保存，关闭前仍需主动确认。</p>
+            <div class="state-switcher" role="group" aria-label="复制反馈审阅">
+              <button type="button" data-copy-preview="success">审阅成功反馈</button>
+              <button type="button" data-copy-preview="failure">审阅失败反馈</button>
+            </div>
+            <p class="code-caption">以上两个按钮仅用于视觉审阅；生产界面由真实剪贴板结果驱动，不显示状态选择器。</p>
+          </div>
+          <div class="code-dialog-actions">
+            <button class="button secondary" id="copy-code" type="button"><i data-lucide="copy"></i><span id="copy-code-label">复制学习码</span></button>
+            <button class="button primary" id="confirm-code" type="button">我已安全记录</button>
+          </div>
+        </dialog>
+
+        <dialog id="rotate-dialog" aria-labelledby="rotate-dialog-title">
+          <div class="code-dialog-head">
+            <div>
+              <h4 id="rotate-dialog-title">轮换“小明”的学习码？</h4>
+              <p id="rotate-dialog-context">小学英语三年级上册 v2 · 当前第 8 课</p>
+            </div>
+          </div>
+          <div class="code-dialog-body">
+            <div class="login-state-detail error active" role="alert">
+              <i data-lucide="triangle-alert"></i>
+              <span>
+                <strong>旧学习码和所有旧会话将立即失效</strong>
+                <span>课程内容和学习进度不受影响。轮换成功后，新码仍只显示一次。</span>
+              </span>
+            </div>
+          </div>
+          <div class="code-dialog-actions">
+            <button class="button secondary" id="cancel-rotate" type="button">取消</button>
+            <button class="button danger" id="confirm-rotate" type="button">确认轮换</button>
+          </div>
+        </dialog>
+
+        <dialog id="logout-dialog" aria-labelledby="logout-dialog-title">
+          <div class="code-dialog-head">
+            <div>
+              <h4 id="logout-dialog-title">正在安全退出…</h4>
+              <p>等待服务端确认当前管理员会话已撤销。</p>
+            </div>
+          </div>
+          <div class="code-dialog-body">
+            <div id="logout-pending" class="login-state-detail info active" role="status">
+              <i data-lucide="loader-circle"></i>
+              <span><strong>退出请求处理中</strong><span>业务壳仍保留；此时不能把本地点击当成退出成功。</span></span>
+            </div>
+            <div id="logout-failure" class="login-state-detail error active" role="alert" hidden>
+              <i data-lucide="server-off"></i>
+              <span><strong>退出失败，会话可能仍然有效</strong><span>留在当前工作台，可安全重试；不会伪装成已退出。</span></span>
+            </div>
+            <p class="code-caption">以下分支按钮仅供视觉审阅；生产界面由服务端响应自动进入成功或失败状态。</p>
+          </div>
+          <div class="code-dialog-actions" id="logout-review-branches">
+            <button class="button secondary" id="preview-logout-failure" type="button">审阅失败分支</button>
+            <button class="button primary" id="preview-logout-success" type="button">审阅成功分支</button>
+          </div>
+          <div class="code-dialog-actions" id="logout-failure-actions" hidden>
+            <button class="button secondary" id="close-logout-failure" type="button">留在工作台</button>
+            <button class="button primary" id="retry-logout" type="button">重新退出</button>
+          </div>
+        </dialog>
+      </section>
+
+      <section id="states" class="review-section">
+        <p class="section-kicker">07 · 关键状态与防错</p>
+        <h2 class="section-title">不把异常路径留到开发阶段临时决定</h2>
+        <p class="section-lead">
+          完整页面展示主流程，下面的状态图谱补齐结果未知、安全校验失败、批量部分成功、已发布只读和无可用版本等次要但高风险状态。
+        </p>
+
+        <div class="scenario-grid">
+          <article class="scenario-panel">
+            <div class="scenario-head">
+              <span><strong>词库空状态</strong><span>首次进入时导入区默认展开，不先要求二次点击</span></span>
+              <span class="status neutral">0 个版本</span>
+            </div>
+            <div class="scenario-form">
+              <div class="inline-notice" role="status">
+                <i data-lucide="library"></i>
+                <span><strong>先导入第一份词表</strong><span>导入后创建草稿版本，再进入构建、审阅和发布流程。</span></span>
+              </div>
+              <div class="compact-form">
+                <div class="field">
+                  <label for="empty-source-title">词库名称</label>
+                  <input id="empty-source-title" placeholder="例如：小学英语三年级上册" />
+                </div>
+                <div class="field">
+                  <label for="empty-source-file">CSV 文件</label>
+                  <input id="empty-source-file" type="file" accept=".csv,text/csv" />
+                </div>
+                <div class="form-actions">
+                  <button class="button primary" type="button" disabled>预览并创建草稿</button>
+                </div>
+              </div>
+            </div>
+          </article>
+
+          <article class="scenario-panel">
+            <div class="scenario-head">
+              <span><strong>只看缺口 · 无结果</strong><span>筛选条件有结果语义，不显示空白表格</span></span>
+              <button class="button secondary" type="button" data-demo-action="清除缺口筛选并查看全部">查看全部</button>
+            </div>
+            <div class="matrix-scroll">
+              <table class="empty-matrix">
+                <thead><tr><th>单词</th><th>S0</th><th>S1</th><th>S2</th><th>S3</th><th>S4</th><th>S5</th></tr></thead>
+                <tbody><tr><td colspan="7">当前条件下没有缺口。全部单词的 S0–S5 均已覆盖。</td></tr></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="scenario-panel">
+            <div class="scenario-head">
+              <span><strong>练习批准结果</strong><span>等待服务端确认后才更新状态</span></span>
+              <span class="status success">已批准</span>
+            </div>
+            <div class="scenario-body">
+              <div class="approval-result" role="status">
+                <i data-lucide="check-circle-2"></i>
+                <span>
+                  <strong>book · S4 句子拼装已批准</strong>
+                  <span>当前项目已变为只读；版本剩余 7 个待审批项目。</span>
+                </span>
+              </div>
+              <div class="form-actions spaced">
+                <button class="button secondary" type="button" data-demo-action="返回版本覆盖率并刷新权威状态">返回版本覆盖率</button>
+              </div>
+            </div>
+          </article>
+
+          <article class="scenario-panel">
+            <div class="scenario-head">
+              <span><strong>已发布练习 · 只读布局</strong><span>原地保存、批准和禁用动作已移除</span></span>
+              <span class="status success">已发布</span>
+            </div>
+            <div class="scenario-body">
+              <div class="readonly-grid">
+                <div class="readonly-fields">
+                  <div class="readonly-field"><strong>题目说明</strong><span>按正确顺序组成句子</span></div>
+                  <div class="readonly-field"><strong>标准答案</strong><span>This is my book.</span></div>
+                  <div class="readonly-field"><strong>词块</strong><span>This · is · my · book</span></div>
+                </div>
+                <aside class="readonly-actions">
+                  <span class="status success">版本 v2 · 已发布</span>
+                  <p>已发布内容不可原地修改。如需调整，请创建下一草稿版本。</p>
+                  <button class="button primary" type="button" data-demo-action="基于已发布版本创建下一草稿">创建下一草稿版本</button>
+                </aside>
+              </div>
+            </div>
+          </article>
+
+          <article class="scenario-panel">
+            <div class="scenario-head">
+              <span><strong>CSV 校验失败 · 逐行定位</strong><span>保留词库名和已选文件，不创建草稿</span></span>
+              <span class="status blocked">2 个错误</span>
+            </div>
+            <div class="scenario-form">
+              <div class="compact-form">
+                <div class="field">
+                  <label for="invalid-source-title">词库名称</label>
+                  <input id="invalid-source-title" value="小学英语三年级上册" />
+                </div>
+                <div class="field">
+                  <span class="field-label">CSV 文件</span>
+                  <div class="selected-file"><span>words-v3.csv · 20 行</span><button class="mini-action" type="button" data-demo-action="重新选择 CSV 文件">重新选择</button></div>
+                </div>
+              </div>
+              <div class="table-scroll">
+                <table class="validation-table">
+                  <thead><tr><th>行号</th><th>字段</th><th>当前值</th><th>原因</th></tr></thead>
+                  <tbody>
+                    <tr><td>7</td><td>english</td><td>空</td><td>英文单词不能为空</td></tr>
+                    <tr><td>12</td><td>sequence</td><td>8</td><td>序号与第 9 行重复</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="form-actions spaced">
+                <span class="error-copy">请修正源文件后重新选择；本次未创建任何版本。</span>
+                <button class="button primary" type="button" data-demo-action="重新校验已修正的 CSV 文件">修正后重新预览</button>
+              </div>
+            </div>
+          </article>
+
+          <article class="scenario-panel">
+            <div class="scenario-head">
+              <span><strong>无已发布版本 · 课程不可提交</strong><span>缺少业务前置时不保留可误触的创建动作</span></span>
+              <span class="status blocked">前置缺失</span>
+            </div>
+            <div class="scenario-form">
+              <div class="compact-form">
+                <div class="field">
+                  <label for="blocked-learner-name">学习者姓名</label>
+                  <input id="blocked-learner-name" value="小明" disabled />
+                </div>
+                <div class="field">
+                  <label for="blocked-course-source">已发布词库版本</label>
+                  <select id="blocked-course-source" disabled><option>没有可用的已发布版本</option></select>
+                </div>
+                <div class="form-actions">
+                  <button class="button primary" type="button" disabled>创建课程并生成学习码</button>
+                </div>
+              </div>
+              <div class="inline-notice error" role="status">
+                <i data-lucide="circle-alert"></i>
+                <span><strong>请先发布至少一个词库版本</strong><span>课程只能绑定不可变的已发布版本。<a href="#sources">前往词库工作台</a></span></span>
+              </div>
+            </div>
+          </article>
+
+          <article class="scenario-panel">
+            <div class="scenario-head">
+              <span><strong>发布确认 · 最后一次不可逆确认</strong><span>确认对象、规模和不可变约束都在动作旁</span></span>
+              <span class="status success">可发布</span>
+            </div>
+            <div class="publish-confirmation" role="dialog" aria-labelledby="publish-confirm-title">
+              <div>
+                <strong id="publish-confirm-title">发布“小学英语三年级上册 v3”？</strong>
+                <p class="hint">发布成功后内容不可原地修改；已有草稿将转为可供新课程绑定的稳定版本。</p>
+              </div>
+              <div class="publish-facts">
+                <div><strong>20</strong><span>单词</span></div>
+                <div><strong>4</strong><span>课时分组</span></div>
+                <div><strong>120 / 120</strong><span>练习已批准</span></div>
+              </div>
+              <div class="inline-notice warning">
+                <i data-lucide="lock-keyhole"></i>
+                <span><strong>发布后不可原地修改</strong><span>后续调整必须基于该版本创建下一草稿。</span></span>
+              </div>
+              <div class="form-actions spaced">
+                <button class="button secondary" type="button" data-demo-action="取消版本发布确认">取消</button>
+                <button class="button primary" type="button" data-demo-action="确认发布小学英语三年级上册 v3">确认发布版本</button>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div class="state-grid">
+          <article class="state-card error">
+            <span class="state-icon"><i data-lucide="shield-x"></i></span>
+            <strong>安全校验失败</strong>
+            <p>留在当前后台页面，本次操作未执行；不得误解释为会话过期。</p>
+            <button class="mini-action" type="button" data-demo-action="刷新并重新执行安全校验">刷新后重试</button>
+          </article>
+          <article class="state-card info">
+            <span class="state-icon"><i data-lucide="refresh-cw"></i></span>
+            <strong>结果未知</strong>
+            <p>冻结新的写操作，只允许安全重试同一 operation token 或重新读取权威状态。</p>
+            <button class="mini-action" type="button" data-demo-action="重新读取服务端权威状态">重新读取服务端状态</button>
+          </article>
+          <article class="state-card warning">
+            <span class="state-icon"><i data-lucide="layers-3"></i></span>
+            <strong>批量部分成功</strong>
+            <p>显示已确认 500 / 620；重新读取后只处理剩余集合，不重放成功批次。</p>
+            <button class="mini-action" type="button" data-demo-action="重新读取剩余待审批项目">重新读取剩余项目</button>
+          </article>
+          <article class="state-card success">
+            <span class="state-icon"><i data-lucide="lock-keyhole"></i></span>
+            <strong>已发布只读</strong>
+            <p>移除所有原地写动作，只保留查看内容和“创建下一草稿版本”。</p>
+            <button class="mini-action" type="button" data-demo-action="创建下一草稿版本">创建下一草稿版本</button>
+          </article>
+          <article class="state-card warning">
+            <span class="state-icon"><i data-lucide="library"></i></span>
+            <strong>无已发布版本</strong>
+            <p>课程表单不可提交，并给出前往词库工作台的明确入口。</p>
+            <button class="mini-action" type="button" data-demo-action="前往词库工作台">前往词库工作台</button>
+          </article>
+          <article class="state-card error">
+            <span class="state-icon"><i data-lucide="log-out"></i></span>
+            <strong>退出失败</strong>
+            <p>会话仍可能有效，保留业务壳并允许重试，不能假装退出成功。</p>
+            <button class="mini-action" type="button" data-demo-action="重新提交退出请求">重新退出</button>
+          </article>
+          <article class="state-card info">
+            <span class="state-icon"><i data-lucide="git-compare-arrows"></i></span>
+            <strong>并发内容变化</strong>
+            <p>停止覆盖，重新读取较新内容；保留本地输入用于人工比较。</p>
+            <button class="mini-action" type="button" data-demo-action="读取最新内容版本">读取最新版本</button>
+          </article>
+          <article class="state-card error">
+            <span class="state-icon"><i data-lucide="key-round"></i></span>
+            <strong>轮换结果未知</strong>
+            <p>不直接再生成新码；安全重试同一次轮换或读取当前凭证状态。</p>
+            <button class="mini-action" type="button" data-demo-action="安全重试同一次学习码轮换">安全重试同一次轮换</button>
+            <button class="mini-action" type="button" data-demo-action="重新读取当前凭证状态">重新读取当前状态</button>
+          </article>
+          <article class="state-card success">
+            <span class="state-icon"><i data-lucide="key-square"></i></span>
+            <strong>学习码轮换成功</strong>
+            <p>新码仅本次显示；明确反馈“已撤销 2 个旧会话”，课程进度保持不变。</p>
+            <button class="mini-action" type="button" data-demo-action="确认已安全记录新学习码">我已安全记录</button>
+          </article>
+          <article class="state-card info">
+            <span class="state-icon"><i data-lucide="loader-circle"></i></span>
+            <strong>退出处理中</strong>
+            <p>退出入口禁用并保留当前业务壳；只有服务端确认撤销会话后才进入登录页。</p>
+            <button class="mini-action" type="button" disabled>正在安全退出…</button>
+          </article>
+          <article class="state-card error">
+            <span class="state-icon"><i data-lucide="file-warning"></i></span>
+            <strong>CSV 校验失败</strong>
+            <p>按行号、字段与原因列出问题；保留词库名称和文件选择，不创建草稿。</p>
+            <button class="mini-action" type="button" data-demo-action="返回导入表单并重新预览">修正后重新预览</button>
+          </article>
+          <article class="state-card warning">
+            <span class="state-icon"><i data-lucide="hammer"></i></span>
+            <strong>草稿尚未构建</strong>
+            <p>流水线只显示导入完成与构建未开始；唯一主动作是“构建练习项目”。</p>
+            <button class="mini-action" type="button" data-demo-action="构建当前版本的练习项目">构建练习项目</button>
+          </article>
+          <article class="state-card success">
+            <span class="state-icon"><i data-lucide="send"></i></span>
+            <strong>版本可以发布</strong>
+            <p>确认区显示 20 个词、4 个分组，并明确发布后不可原地修改。</p>
+            <button class="mini-action" type="button" data-demo-action="打开发布确认">确认发布版本</button>
+          </article>
+          <article class="state-card error">
+            <span class="state-icon"><i data-lucide="archive-x"></i></span>
+            <strong>丢弃草稿确认</strong>
+            <p>只影响当前草稿；已发布版本和已有课程不受影响。</p>
+            <button class="mini-action" type="button" data-demo-action="打开丢弃草稿确认">确认丢弃当前草稿</button>
+          </article>
+          <article class="state-card error">
+            <span class="state-icon"><i data-lucide="copy-x"></i></span>
+            <strong>学习码复制失败</strong>
+            <p>学习码继续可见，允许手工记录；不得自动关闭或标记为已安全保存。</p>
+            <button class="mini-action" type="button" data-demo-action="重新复制当前学习码">重新复制</button>
+          </article>
+          <article class="state-card warning">
+            <span class="state-icon"><i data-lucide="ban"></i></span>
+            <strong>禁用练习确认</strong>
+            <p>说明当前单词、阶段与题型，并提示禁用可能形成发布阻断。</p>
+            <button class="mini-action" type="button" data-demo-action="打开禁用项目确认">确认禁用当前项目</button>
+          </article>
+        </div>
+        <p id="demo-action-status" class="form-alert info" role="status" aria-live="polite" tabindex="-1" hidden></p>
+      </section>
+
+      <section id="responsive" class="review-section">
+        <p class="section-kicker">08 · 响应式策略</p>
+        <h2 class="section-title">桌面优先，不假装手机适合批量内容审核</h2>
+        <p class="section-lead">
+          登录页在手机完整可用；管理业务页逐级收窄侧栏与布局。320–479px 保留只读信息和桌面提示，隐藏发布、丢弃、批量审批和学习码轮换。
+        </p>
+
+        <div class="responsive-grid">
+          <article class="responsive-card">
+            <strong>≥ 1280px · 高效工作区</strong>
+            <p>224px 完整侧栏，矩阵与阻断项双列，页面本身无横向滚动。</p>
+            <ul class="breakpoint-list">
+              <li><i data-lucide="panel-left"></i><span>224px 侧栏完整显示品牌、两个导航入口、管理员身份与退出。</span></li>
+              <li><i data-lucide="columns-3"></i><span>覆盖率矩阵与发布阻断项并排，首屏可同时判断事实与动作。</span></li>
+              <li><i data-lucide="move-horizontal"></i><span>页面级不横向滚动；只有矩阵与表格容器可独立滚动。</span></li>
+            </ul>
+            <div class="responsive-live desktop-live" aria-label="桌面管理端缩放预览">
+              <aside class="live-sidebar">
+                <div class="live-brand"><span class="live-mark">Aa</span><span>eng learn</span></div>
+                <div class="live-nav">
+                  <span class="active"><i data-lucide="library-big"></i><span>词库工作台</span></span>
+                  <span><i data-lucide="users-round"></i><span>课程工作台</span></span>
+                </div>
+              </aside>
+              <div class="live-workspace">
+                <div class="live-topbar">词库工作台 / 词库版本</div>
+                <div class="live-content">
+                  <div class="live-heading"><strong>词库版本</strong><button class="live-cta" type="button" data-demo-action="响应式预览中的导入词表动作">导入词表</button></div>
+                  <table class="live-table">
+                    <thead><tr><th>词库</th><th>版本</th><th>状态</th><th>审核进度</th></tr></thead>
+                    <tbody><tr><td>小学英语三年级上册</td><td>v3</td><td>草稿</td><td>112 / 120</td></tr><tr><td>小学英语三年级上册</td><td>v2</td><td>已发布</td><td>120 / 120</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </article>
+          <article class="responsive-card">
+            <strong>1200–1279px · 完整侧栏、单列主区</strong>
+            <p>保留 224px 侧栏，覆盖率矩阵与阻断项由双列改为上下排列。</p>
+            <ul class="breakpoint-list">
+              <li><i data-lucide="panel-left"></i><span>导航文字和管理员身份保持完整，不提前压缩为图标侧栏。</span></li>
+              <li><i data-lucide="rows-3"></i><span>发布阻断项先于矩阵出现，避免窄主区挤压关键信息。</span></li>
+              <li><i data-lucide="scan-text"></i><span>命令条允许换行，但禁用发布原因始终与动作相邻。</span></li>
+            </ul>
+            <div class="responsive-live desktop-live" aria-label="1200 到 1279 像素管理端缩放预览">
+              <aside class="live-sidebar">
+                <div class="live-brand"><span class="live-mark">Aa</span><span>eng learn</span></div>
+                <div class="live-nav">
+                  <span class="active"><i data-lucide="library-big"></i><span>词库工作台</span></span>
+                  <span><i data-lucide="users-round"></i><span>课程工作台</span></span>
+                </div>
+              </aside>
+              <div class="live-workspace">
+                <div class="live-topbar">小学英语三年级上册 / v3</div>
+                <div class="live-content">
+                  <div class="live-heading"><strong>发布阻断项</strong><span class="status blocked">2 项</span></div>
+                  <table class="live-table">
+                    <thead><tr><th>对象</th><th>阶段</th><th>下一步</th></tr></thead>
+                    <tbody><tr><td>book</td><td>S4</td><td>打开练习</td></tr><tr><td>school</td><td>S4</td><td>打开练习</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </article>
+          <article class="responsive-card">
+            <strong>768–1199px · 图标侧栏</strong>
+            <p>72px 图标导航，主区单列；练习审核区从粘性侧栏变为普通区块。</p>
+            <ul class="breakpoint-list">
+              <li><i data-lucide="panel-left-close"></i><span>侧栏缩为 72px 图标导航，名称通过可见提示和可访问名称补足。</span></li>
+              <li><i data-lucide="rows-3"></i><span>阻断区、编辑区与审核区按阅读顺序纵向排列，不使用全高抽屉。</span></li>
+              <li><i data-lucide="table-properties"></i><span>表格保留完整列语义，在自身容器内滚动并固定表头。</span></li>
+            </ul>
+            <div class="responsive-live tablet-live" aria-label="平板管理端缩放预览">
+              <aside class="live-sidebar">
+                <div class="live-brand"><span class="live-mark">Aa</span><span>eng learn</span></div>
+                <div class="live-nav">
+                  <span class="active" title="词库工作台"><i data-lucide="library-big"></i><span>词库工作台</span></span>
+                  <span title="课程工作台"><i data-lucide="users-round"></i><span>课程工作台</span></span>
+                </div>
+              </aside>
+              <div class="live-workspace">
+                <div class="live-topbar">小学英语三年级上册 / v3</div>
+                <div class="live-content">
+                  <div class="live-heading"><strong>发布阻断项</strong><span class="status blocked">2 项</span></div>
+                  <table class="live-table">
+                    <thead><tr><th>单词</th><th>阶段</th><th>原因</th></tr></thead>
+                    <tbody><tr><td>book</td><td>S4</td><td>句子拼装缺失</td></tr><tr><td>school</td><td>S4</td><td>句子拼装缺失</td></tr></tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </article>
+          <article class="responsive-card">
+            <strong>480–767px · 顶部导航、核心流程可用</strong>
+            <p>侧栏迁移到顶部品牌与横向导航；表格独立滚动，并提示桌面操作更高效。</p>
+            <ul class="breakpoint-list">
+              <li><i data-lucide="menu"></i><span>顶部保留品牌、真实管理员名称与唯一退出入口。</span></li>
+              <li><i data-lucide="move-horizontal"></i><span>两个工作台入口横向排列，表格只在自身容器内滚动。</span></li>
+              <li><i data-lucide="monitor-up"></i><span>核心表单仍可使用，同时明确建议在桌面完成大批量编辑。</span></li>
+            </ul>
+            <div class="responsive-live mobile-live" aria-label="480 到 767 像素管理端缩放预览">
+              <div class="live-mobile-header">
+                <div class="live-brand"><span class="live-mark">Aa</span><span>eng learn</span></div>
+                <span>Solazhu · 退出</span>
+              </div>
+              <div class="live-mobile-nav"><span class="active">词库工作台</span><span>课程工作台</span></div>
+              <div class="live-content">
+                <div class="live-heading"><strong>词库版本</strong><button class="live-cta" type="button" data-demo-action="移动端预览中的导入词表动作">导入词表</button></div>
+                <div class="live-readonly-note">当前设备可完成核心流程；批量审核建议使用桌面设备。</div>
+                <table class="live-table">
+                  <thead><tr><th>词库</th><th>状态</th><th>进度</th></tr></thead>
+                  <tbody><tr><td>小学英语三年级上册 · v3</td><td>草稿</td><td>112 / 120</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </article>
+          <article class="responsive-card">
+            <strong>320–479px · 只读与提示</strong>
+            <p>顶部品牌、横向导航，表格自身可滚动；危险和批量写操作不出现。</p>
+            <ul class="breakpoint-list">
+              <li><i data-lucide="smartphone"></i><span>管理员登录保持完整可用；业务页改为顶部品牌与横向导航。</span></li>
+              <li><i data-lucide="eye"></i><span>业务内容只读，并明确提示使用桌面设备完成批量和危险操作。</span></li>
+              <li><i data-lucide="shield-off"></i><span>不展示发布、丢弃、批量审批或轮换学习码等写操作。</span></li>
+            </ul>
+            <div class="responsive-live mobile-live" aria-label="手机管理端只读预览">
+              <div class="live-mobile-header">
+                <div class="live-brand"><span class="live-mark">Aa</span><span>eng learn</span></div>
+                <span>Solazhu</span>
+              </div>
+              <div class="live-mobile-nav"><span class="active">词库工作台</span><span>课程工作台</span></div>
+              <div class="live-content">
+                <div class="live-heading"><strong>小学英语三年级上册 · v3</strong><span class="status draft">草稿</span></div>
+                <div class="live-readonly-note">当前屏幕适合查看。请使用桌面设备完成发布、丢弃与批量审核。</div>
+                <table class="live-table">
+                  <thead><tr><th>阻断对象</th><th>原因</th></tr></thead>
+                  <tbody><tr><td>book · S4</td><td>句子拼装缺失</td></tr><tr><td>school · S4</td><td>句子拼装缺失</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </article>
+          <article class="responsive-card">
+            <strong>375 × 812 · 登录完整可用</strong>
+            <p>认证表单不降级为只读；账号、密码、登录动作与学生入口保持完整且不加载业务壳。</p>
+            <ul class="breakpoint-list">
+              <li><i data-lucide="log-in"></i><span>表面使用可用宽度减 32px，输入与按钮保持 40px 高度。</span></li>
+              <li><i data-lucide="key-round"></i><span>账号密码入口不出现 10 位学习码字段或默认测试凭证。</span></li>
+              <li><i data-lucide="shield-check"></i><span>会话检查、错误和过期仍在稳定登录表面内呈现。</span></li>
+            </ul>
+            <div class="responsive-live mobile-login-live" aria-label="375 乘 812 管理员登录预览">
+              <form class="mobile-login-card" aria-label="移动端登录表单预览">
+                <div class="live-brand"><span class="live-mark">Aa</span><span>eng learn · 内容管理</span></div>
+                <h5>管理员登录</h5>
+                <p>使用已在终端初始化的管理员账号进入内容工作台。</p>
+                <label for="mobile-admin-account">管理员账号</label>
+                <input id="mobile-admin-account" placeholder="输入管理员账号" />
+                <label for="mobile-admin-password">密码</label>
+                <input id="mobile-admin-password" type="password" placeholder="输入管理员密码" />
+                <button type="button" data-demo-action="移动端预览中的管理员登录动作">登录管理台</button>
+              </form>
+            </div>
+          </article>
+          <article class="responsive-card">
+            <strong>200% 等效重排 · 不依赖缩小文字</strong>
+            <p>页面标题、状态、说明和动作按阅读顺序换行；表格保留独立滚动，不遮挡键盘焦点。</p>
+            <ul class="breakpoint-list">
+              <li><i data-lucide="zoom-in"></i><span>正文与控件随浏览器放大，不用缩小字号维持双列布局。</span></li>
+              <li><i data-lucide="rows-3"></i><span>命令条、审核侧区和确认动作重排为普通纵向区块。</span></li>
+              <li><i data-lucide="focus"></i><span>焦点指示保持完整可见，内容不被粘性区域覆盖。</span></li>
+            </ul>
+            <div class="responsive-live mobile-live" aria-label="200% 等效重排预览">
+              <div class="live-mobile-header">
+                <div class="live-brand"><span class="live-mark">Aa</span><span>eng learn</span></div>
+                <span>内容管理</span>
+              </div>
+              <div class="live-content">
+                <div class="live-heading reflow-heading">
+                  <strong>小学英语三年级上册 · v3</strong>
+                  <span class="status blocked">2 个发布阻断</span>
+                  <button class="live-cta" type="button" data-demo-action="200% 重排预览中的重新构建动作">重新构建缺口</button>
+                </div>
+                <table class="live-table">
+                  <thead><tr><th>阻断对象</th><th>下一步</th></tr></thead>
+                  <tbody><tr><td>book · S4</td><td>打开对应练习</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+          </article>
+        </div>
+
+        <div class="checklist">
+          <div><i data-lucide="check-circle-2"></i><span><strong>登录与学生入口不混淆</strong><span>管理员账号/密码与学生 10 位学习码使用不同页面、标题和说明。</span></span></div>
+          <div><i data-lucide="check-circle-2"></i><span><strong>未认证不加载业务壳</strong><span>登录默认、错误、冷却和会话过期均不显示后台数据。</span></span></div>
+          <div><i data-lucide="check-circle-2"></i><span><strong>发布锁定原因可读</strong><span>禁用按钮旁明确显示阻断数量、对象和处理路径。</span></span></div>
+          <div><i data-lucide="check-circle-2"></i><span><strong>状态不只依赖颜色</strong><span>文字、图标、边界和颜色共同表达草稿、成功、阻断与禁用。</span></span></div>
+          <div><i data-lucide="check-circle-2"></i><span><strong>学习码关闭后不可恢复</strong><span>列表不展示学习码，复制也不替代“我已安全记录”。</span></span></div>
+          <div><i data-lucide="check-circle-2"></i><span><strong>没有虚假功能入口</strong><span>不展示概览、通知、设置、权限、搜索或筛选等未实现能力。</span></span></div>
+        </div>
+      </section>
+
+      <footer class="review-footer">
+        <span>eng learn 管理员登录与高效内容工作台视觉审阅稿 v1</span>
+        <span>修改人 / 负责人 / 操作人：Solazhu · 2026-07-14</span>
+      </footer>
+    </main>
+
+    <script>
+      if (window.lucide) {
+        window.lucide.createIcons({ attrs: { "aria-hidden": "true" } })
+      }
+
+      document.querySelectorAll(".admin-nav a").forEach(function (link) {
+        if (!link.hasAttribute("aria-label")) link.setAttribute("aria-label", link.textContent.trim())
+      })
+
+      const loginStateButtons = document.querySelectorAll("[data-login-state]")
+      const loginStateDetails = document.querySelectorAll("[data-login-detail]")
+      const loginForm = document.getElementById("login-form")
+      const sessionChecking = document.getElementById("session-checking")
+      const loginAccount = document.getElementById("admin-account")
+      const loginPassword = document.getElementById("admin-password")
+      const loginSubmit = document.getElementById("login-submit")
+      const loginSubmitLabel = document.getElementById("login-submit-label")
+      const loginInlineStatus = document.getElementById("login-inline-status")
+
+      const loginMessages = {
+        credentials: { text: "账号或密码不正确", tone: "" },
+        cooldown: { text: "尝试次数过多，请在 08:42 后重试", tone: "warning" },
+        uninitialized: { text: "管理员登录尚未配置，请先在部署终端完成初始化", tone: "warning" },
+        network: { text: "无法连接服务器，请检查网络后重试", tone: "" },
+        service: { text: "登录服务暂不可用，请稍后重试", tone: "" },
+        expired: { text: "登录已过期，请重新登录", tone: "info" },
+        logout: { text: "已安全退出", tone: "success" },
+      }
+
+      function setLoginState(state, focusPassword) {
+        loginStateButtons.forEach(function (item) {
+          item.setAttribute("aria-pressed", String(item.getAttribute("data-login-state") === state))
+        })
+        loginStateDetails.forEach(function (detail) {
+          detail.classList.toggle("active", detail.getAttribute("data-login-detail") === state)
+        })
+        const checking = state === "checking"
+        const submitting = state === "submitting"
+        const submitBlocked = checking || submitting || state === "cooldown" || state === "uninitialized"
+        if (loginForm) loginForm.hidden = checking
+        if (sessionChecking) sessionChecking.hidden = !checking
+        if (loginAccount) loginAccount.disabled = submitting
+        if (loginPassword) {
+          loginPassword.disabled = submitting
+          if (state === "credentials" || state === "service") loginPassword.value = ""
+        }
+        if (loginSubmit) loginSubmit.disabled = submitBlocked
+        if (loginSubmitLabel) {
+          loginSubmitLabel.textContent = submitting ? "正在登录…" : state === "cooldown" ? "稍后重试" : "登录管理台"
+        }
+        if (loginInlineStatus) {
+          const message = loginMessages[state]
+          loginInlineStatus.hidden = !message
+          loginInlineStatus.className = "form-alert" + (message?.tone ? " " + message.tone : "")
+          loginInlineStatus.setAttribute("role", state === "logout" ? "status" : "alert")
+          loginInlineStatus.textContent = message?.text || ""
+        }
+        if (focusPassword && loginPassword && !loginPassword.disabled) loginPassword.focus()
+      }
+
+      loginStateButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+          const state = button.getAttribute("data-login-state")
+          setLoginState(state, state === "credentials")
+        })
+      })
+
+      if (loginForm) {
+        loginForm.addEventListener("submit", function (event) {
+          event.preventDefault()
+          setLoginState("submitting", false)
+          window.setTimeout(function () {
+            setLoginState("credentials", true)
+          }, 650)
+        })
+      }
+
+      function setupPanelToggle(buttonId, panelId, openLabel, closedLabel) {
+        const button = document.getElementById(buttonId)
+        const panel = document.getElementById(panelId)
+        if (!button || !panel) return
+        button.addEventListener("click", function () {
+          const willOpen = panel.hasAttribute("hidden")
+          panel.toggleAttribute("hidden", !willOpen)
+          button.setAttribute("aria-expanded", String(willOpen))
+          const icon = button.querySelector("svg")
+          button.textContent = willOpen ? openLabel : closedLabel
+          if (icon) button.prepend(icon)
+        })
+      }
+
+      setupPanelToggle("toggle-import", "import-panel", "收起导入", "导入词表")
+      setupPanelToggle("toggle-course-create", "course-create", "收起创建", "创建课程")
+
+      const importModeButtons = document.querySelectorAll("[data-import-mode]")
+      const newSourceField = document.getElementById("new-source-field")
+      const nextSourceField = document.getElementById("next-source-field")
+      importModeButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+          importModeButtons.forEach(function (item) {
+            const selected = item === button
+            item.classList.toggle("active", selected)
+            item.setAttribute("aria-pressed", String(selected))
+          })
+          const nextMode = button.getAttribute("data-import-mode") === "next"
+          if (newSourceField) newSourceField.hidden = nextMode
+          if (nextSourceField) nextSourceField.hidden = !nextMode
+        })
+      })
+
+      const sourceFile = document.getElementById("source-file")
+      const sourceFileStatus = document.getElementById("source-file-status")
+      const importPreviewTitle = document.getElementById("import-preview-title")
+      const importPreviewStatus = document.getElementById("import-preview-status")
+      const importPreviewHelp = document.getElementById("import-preview-help")
+      const importPreviewList = document.getElementById("import-preview-list")
+      const createSourceVersion = document.getElementById("create-source-version")
+
+      if (sourceFile) {
+        sourceFile.addEventListener("change", function () {
+          const file = sourceFile.files && sourceFile.files[0]
+          if (sourceFileStatus) {
+            sourceFileStatus.textContent = file
+              ? "视觉稿已选择 “" + file.name + "”；正式实现需在服务端校验通过后才允许创建。"
+              : "尚未选择文件。选择后才显示预览并允许创建草稿。"
+          }
+          if (importPreviewTitle) importPreviewTitle.textContent = file ? "视觉预览 · " + file.name : "等待选择 CSV"
+          if (importPreviewStatus) {
+            importPreviewStatus.textContent = file ? "演示预览" : "尚未预览"
+            importPreviewStatus.className = "status neutral"
+          }
+          if (importPreviewHelp) importPreviewHelp.hidden = Boolean(file)
+          if (importPreviewList) importPreviewList.hidden = !file
+          if (createSourceVersion) createSourceVersion.disabled = !file
+        })
+      }
+
+      const gapFilter = document.getElementById("gap-filter")
+      if (gapFilter) {
+        gapFilter.addEventListener("click", function () {
+          const enabled = gapFilter.getAttribute("aria-pressed") !== "true"
+          gapFilter.setAttribute("aria-pressed", String(enabled))
+          gapFilter.lastChild.textContent = enabled ? " 查看全部" : " 只看缺口"
+          document.querySelectorAll("[data-gap='false']").forEach(function (row) {
+            row.hidden = enabled
+          })
+        })
+      }
+
+      const demoActionStatus = document.getElementById("demo-action-status")
+      document.querySelectorAll("[data-demo-action]").forEach(function (button) {
+        button.addEventListener("click", function () {
+          if (!demoActionStatus) return
+          demoActionStatus.hidden = false
+          demoActionStatus.textContent = "视觉交互示例：" + button.getAttribute("data-demo-action") + "。正式实现等待服务端确认后更新权威状态。"
+          demoActionStatus.focus()
+        })
+      })
+
+      const logoutDialog = document.getElementById("logout-dialog")
+      const logoutDialogTitle = document.getElementById("logout-dialog-title")
+      const logoutPending = document.getElementById("logout-pending")
+      const logoutFailure = document.getElementById("logout-failure")
+      const logoutReviewBranches = document.getElementById("logout-review-branches")
+      const logoutFailureActions = document.getElementById("logout-failure-actions")
+      const previewLogoutFailure = document.getElementById("preview-logout-failure")
+      const previewLogoutSuccess = document.getElementById("preview-logout-success")
+      const closeLogoutFailure = document.getElementById("close-logout-failure")
+      const retryLogout = document.getElementById("retry-logout")
+      let activeLogoutButton = null
+
+      function setLogoutReviewState(state) {
+        const failed = state === "failure"
+        if (logoutDialogTitle) logoutDialogTitle.textContent = failed ? "退出失败" : "正在安全退出…"
+        if (logoutPending) logoutPending.hidden = failed
+        if (logoutFailure) logoutFailure.hidden = !failed
+        if (logoutReviewBranches) logoutReviewBranches.hidden = failed
+        if (logoutFailureActions) logoutFailureActions.hidden = !failed
+      }
+
+      function restoreLogoutButton() {
+        if (activeLogoutButton) {
+          activeLogoutButton.disabled = false
+          activeLogoutButton.focus()
+        }
+        activeLogoutButton = null
+      }
+
+      document.querySelectorAll(".logout-link").forEach(function (button) {
+        button.addEventListener("click", function () {
+          if (!logoutDialog) return
+          activeLogoutButton = button
+          activeLogoutButton.disabled = true
+          setLogoutReviewState("pending")
+          logoutDialog.showModal()
+        })
+      })
+
+      if (previewLogoutFailure) {
+        previewLogoutFailure.addEventListener("click", function () {
+          setLogoutReviewState("failure")
+        })
+      }
+
+      if (previewLogoutSuccess && logoutDialog) {
+        previewLogoutSuccess.addEventListener("click", function () {
+          logoutDialog.close()
+          if (activeLogoutButton) activeLogoutButton.disabled = false
+          activeLogoutButton = null
+          setLoginState("logout", false)
+          const loginSection = document.getElementById("login")
+          if (loginSection) loginSection.scrollIntoView({ behavior: "smooth", block: "start" })
+        })
+      }
+
+      if (closeLogoutFailure && logoutDialog) {
+        closeLogoutFailure.addEventListener("click", function () {
+          logoutDialog.close()
+          restoreLogoutButton()
+        })
+      }
+
+      if (retryLogout) {
+        retryLogout.addEventListener("click", function () {
+          setLogoutReviewState("pending")
+        })
+      }
+
+      if (logoutDialog) {
+        logoutDialog.addEventListener("cancel", function (event) {
+          event.preventDefault()
+        })
+      }
+
+      const narrowBusinessViewport = window.matchMedia("(max-width: 479px)")
+      const businessFields = document.querySelectorAll(".admin-shell input, .admin-shell textarea, .admin-shell select")
+
+      businessFields.forEach(function (field) {
+        field.dataset.reviewOriginalDisabled = String(field.disabled)
+        if ("readOnly" in field) field.dataset.reviewOriginalReadonly = String(field.readOnly)
+      })
+
+      function syncNarrowBusinessMode(event) {
+        const readonly = event.matches
+        businessFields.forEach(function (field) {
+          const isSelectOrFile = field.tagName === "SELECT" || field.getAttribute("type") === "file"
+          if (isSelectOrFile) {
+            field.disabled = readonly || field.dataset.reviewOriginalDisabled === "true"
+          } else if ("readOnly" in field) {
+            field.readOnly = readonly || field.dataset.reviewOriginalReadonly === "true"
+            field.setAttribute("aria-readonly", String(field.readOnly))
+          }
+        })
+      }
+
+      syncNarrowBusinessMode(narrowBusinessViewport)
+      narrowBusinessViewport.addEventListener("change", syncNarrowBusinessMode)
+
+      const codeDialog = document.getElementById("code-dialog")
+      const codeDialogTitle = document.getElementById("code-dialog-title")
+      const codeDialogContext = document.getElementById("code-dialog-context")
+      const createCourseButton = document.getElementById("create-course")
+      const confirmCodeButton = document.getElementById("confirm-code")
+      const copyCodeButton = document.getElementById("copy-code")
+      const copyCodeLabel = document.getElementById("copy-code-label")
+      const copyStatus = document.getElementById("copy-status")
+      const copyPreviewButtons = document.querySelectorAll("[data-copy-preview]")
+      const rotateDialog = document.getElementById("rotate-dialog")
+      const rotateDialogTitle = document.getElementById("rotate-dialog-title")
+      const rotateDialogContext = document.getElementById("rotate-dialog-context")
+      const openRotateButtons = document.querySelectorAll(".open-rotate")
+      const cancelRotateButton = document.getElementById("cancel-rotate")
+      const confirmRotateButton = document.getElementById("confirm-rotate")
+      let codeReturnTarget = createCourseButton
+      let activeRotateButton = null
+
+      function showCodeDialog(title, context, status, returnTarget) {
+        if (!codeDialog) return
+        codeReturnTarget = returnTarget || createCourseButton
+        if (codeDialogTitle) codeDialogTitle.textContent = title
+        if (codeDialogContext) codeDialogContext.textContent = context
+        if (copyStatus) {
+          copyStatus.textContent = status
+          copyStatus.className = "code-caption"
+        }
+        if (copyCodeLabel) copyCodeLabel.textContent = "复制学习码"
+        codeDialog.showModal()
+      }
+
+      if (createCourseButton && codeDialog) {
+        createCourseButton.addEventListener("click", function () {
+          showCodeDialog(
+            "课程创建成功",
+            "小明 · 小学英语三年级上册 v2",
+            "复制成功不等于已安全保存，关闭前仍需主动确认。",
+            createCourseButton,
+          )
+        })
+      }
+
+      if (confirmCodeButton && codeDialog) {
+        confirmCodeButton.addEventListener("click", function () {
+          codeDialog.close()
+          if (codeReturnTarget) codeReturnTarget.focus()
+        })
+      }
+
+      if (codeDialog && copyStatus) {
+        codeDialog.addEventListener("cancel", function (event) {
+          event.preventDefault()
+          copyStatus.textContent = "学习码尚未确认保存。请复制或手工记录后点击“我已安全记录”。"
+        })
+      }
+
+      if (copyCodeButton && copyStatus) {
+        copyCodeButton.addEventListener("click", function () {
+          copyStatus.textContent = "视觉稿不包含真实学习码，因此没有调用剪贴板；只有真实复制成功后才可显示“已复制”。"
+          copyStatus.className = "code-caption"
+          if (copyCodeLabel) copyCodeLabel.textContent = "复制学习码"
+        })
+      }
+
+      copyPreviewButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+          const success = button.getAttribute("data-copy-preview") === "success"
+          if (copyStatus) {
+            copyStatus.textContent = success
+              ? "复制成功。学习码仍需安全记录，关闭前必须主动确认。"
+              : "复制失败，学习码仍保持可见。请重新复制或手工记录。"
+            copyStatus.className = "code-caption " + (success ? "copy-success" : "copy-error")
+          }
+          if (copyCodeLabel) copyCodeLabel.textContent = success ? "已复制" : "重新复制"
+        })
+      })
+
+      openRotateButtons.forEach(function (button) {
+        button.addEventListener("click", function () {
+          activeRotateButton = button
+          const learner = button.getAttribute("data-learner") || "当前学习者"
+          const context = button.getAttribute("data-course-context") || ""
+          if (rotateDialogTitle) rotateDialogTitle.textContent = "轮换“" + learner + "”的学习码？"
+          if (rotateDialogContext) rotateDialogContext.textContent = context
+          rotateDialog.showModal()
+        })
+      })
+
+      if (cancelRotateButton && rotateDialog) {
+        cancelRotateButton.addEventListener("click", function () {
+          rotateDialog.close()
+          if (activeRotateButton) activeRotateButton.focus()
+        })
+      }
+
+      if (confirmRotateButton && rotateDialog && codeDialog) {
+        confirmRotateButton.addEventListener("click", function () {
+          const learner = activeRotateButton?.getAttribute("data-learner") || "当前学习者"
+          rotateDialog.close()
+          showCodeDialog(
+            "学习码轮换成功",
+            learner + " · 已撤销 2 个旧会话",
+            "新学习码仅本次显示。请复制或手工记录后确认。",
+            activeRotateButton,
+          )
+        })
+      }
+    </script>
+  </body>
+</html>

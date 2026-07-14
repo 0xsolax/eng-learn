@@ -1,16 +1,17 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type {
   AdminExerciseItemDto,
   BuildCoverageDto,
   SourceVersionDetailDto,
 } from '@shared/api/contentSchemas'
 import { MAX_BATCH_APPROVAL_ITEMS } from '@shared/api/contentSchemas'
-import { Hammer, Send } from '@lucide/vue'
+import { ArchiveX, Hammer, Send } from '@lucide/vue'
 import { createAdminApi } from '@/api/adminApi'
 import { ApiFailureError } from '@/api/errors'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
+import { useAdminPageContext } from '@/features/admin-auth/adminPageContext'
 
 type VersionDetailApi = Pick<
   ReturnType<typeof createAdminApi>,
@@ -24,6 +25,14 @@ type VersionDetailApi = Pick<
 >
 type PageState = 'loading' | 'ready' | 'error'
 type ActionState = 'idle' | 'building' | 'approving' | 'publishing' | 'discarding'
+const MATRIX_STAGES = ['S0', 'S1', 'S2', 'S3', 'S4', 'S5'] as const
+type CoverageCell = BuildCoverageDto['cells'][number]
+type MatrixStage = (typeof MATRIX_STAGES)[number]
+type MatrixRow = {
+  wordId: string
+  word: string
+  cellsByStage: Record<MatrixStage, CoverageCell[]>
+}
 
 const props = defineProps<{
   api?: VersionDetailApi
@@ -31,6 +40,7 @@ const props = defineProps<{
 }>()
 
 const api = props.api ?? createAdminApi()
+const pageContext = useAdminPageContext()
 const pageState = ref<PageState>('loading')
 const detail = ref<SourceVersionDetailDto | null>(null)
 const coverage = ref<BuildCoverageDto | null>(null)
@@ -42,9 +52,12 @@ const selectedItemIds = ref<string[]>([])
 const showOnlyGaps = ref(false)
 const confirmation = ref<'publish' | 'discard' | null>(null)
 const confirmationRegion = ref<HTMLElement | null>(null)
+const compactMediaQuery = window.matchMedia('(max-width: 479px)')
+const isCompactReadOnly = ref(compactMediaQuery.matches)
 let confirmationTrigger: HTMLElement | null = null
 
 const isMutable = computed(() => detail.value?.status === 'draft')
+const canMutate = computed(() => isMutable.value && !isCompactReadOnly.value)
 const draftItems = computed(() => exerciseItems.value.filter((item) => item.status === 'draft'))
 const allDraftsSelected = computed({
   get: () =>
@@ -54,15 +67,68 @@ const allDraftsSelected = computed({
     selectedItemIds.value = selected ? draftItems.value.map((item) => item.id) : []
   },
 })
-const visibleCells = computed(() => {
-  const cells = coverage.value?.cells ?? []
-  return showOnlyGaps.value ? cells.filter((cell) => cell.status !== 'approved') : cells
+const matrixRows = computed<MatrixRow[]>(() => {
+  const rows = new Map<string, MatrixRow>()
+
+  for (const cell of coverage.value?.cells ?? []) {
+    const existing = rows.get(cell.wordId)
+    const row = existing ?? {
+      wordId: cell.wordId,
+      word: cell.word,
+      cellsByStage: createEmptyMatrixCells(),
+    }
+    row.cellsByStage[cell.stage].push(cell)
+    rows.set(cell.wordId, row)
+  }
+
+  return [...rows.values()]
+})
+const visibleMatrixRows = computed(() =>
+  showOnlyGaps.value
+    ? matrixRows.value.filter((row) =>
+        MATRIX_STAGES.some((stage) =>
+          row.cellsByStage[stage].some((cell) => cell.status !== 'approved'),
+        ),
+      )
+    : matrixRows.value,
+)
+const blockerRows = computed(() =>
+  (detail.value?.missingItems ?? []).map((item) => {
+    const matchingCell = coverage.value?.cells.find(
+      (cell) =>
+        cell.word === item.word &&
+        cell.stage === item.stage &&
+        cell.taskType === item.taskType,
+    )
+
+    return {
+      ...item,
+      itemId: matchingCell?.itemId ?? null,
+    }
+  }),
+)
+
+const createEmptyMatrixCells = (): Record<MatrixStage, CoverageCell[]> => ({
+  S0: [],
+  S1: [],
+  S2: [],
+  S3: [],
+  S4: [],
+  S5: [],
 })
 
 const openConfirmation = async (
   kind: 'publish' | 'discard',
   event: MouseEvent,
 ): Promise<void> => {
+  if (
+    !canMutate.value ||
+    actionState.value !== 'idle' ||
+    (kind === 'publish' && !detail.value?.readyToPublish)
+  ) {
+    return
+  }
+
   confirmationTrigger =
     event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   confirmation.value = kind
@@ -91,17 +157,19 @@ const loadWorkspace = async (): Promise<void> => {
     coverage.value = nextCoverage
     exerciseItems.value = nextItems
     selectedItemIds.value = []
+    reportPageContext(nextDetail)
     pageState.value = 'ready'
   } catch {
     detail.value = null
     coverage.value = null
     exerciseItems.value = []
+    pageContext.clearPageContext()
     pageState.value = 'error'
   }
 }
 
 const buildVersion = async (): Promise<void> => {
-  if (!isMutable.value || actionState.value !== 'idle') return
+  if (!canMutate.value || actionState.value !== 'idle') return
   actionState.value = 'building'
   actionError.value = ''
   actionSuccess.value = ''
@@ -123,7 +191,7 @@ const buildVersion = async (): Promise<void> => {
 
 const approveSelected = async (): Promise<void> => {
   if (
-    !isMutable.value ||
+    !canMutate.value ||
     selectedItemIds.value.length === 0 ||
     actionState.value !== 'idle'
   ) {
@@ -177,7 +245,7 @@ const chunkIds = (itemIds: string[], chunkSize: number): string[][] => {
 }
 
 const publishVersion = async (): Promise<void> => {
-  if (!detail.value?.readyToPublish || !isMutable.value || actionState.value !== 'idle') return
+  if (!detail.value?.readyToPublish || !canMutate.value || actionState.value !== 'idle') return
   actionState.value = 'publishing'
   actionError.value = ''
 
@@ -203,7 +271,7 @@ const publishVersion = async (): Promise<void> => {
 }
 
 const discardVersion = async (): Promise<void> => {
-  if (!isMutable.value || actionState.value !== 'idle') return
+  if (!canMutate.value || actionState.value !== 'idle') return
   actionState.value = 'discarding'
   actionError.value = ''
 
@@ -238,6 +306,13 @@ const refreshWorkspace = async (): Promise<void> => {
   coverage.value = nextCoverage
   exerciseItems.value = nextItems
   selectedItemIds.value = []
+  reportPageContext(nextDetail)
+}
+
+const reportPageContext = (nextDetail: SourceVersionDetailDto): void => {
+  pageContext.setPageContext({
+    breadcrumbs: ['词库工作台', nextDetail.sourceName, `v${String(nextDetail.versionNo)}`],
+  })
 }
 
 const recoverVersionTransition = async (input: {
@@ -271,6 +346,7 @@ const invalidateWorkspace = (message: string): void => {
   selectedItemIds.value = []
   confirmation.value = null
   actionError.value = message
+  pageContext.clearPageContext()
   pageState.value = 'error'
 }
 
@@ -314,7 +390,24 @@ const reasonLabel = (reason: string): string =>
     sentence_pieces_required: '缺少句子词块',
   })[reason] ?? '内容未满足覆盖要求'
 
-onMounted(loadWorkspace)
+const syncCompactReadOnly = (event: MediaQueryListEvent): void => {
+  isCompactReadOnly.value = event.matches
+
+  if (event.matches) {
+    confirmation.value = null
+    selectedItemIds.value = []
+  }
+}
+
+onMounted(() => {
+  compactMediaQuery.addEventListener('change', syncCompactReadOnly)
+  void loadWorkspace()
+})
+
+onBeforeUnmount(() => {
+  compactMediaQuery.removeEventListener('change', syncCompactReadOnly)
+  pageContext.clearPageContext()
+})
 </script>
 
 <template>
@@ -401,6 +494,88 @@ onMounted(loadWorkspace)
         </ui-status-message>
 
         <section
+          v-if="canMutate"
+          data-command-bar
+          class="command-bar"
+          aria-label="版本操作"
+        >
+          <div class="command-copy">
+            <strong>版本命令</strong>
+            <span
+              v-if="detail.readyToPublish"
+              class="command-ready"
+            >服务端已确认覆盖完备，可进入发布确认。</span>
+            <span
+              v-else
+              data-publish-blocker
+              class="publish-blocker-summary"
+            >
+              当前有 {{ detail.missingItems.length }} 项发布阻断，请先处理下方项目。
+            </span>
+          </div>
+          <div class="command-actions">
+            <ui-button
+              data-build
+              variant="secondary"
+              :loading="actionState === 'building'"
+              :disabled="actionState !== 'idle'"
+              @click="buildVersion"
+            >
+              <hammer
+                :size="18"
+                aria-hidden="true"
+              />
+              {{ actionError.includes('构建未完成') ? '重新构建' : '构建练习' }}
+            </ui-button>
+            <ui-button
+              data-publish
+              :disabled="!detail.readyToPublish || actionState !== 'idle'"
+              @click="openConfirmation('publish', $event)"
+            >
+              <send
+                :size="18"
+                aria-hidden="true"
+              />
+              发布版本
+            </ui-button>
+            <ui-button
+              data-discard
+              variant="secondary"
+              :disabled="actionState !== 'idle'"
+              @click="openConfirmation('discard', $event)"
+            >
+              <archive-x
+                :size="18"
+                aria-hidden="true"
+              />
+              丢弃草稿
+            </ui-button>
+          </div>
+        </section>
+
+        <router-link
+          v-if="detail.status === 'published' && !isCompactReadOnly"
+          data-next-version
+          class="primary-link"
+          :to="{
+            path: '/admin/source-versions',
+            query: { mode: 'next_version', sourceId: detail.sourceId },
+          }"
+        >
+          创建下一草稿版本
+        </router-link>
+
+        <ui-status-message
+          v-if="isCompactReadOnly"
+          data-compact-readonly
+          tone="info"
+          title="当前仅供查看"
+        >
+          请使用至少 480px 宽的设备执行构建、发布、丢弃、审批或创建下一草稿版本。
+        </ui-status-message>
+
+        <section
+          data-pipeline
           aria-labelledby="pipeline-title"
           class="pipeline"
         >
@@ -422,57 +597,6 @@ onMounted(loadWorkspace)
             </li>
           </ol>
         </section>
-
-        <section
-          v-if="detail.status === 'draft'"
-          class="command-bar"
-          aria-label="版本操作"
-        >
-          <ui-button
-            data-build
-            variant="secondary"
-            :loading="actionState === 'building'"
-            :disabled="actionState !== 'idle'"
-            @click="buildVersion"
-          >
-            <hammer
-              :size="18"
-              aria-hidden="true"
-            />
-            {{ actionError.includes('构建未完成') ? '重新构建' : '构建练习' }}
-          </ui-button>
-          <ui-button
-            data-publish
-            :disabled="!detail.readyToPublish || actionState !== 'idle'"
-            @click="openConfirmation('publish', $event)"
-          >
-            <send
-              :size="18"
-              aria-hidden="true"
-            />
-            发布版本
-          </ui-button>
-          <ui-button
-            data-discard
-            variant="secondary"
-            :disabled="actionState !== 'idle'"
-            @click="openConfirmation('discard', $event)"
-          >
-            丢弃草稿
-          </ui-button>
-        </section>
-
-        <router-link
-          v-else-if="detail.status === 'published'"
-          data-next-version
-          class="primary-link"
-          :to="{
-            path: '/admin/source-versions',
-            query: { mode: 'next_version', sourceId: detail.sourceId },
-          }"
-        >
-          创建下一草稿版本
-        </router-link>
 
         <section
           v-if="confirmation"
@@ -547,16 +671,29 @@ onMounted(loadWorkspace)
           </header>
           <ul>
             <li
-              v-for="(item, index) in detail.missingItems"
+              v-for="(item, index) in blockerRows"
               :key="`${item.word}-${item.stage}-${item.taskType}-${String(index)}`"
+              data-blocker-item
             >
-              <strong>{{ item.word }} · {{ item.stage }}</strong>
-              <span>{{ taskTypeLabel(item.taskType) }} · {{ reasonLabel(item.reason) }}</span>
+              <div class="blocker-facts">
+                <strong lang="en">{{ item.word }} · {{ item.stage }}</strong>
+                <span>题型 {{ taskTypeLabel(item.taskType) }}</span>
+                <span>原因 {{ reasonLabel(item.reason) }}</span>
+              </div>
+              <router-link
+                v-if="item.itemId"
+                class="row-link"
+                :to="`/admin/source-versions/${encodeURIComponent(detail.versionId)}/exercises/${encodeURIComponent(item.itemId)}`"
+              >
+                打开练习
+              </router-link>
+              <span v-else>暂无可处理项目</span>
             </li>
           </ul>
         </section>
 
         <section
+          data-coverage-matrix
           class="coverage"
           aria-labelledby="coverage-title"
         >
@@ -570,70 +707,109 @@ onMounted(loadWorkspace)
             <label class="gap-filter">
               <input
                 v-model="showOnlyGaps"
+                data-gap-filter
                 type="checkbox"
               >
               只看缺口
             </label>
           </header>
 
-          <div class="table-scroll">
+          <div
+            class="table-scroll matrix-scroll"
+            data-scroll-region="coverage-matrix"
+            tabindex="0"
+            aria-label="单词与 S0 至 S5 覆盖率矩阵"
+          >
             <table data-coverage-table>
               <thead>
                 <tr>
                   <th scope="col">
                     单词
                   </th>
-                  <th scope="col">
-                    阶段
-                  </th>
-                  <th scope="col">
-                    题型
-                  </th>
-                  <th scope="col">
-                    状态
-                  </th>
-                  <th scope="col">
-                    练习详情
+                  <th
+                    v-for="stage in MATRIX_STAGES"
+                    :key="stage"
+                    data-matrix-stage
+                    scope="col"
+                  >
+                    {{ stage }}
                   </th>
                 </tr>
               </thead>
               <tbody>
                 <tr
-                  v-for="(cell, index) in visibleCells"
-                  :key="`${cell.wordId}-${cell.stage}-${cell.taskType}-${String(index)}`"
+                  v-for="row in visibleMatrixRows"
+                  :key="row.wordId"
+                  data-matrix-row
                 >
                   <th
                     scope="row"
                     lang="en"
                   >
-                    {{ cell.word }}
+                    {{ row.word }}
                   </th>
-                  <td>{{ cell.stage }}</td>
-                  <td>{{ taskTypeLabel(cell.taskType) }}</td>
-                  <td>
-                    <span
-                      class="cell-status"
-                      :data-status="cell.status"
-                    >{{ itemStatusLabel(cell.status) }}</span>
-                  </td>
-                  <td>
-                    <router-link
-                      v-if="cell.itemId"
-                      class="row-link"
-                      :to="`/admin/source-versions/${encodeURIComponent(detail.versionId)}/exercises/${encodeURIComponent(cell.itemId)}`"
+                  <td
+                    v-for="stage in MATRIX_STAGES"
+                    :key="stage"
+                    :data-stage="stage"
+                  >
+                    <div
+                      v-if="row.cellsByStage[stage].length > 0"
+                      class="matrix-cell"
                     >
-                      查看项目
-                    </router-link>
-                    <span v-else>尚无项目</span>
+                      <template
+                        v-for="cell in row.cellsByStage[stage]"
+                        :key="`${cell.taskType}-${cell.itemId ?? 'missing'}`"
+                      >
+                        <router-link
+                          v-if="cell.itemId"
+                          class="matrix-entry matrix-entry--link"
+                          :data-status="cell.status"
+                          :aria-label="`${row.word} ${stage} ${taskTypeLabel(cell.taskType)} ${itemStatusLabel(cell.status)}，打开练习`"
+                          :to="`/admin/source-versions/${encodeURIComponent(detail.versionId)}/exercises/${encodeURIComponent(cell.itemId)}`"
+                        >
+                          <span
+                            class="cell-status"
+                            :data-status="cell.status"
+                          >{{ itemStatusLabel(cell.status) }}</span>
+                          <small>{{ taskTypeLabel(cell.taskType) }}</small>
+                        </router-link>
+                        <span
+                          v-else
+                          class="matrix-entry"
+                          :data-status="cell.status"
+                          :aria-label="`${row.word} ${stage} ${taskTypeLabel(cell.taskType)} ${itemStatusLabel(cell.status)}`"
+                        >
+                          <span
+                            class="cell-status"
+                            :data-status="cell.status"
+                          >{{ itemStatusLabel(cell.status) }}</span>
+                          <small>{{ taskTypeLabel(cell.taskType) }}</small>
+                        </span>
+                      </template>
+                    </div>
+                    <span
+                      v-else
+                      class="matrix-empty"
+                    >无数据</span>
                   </td>
                 </tr>
               </tbody>
             </table>
+            <p
+              v-if="showOnlyGaps && visibleMatrixRows.length === 0"
+              data-gap-empty
+              class="matrix-filter-empty"
+              role="status"
+            >
+              当前条件下没有缺口。
+            </p>
           </div>
         </section>
 
         <section
-          v-if="isMutable && draftItems.length > 0"
+          v-if="canMutate && draftItems.length > 0"
+          data-approval-list
           class="approval"
           aria-labelledby="approval-title"
         >
@@ -643,6 +819,9 @@ onMounted(loadWorkspace)
                 待审批练习
               </h2>
               <p>只对明确勾选的真实草稿执行批准；超过单次上限时自动分批。</p>
+              <p data-selection-count>
+                已选 {{ selectedItemIds.length }} / 待审批 {{ draftItems.length }}
+              </p>
             </div>
             <label class="approval-select-all">
               <input
@@ -701,6 +880,7 @@ onMounted(loadWorkspace)
 }
 
 .version-workspace {
+  min-width: 0;
   gap: var(--space-6);
 }
 
@@ -748,7 +928,9 @@ onMounted(loadWorkspace)
 }
 
 .version-header h1 {
-  font-size: 28px;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.3;
 }
 
 .status-badge,
@@ -771,12 +953,24 @@ onMounted(loadWorkspace)
   color: var(--color-brand-strong);
 }
 
-.cell-status[data-status='draft'],
+.status-badge[data-status='draft'],
+.cell-status[data-status='draft'] {
+  border-color: color-mix(in srgb, var(--color-sun) 60%, var(--color-line));
+  background: var(--color-sun-soft);
+  color: #71550a;
+}
+
 .cell-status[data-status='missing'] {
   border-style: dashed;
   border-color: var(--color-coral);
   background: var(--color-coral-soft);
   color: var(--color-coral-strong);
+}
+
+.status-badge[data-status='archived'],
+.cell-status[data-status='disabled'] {
+  background: var(--color-canvas);
+  color: var(--color-muted);
 }
 
 .pipeline,
@@ -830,11 +1024,43 @@ onMounted(loadWorkspace)
 }
 
 .command-bar {
-  justify-content: flex-start;
-  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
   padding: var(--space-3);
   border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
   background: var(--color-surface);
+}
+
+.command-copy {
+  display: grid;
+  gap: 2px;
+}
+
+.command-copy strong {
+  font-size: 13px;
+}
+
+.command-copy span {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.command-ready {
+  color: var(--color-brand-strong);
+}
+
+.publish-blocker-summary {
+  color: var(--color-coral-strong);
+  font-weight: 650;
+}
+
+.command-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }
 
 .primary-link {
@@ -858,13 +1084,25 @@ onMounted(loadWorkspace)
 .blockers li,
 .approval li {
   display: flex;
-  min-height: 48px;
+  min-height: 44px;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
   padding: var(--space-2) var(--space-3);
   border-bottom: 1px solid var(--color-line);
   font-size: 13px;
+}
+
+.blocker-facts {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(110px, 0.7fr) minmax(120px, 0.9fr) minmax(160px, 1.4fr);
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.blocker-facts > span {
+  color: var(--color-muted);
 }
 
 .blockers li:last-child,
@@ -904,7 +1142,7 @@ onMounted(loadWorkspace)
 
 table {
   width: 100%;
-  min-width: 680px;
+  min-width: 900px;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -912,9 +1150,69 @@ table {
 th,
 td {
   height: 44px;
+  padding-block: var(--space-2);
   padding-inline: var(--space-3);
   border-bottom: 1px solid var(--color-line);
   text-align: left;
+}
+
+.matrix-scroll:focus-visible {
+  outline: 3px solid var(--color-brand);
+  outline-offset: 2px;
+}
+
+.matrix-scroll th:first-child,
+.matrix-scroll td:first-child {
+  position: sticky;
+  z-index: 1;
+  left: 0;
+  min-width: 120px;
+  background: var(--color-surface);
+}
+
+.matrix-scroll thead th {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+}
+
+.matrix-scroll thead th:first-child {
+  z-index: 3;
+  background: var(--color-canvas);
+}
+
+.matrix-cell {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.matrix-entry {
+  display: grid;
+  justify-items: start;
+  gap: 2px;
+  min-width: 96px;
+  color: var(--color-ink);
+  text-decoration: none;
+}
+
+.matrix-entry--link:hover small {
+  color: var(--color-brand-strong);
+  text-decoration: underline;
+}
+
+.matrix-entry small,
+.matrix-empty {
+  color: var(--color-muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.matrix-filter-empty {
+  margin: 0;
+  padding: var(--space-6);
+  color: var(--color-muted);
+  font-size: 13px;
+  text-align: center;
 }
 
 thead th {
@@ -956,6 +1254,14 @@ tbody tr:last-child > * {
   gap: var(--space-3);
 }
 
+@media (min-width: 1200px) {
+  .command-bar {
+    position: sticky;
+    z-index: 4;
+    top: calc(72px + var(--space-2));
+  }
+}
+
 @media (max-width: 767px) {
   .pipeline ol {
     grid-template-columns: 1fr 1fr;
@@ -971,6 +1277,7 @@ tbody tr:last-child > * {
 
   .version-header,
   .section-heading,
+  .command-bar,
   .blockers li,
   .approval li {
     align-items: stretch;
@@ -978,9 +1285,26 @@ tbody tr:last-child > * {
 
   .version-header,
   .section-heading,
+  .command-bar,
   .blockers li,
   .approval li {
     display: grid;
+  }
+
+  .blocker-facts {
+    grid-template-columns: 1fr;
+    gap: var(--space-1);
+  }
+}
+
+@media (forced-colors: active) {
+  .cell-status,
+  .status-badge,
+  .command-bar,
+  .blockers ul,
+  .approval ul,
+  .table-scroll {
+    border: 1px solid CanvasText;
   }
 }
 </style>

@@ -4,6 +4,11 @@ import { isDomainError } from '../errors/DomainError'
 const DOMAIN_ERROR_STATUS: Record<ApiError['code'], number> = {
   admin_disabled: 403,
   admin_identity_invalid: 401,
+  admin_login_rate_limited: 429,
+  admin_not_configured: 503,
+  admin_session_expired: 401,
+  admin_session_required: 401,
+  admin_session_revoked: 401,
   bad_request: 400,
   conflict: 409,
   credential_conflict: 409,
@@ -12,6 +17,7 @@ const DOMAIN_ERROR_STATUS: Record<ApiError['code'], number> = {
   dependency_failure: 503,
   forbidden_resource: 403,
   internal_error: 500,
+  invalid_admin_credentials: 401,
   invalid_access_code: 401,
   idempotency_conflict: 409,
   learner_session_expired: 401,
@@ -56,12 +62,19 @@ export const toApiErrorResponse = (error: unknown): Response => {
     const parsed = apiErrorSchema.safeParse(candidate)
 
     if (parsed.success) {
+      const retryAfterSeconds =
+        parsed.data.code === 'admin_login_rate_limited'
+          ? parsed.data.details.retryAfterSeconds
+          : undefined
       return apiJson(
         {
           ok: false,
           error: parsed.data,
         },
         DOMAIN_ERROR_STATUS[parsed.data.code],
+        retryAfterSeconds === undefined
+          ? undefined
+          : { 'retry-after': String(retryAfterSeconds) },
       )
     }
   }

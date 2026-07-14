@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { SourceVersionSummaryDto } from '@shared/api/contentSchemas'
 import type { AdminCourseListDto } from '@shared/api/courseSchemas'
 import { generateAdminOperationToken } from '@shared/security/adminOperationToken'
@@ -20,6 +20,7 @@ type CoursesApi = Pick<
 type CourseEntry = AdminCourseListDto['courses'][number]
 type PageState = 'loading' | 'ready' | 'error'
 type ActionState = 'idle' | 'creating' | 'rotating'
+type CopyState = 'idle' | 'success' | 'error'
 type OneTimeCode = {
   accessCode: string
   learnerName: string
@@ -52,6 +53,12 @@ const oneTimeCode = ref<OneTimeCode | null>(null)
 const rotateTarget = ref<CourseEntry | null>(null)
 const pendingOperation = ref<PendingOperation | null>(null)
 const resultUnknown = ref(false)
+const showCreateForm = ref(false)
+const isMobileReadonly = ref(false)
+const pageRoot = ref<HTMLElement | null>(null)
+const oneTimeCodeDialog = ref<HTMLElement | null>(null)
+const copyState = ref<CopyState>('idle')
+let rotateTrigger: HTMLElement | null = null
 
 const publishedVersions = computed(() =>
   versions.value.filter((version) => version.status === 'published'),
@@ -59,6 +66,7 @@ const publishedVersions = computed(() =>
 
 const canCreate = computed(
   () =>
+    !isMobileReadonly.value &&
     actionState.value === 'idle' &&
     pendingOperation.value === null &&
     learnerName.value.trim().length > 0 &&
@@ -87,6 +95,7 @@ const loadWorkspace = async (): Promise<void> => {
     courses.value = courseList.courses
     versions.value = sourceVersions
     sourceVersionId.value = publishedVersions.value[0]?.versionId ?? ''
+    showCreateForm.value = !isMobileReadonly.value && courses.value.length === 0
     pageState.value = 'ready'
   } catch {
     courses.value = []
@@ -125,8 +134,11 @@ const executeCreateCourse = async (
       accessCode: created.learner.accessCode,
       learnerName: created.learner.name,
     }
+    copyState.value = 'idle'
+    showCreateForm.value = false
     learnerName.value = ''
     pendingOperation.value = null
+    await focusOneTimeCodeDialog()
 
     try {
       courses.value = (await api.listCourses()).courses
@@ -190,12 +202,14 @@ const executeRotateCode = async (
       learnerName: operation.learnerName,
       revokedSessionCount: rotated.revokedSessionCount,
     }
+    copyState.value = 'idle'
     courses.value = courses.value.map((entry) =>
       entry.learner.id === operation.learnerId
         ? { ...entry, credentialVersion: rotated.credentialVersion }
         : entry,
     )
     pendingOperation.value = null
+    await focusOneTimeCodeDialog()
   } catch (error) {
     if (isUnknownResult(error)) {
       resultUnknown.value = true
@@ -209,6 +223,8 @@ const executeRotateCode = async (
         : error instanceof ApiFailureError && error.code === 'operation_superseded'
           ? '本次轮换结果已被后续操作替代，请重新读取工作台。'
           : '学习码轮换未完成，请重新读取工作台确认服务端状态。'
+    await nextTick()
+    rotateTrigger?.focus()
   } finally {
     actionState.value = 'idle'
   }
@@ -241,11 +257,105 @@ const isUnknownResult = (error: unknown): boolean =>
 const courseStatusLabel = (status: CourseEntry['course']['status']): string =>
   ({ active: '学习中', paused: '已暂停', completed: '已完成' })[status]
 
-onMounted(loadWorkspace)
+const toggleCreateForm = (): void => {
+  if (isMobileReadonly.value) return
+  showCreateForm.value = !showCreateForm.value
+}
+
+const openRotateConfirmation = async (
+  entry: CourseEntry,
+  event: MouseEvent,
+): Promise<void> => {
+  if (isMobileReadonly.value || actionState.value !== 'idle' || pendingOperation.value) return
+  rotateTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  rotateTarget.value = entry
+  await nextTick()
+  pageRoot.value?.querySelector<HTMLElement>('[data-rotate-confirmation]')?.focus()
+}
+
+const closeRotateConfirmation = async (): Promise<void> => {
+  rotateTarget.value = null
+  await nextTick()
+  rotateTrigger?.focus()
+}
+
+const focusOneTimeCodeDialog = async (): Promise<void> => {
+  await nextTick()
+  oneTimeCodeDialog.value?.focus()
+}
+
+const dismissOneTimeCode = async (): Promise<void> => {
+  const returnToRotate = oneTimeCode.value?.revokedSessionCount !== undefined
+  oneTimeCode.value = null
+  copyState.value = 'idle'
+  await nextTick()
+  if (returnToRotate) {
+    rotateTrigger?.focus()
+  } else {
+    pageRoot.value?.querySelector<HTMLElement>('[data-toggle-create]')?.focus()
+  }
+}
+
+const copyOneTimeCode = async (): Promise<void> => {
+  if (!oneTimeCode.value || isMobileReadonly.value) return
+  copyState.value = 'idle'
+
+  try {
+    await navigator.clipboard.writeText(oneTimeCode.value.accessCode)
+    copyState.value = 'success'
+  } catch {
+    copyState.value = 'error'
+  }
+}
+
+const handleDialogKeydown = (event: KeyboardEvent): void => {
+  if (event.key !== 'Tab' || !oneTimeCodeDialog.value) return
+  const focusable = Array.from(
+    oneTimeCodeDialog.value.querySelectorAll<HTMLElement>('button:not(:disabled)'),
+  )
+  const first = focusable[0]
+  const last = focusable.at(-1)
+  if (!first || !last) return
+
+  if (document.activeElement === oneTimeCodeDialog.value) {
+    event.preventDefault()
+    ;(event.shiftKey ? last : first).focus()
+    return
+  }
+
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault()
+    last.focus()
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault()
+    first.focus()
+  }
+}
+
+const syncViewport = (): void => {
+  isMobileReadonly.value = window.innerWidth < 480
+  if (isMobileReadonly.value) {
+    showCreateForm.value = false
+    rotateTarget.value = null
+  }
+}
+
+onMounted(() => {
+  syncViewport()
+  window.addEventListener('resize', syncViewport)
+  void loadWorkspace()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', syncViewport)
+})
 </script>
 
 <template>
-  <section class="admin-page page-enter">
+  <section
+    ref="pageRoot"
+    class="admin-page page-enter"
+  >
     <ui-status-message
       v-if="pageState === 'loading'"
       tone="info"
@@ -279,7 +389,26 @@ onMounted(loadWorkspace)
           <h1>课程工作台</h1>
           <span>为学习者绑定已发布词库版本；学习码只在创建或轮换后本次显示。</span>
         </div>
+        <ui-button
+          v-if="!isMobileReadonly"
+          data-toggle-create
+          :variant="showCreateForm ? 'secondary' : 'primary'"
+          :aria-expanded="String(showCreateForm)"
+          aria-controls="create-course-region"
+          @click="toggleCreateForm"
+        >
+          {{ showCreateForm ? '收起创建区' : '创建课程' }}
+        </ui-button>
       </header>
+
+      <ui-status-message
+        v-if="isMobileReadonly"
+        data-mobile-readonly
+        tone="info"
+        title="当前视口仅支持查看"
+      >
+        请使用至少 480px 宽的设备创建课程或轮换学习码。
+      </ui-status-message>
 
       <ui-status-message
         v-if="actionError"
@@ -297,6 +426,7 @@ onMounted(loadWorkspace)
       >
         <p>{{ unknownResultMessage }}</p>
         <ui-button
+          v-if="!isMobileReadonly"
           data-retry-unknown
           variant="secondary"
           :loading="actionState !== 'idle'"
@@ -306,27 +436,183 @@ onMounted(loadWorkspace)
         </ui-button>
       </ui-status-message>
 
-      <ui-status-message
+      <section
         v-if="oneTimeCode"
+        ref="oneTimeCodeDialog"
         data-one-time-code
-        tone="success"
-        title="学习码仅本次显示"
+        class="one-time-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="one-time-code-title"
+        aria-describedby="one-time-code-description"
+        tabindex="-1"
+        @keydown="handleDialogKeydown"
       >
-        <p>{{ oneTimeCode.learnerName }} 的新学习码：</p>
+        <p class="dialog-eyebrow">
+          仅本次显示
+        </p>
+        <h2 id="one-time-code-title">
+          {{ oneTimeCode.learnerName }} 的新学习码
+        </h2>
+        <p id="one-time-code-description">
+          请立即安全记录；关闭后页面和课程列表不会恢复明文码。
+        </p>
         <code>{{ oneTimeCode.accessCode }}</code>
         <p v-if="oneTimeCode.revokedSessionCount !== undefined">
           {{ oneTimeCode.revokedSessionCount }} 个旧会话已失效。
         </p>
-        <ui-button
-          data-dismiss-code
-          variant="secondary"
-          @click="oneTimeCode = null"
+        <p
+          v-if="copyState !== 'idle'"
+          data-copy-feedback
+          class="copy-feedback"
+          :class="`copy-feedback--${copyState}`"
+          :role="copyState === 'error' ? 'alert' : 'status'"
+          :aria-live="copyState === 'error' ? 'assertive' : 'polite'"
         >
-          我已安全记录
-        </ui-button>
-      </ui-status-message>
+          {{ copyState === 'success' ? '复制成功，请保存到安全位置。' : '复制失败，请手动记录学习码。' }}
+        </p>
+        <div class="dialog-actions">
+          <ui-button
+            v-if="!isMobileReadonly"
+            data-copy-code
+            variant="secondary"
+            @click="copyOneTimeCode"
+          >
+            复制学习码
+          </ui-button>
+          <ui-button
+            data-dismiss-code
+            @click="dismissOneTimeCode"
+          >
+            我已安全记录
+          </ui-button>
+        </div>
+      </section>
 
       <section
+        class="courses"
+        aria-labelledby="courses-title"
+      >
+        <header class="section-heading">
+          <div>
+            <h2 id="courses-title">
+              已有课程
+            </h2>
+            <p>列表不返回也不恢复学习码，只展示最小课程状态。</p>
+          </div>
+          <span>{{ courses.length }} 门课程</span>
+        </header>
+
+        <div
+          v-if="courses.length === 0"
+          class="empty-state"
+        >
+          <h3>还没有课程</h3>
+          <p>使用创建表单建立第一门学习者课程。</p>
+        </div>
+
+        <div
+          v-else
+          class="table-scroll"
+        >
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">
+                  学习者
+                </th>
+                <th scope="col">
+                  词库版本
+                </th>
+                <th
+                  scope="col"
+                  class="numeric"
+                >
+                  当前课时
+                </th>
+                <th scope="col">
+                  状态
+                </th>
+                <th
+                  v-if="!isMobileReadonly"
+                  scope="col"
+                >
+                  操作
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="entry in courses"
+                :key="entry.course.id"
+              >
+                <th scope="row">
+                  {{ entry.learner.name }}
+                </th>
+                <td>{{ versionNames.get(entry.course.sourceVersionId) ?? '版本信息不可用' }}</td>
+                <td class="numeric">
+                  第 {{ entry.course.currentLessonNo }} 课
+                </td>
+                <td>
+                  <span
+                    class="status-badge"
+                    :data-status="entry.course.status"
+                  >
+                    {{ courseStatusLabel(entry.course.status) }}
+                  </span>
+                </td>
+                <td v-if="!isMobileReadonly">
+                  <ui-button
+                    data-rotate-code
+                    variant="secondary"
+                    :aria-expanded="String(rotateTarget?.learner.id === entry.learner.id)"
+                    :disabled="actionState !== 'idle' || pendingOperation !== null"
+                    @click="openRotateConfirmation(entry, $event)"
+                  >
+                    轮换学习码
+                  </ui-button>
+                  <section
+                    v-if="rotateTarget?.learner.id === entry.learner.id"
+                    data-rotate-confirmation
+                    class="inline-confirmation"
+                    role="region"
+                    aria-live="polite"
+                    aria-atomic="true"
+                    aria-labelledby="rotate-code-title"
+                    tabindex="-1"
+                    @keydown.esc="closeRotateConfirmation"
+                  >
+                    <h2 id="rotate-code-title">
+                      确认轮换 {{ rotateTarget.learner.name }} 的学习码
+                    </h2>
+                    <p>现有学习会话会全部失效，需要使用新学习码重新进入课程。</p>
+                    <div>
+                      <ui-button
+                        variant="secondary"
+                        @click="closeRotateConfirmation"
+                      >
+                        取消
+                      </ui-button>
+                      <ui-button
+                        data-confirm-rotate
+                        :disabled="actionState !== 'idle' || pendingOperation !== null"
+                        :loading="actionState === 'rotating'"
+                        @click="rotateCode"
+                      >
+                        确认轮换
+                      </ui-button>
+                    </div>
+                  </section>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section
+        v-if="showCreateForm && !isMobileReadonly"
+        id="create-course-region"
         class="create-course"
         aria-labelledby="create-course-title"
       >
@@ -346,6 +632,12 @@ onMounted(loadWorkspace)
           title="暂无可绑定版本"
         >
           先发布一个词库版本，再创建课程。
+          <a
+            data-source-workbench-link
+            href="/admin/source-versions"
+          >
+            前往词库工作台
+          </a>
         </ui-status-message>
 
         <form
@@ -390,119 +682,6 @@ onMounted(loadWorkspace)
             创建课程并生成学习码
           </ui-button>
         </form>
-      </section>
-
-      <section
-        class="courses"
-        aria-labelledby="courses-title"
-      >
-        <header class="section-heading">
-          <div>
-            <h2 id="courses-title">
-              已有课程
-            </h2>
-            <p>列表不返回也不恢复学习码，只展示最小课程状态。</p>
-          </div>
-          <span>{{ courses.length }} 门课程</span>
-        </header>
-
-        <div
-          v-if="courses.length === 0"
-          class="empty-state"
-        >
-          <h3>还没有课程</h3>
-          <p>使用上方表单创建第一门学习者课程。</p>
-        </div>
-
-        <div
-          v-else
-          class="table-scroll"
-        >
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">
-                  学习者
-                </th>
-                <th scope="col">
-                  词库版本
-                </th>
-                <th
-                  scope="col"
-                  class="numeric"
-                >
-                  当前课时
-                </th>
-                <th scope="col">
-                  状态
-                </th>
-                <th scope="col">
-                  操作
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="entry in courses"
-                :key="entry.course.id"
-              >
-                <th scope="row">
-                  {{ entry.learner.name }}
-                </th>
-                <td>{{ versionNames.get(entry.course.sourceVersionId) ?? '版本信息不可用' }}</td>
-                <td class="numeric">
-                  第 {{ entry.course.currentLessonNo }} 课
-                </td>
-                <td>
-                  <span
-                    class="status-badge"
-                    :data-status="entry.course.status"
-                  >
-                    {{ courseStatusLabel(entry.course.status) }}
-                  </span>
-                </td>
-                <td>
-                  <ui-button
-                    data-rotate-code
-                    variant="secondary"
-                    :disabled="actionState !== 'idle' || pendingOperation !== null"
-                    @click="rotateTarget = entry"
-                  >
-                    轮换学习码
-                  </ui-button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      <section
-        v-if="rotateTarget"
-        data-rotate-confirmation
-        class="inline-confirmation"
-        aria-labelledby="rotate-code-title"
-      >
-        <h2 id="rotate-code-title">
-          确认轮换 {{ rotateTarget.learner.name }} 的学习码
-        </h2>
-        <p>现有学习会话会全部失效，需要使用新学习码重新进入课程。</p>
-        <div>
-          <ui-button
-            variant="secondary"
-            @click="rotateTarget = null"
-          >
-            取消
-          </ui-button>
-          <ui-button
-            data-confirm-rotate
-            :disabled="actionState !== 'idle' || pendingOperation !== null"
-            :loading="actionState === 'rotating'"
-            @click="rotateCode"
-          >
-            确认轮换
-          </ui-button>
-        </div>
       </section>
     </template>
   </section>
@@ -551,7 +730,7 @@ onMounted(loadWorkspace)
 
 .page-heading h1 {
   margin-block: var(--space-1);
-  font-size: 26px;
+  font-size: 24px;
 }
 
 .page-heading span,
@@ -625,8 +804,69 @@ onMounted(loadWorkspace)
   user-select: all;
 }
 
-[data-one-time-code] .ui-button {
-  margin-top: var(--space-3);
+.one-time-dialog {
+  position: fixed;
+  z-index: 30;
+  inset: 50% auto auto 50%;
+  display: grid;
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  gap: var(--space-3);
+  padding: var(--space-6);
+  overflow-y: auto;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-high);
+  transform: translate(-50%, -50%);
+}
+
+.one-time-dialog:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 3px;
+}
+
+.one-time-dialog h2,
+.one-time-dialog p {
+  margin: 0;
+}
+
+.one-time-dialog h2 {
+  font-size: 20px;
+}
+
+.one-time-dialog > p:not(.dialog-eyebrow, .copy-feedback) {
+  color: var(--color-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.dialog-eyebrow {
+  color: var(--color-brand-strong);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.copy-feedback {
+  padding: var(--space-3);
+  border-left: 3px solid var(--color-brand);
+  background: var(--color-brand-soft);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.copy-feedback--error {
+  border-color: var(--color-coral-strong);
+  background: var(--color-coral-soft);
+  color: var(--color-coral-strong);
 }
 
 .empty-state {
@@ -651,7 +891,7 @@ table {
 
 th,
 td {
-  height: 52px;
+  height: 44px;
   padding-inline: var(--space-3);
   border-bottom: 1px solid var(--color-line);
   text-align: left;
@@ -692,8 +932,9 @@ tbody tr:last-child > * {
 
 .inline-confirmation {
   display: grid;
-  max-width: 760px;
+  min-width: 320px;
   gap: var(--space-3);
+  margin-top: var(--space-3);
   padding: var(--space-4);
   border: 1px solid var(--color-coral);
   border-radius: var(--radius-sm);
@@ -706,6 +947,15 @@ tbody tr:last-child > * {
 
 .inline-confirmation > div {
   justify-content: flex-start;
+}
+
+[data-source-workbench-link] {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  margin-left: var(--space-3);
+  color: var(--color-brand-strong);
+  font-weight: 700;
 }
 
 .error-actions {
@@ -722,6 +972,10 @@ tbody tr:last-child > * {
   .page-heading,
   .section-heading {
     display: grid;
+  }
+
+  .one-time-dialog {
+    padding: var(--space-4);
   }
 }
 </style>

@@ -2,7 +2,16 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
 import type { createAdminApi } from '@/api/adminApi'
 import { ApiFailureError, ApiNetworkError } from '@/api/errors'
+import {
+  adminPageContextKey,
+  type AdminPageContextPort,
+} from '@/features/admin-auth/adminPageContext'
 import SourceVersionDetailPage from '@/pages/admin/SourceVersionDetailPage.vue'
+import type {
+  AdminExerciseItemDto,
+  BuildCoverageDto,
+  SourceVersionDetailDto,
+} from '@shared/api/contentSchemas'
 
 type VersionDetailApi = Pick<
   ReturnType<typeof createAdminApi>,
@@ -81,14 +90,211 @@ const draftExercise = {
   answer: { word: 'apple' },
 }
 
-const mountPage = (api: VersionDetailApi, attachTo?: HTMLElement) =>
+const createPageContext = (): AdminPageContextPort => ({
+  setPageContext: vi.fn(),
+  clearPageContext: vi.fn(),
+})
+
+const mountPage = (
+  api: VersionDetailApi,
+  attachTo?: HTMLElement,
+  pageContext: AdminPageContextPort = createPageContext(),
+) =>
   mount(SourceVersionDetailPage, {
     props: { api, versionId: 'version-1' },
-    global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    global: {
+      provide: { [adminPageContextKey]: pageContext },
+      stubs: { RouterLink: { template: '<a><slot /></a>' } },
+    },
     ...(attachTo ? { attachTo } : {}),
   })
 
 describe('SourceVersionDetailPage', () => {
+  it('reports authoritative source and version breadcrumbs and clears them on unmount', async () => {
+    const pageContext = createPageContext()
+    const wrapper = mountPage(createDraftApi(), undefined, pageContext)
+    await flushPromises()
+
+    expect(pageContext.setPageContext).toHaveBeenCalledWith({
+      breadcrumbs: ['词库工作台', 'Starter words', 'v1'],
+    })
+
+    wrapper.unmount()
+    expect(pageContext.clearPageContext).toHaveBeenCalledOnce()
+  })
+
+  it('orders the unique command bar before pipeline, blockers, matrix, and approval', async () => {
+    const api = createDraftApi()
+    const wrapper = mountPage(api)
+    await flushPromises()
+
+    const command = wrapper.get('[data-command-bar]').element
+    const pipeline = wrapper.get('[data-pipeline]').element
+    const blockers = wrapper.get('[data-blockers]').element
+    const matrix = wrapper.get('[data-coverage-matrix]').element
+    const approval = wrapper.get('[data-approval-list]').element
+
+    expect(wrapper.findAll('[data-command-bar]')).toHaveLength(1)
+    expect(isBefore(command, pipeline)).toBe(true)
+    expect(isBefore(pipeline, blockers)).toBe(true)
+    expect(isBefore(blockers, matrix)).toBe(true)
+    expect(isBefore(matrix, approval)).toBe(true)
+    expect(wrapper.get('[data-publish-blocker]').text()).toContain('当前有 1 项发布阻断')
+  })
+
+  it('groups coverage into one word row with S0-S5 facts and only links real items', async () => {
+    const stages = ['S0', 'S1', 'S2', 'S3', 'S4', 'S5'] as const
+    const statuses = {
+      S0: 'approved',
+      S1: 'draft',
+      S2: 'missing',
+      S3: 'disabled',
+      S4: 'approved',
+      S5: 'approved',
+    } as const
+    const cells = stages.map((stage, index) => ({
+      wordId: 'word-1',
+      word: 'apple',
+      stage,
+      taskType: index === 0 ? 'recognize_meaning' as const : 'recall_word' as const,
+      status: statuses[stage],
+      ...(index === 0 || index === 1 || index === 3
+        ? { itemId: `item-${String(index)}` }
+        : {}),
+    }))
+    const api = createDraftApi({
+      coverage: {
+        ...draftCoverage,
+        cells,
+      },
+    })
+    const wrapper = mountPage(api)
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-matrix-stage]')).toHaveLength(6)
+    expect(wrapper.findAll('[data-matrix-row]')).toHaveLength(1)
+    const row = wrapper.get('[data-matrix-row]')
+    expect(row.text()).toContain('apple')
+    expect(row.text()).toContain('已批准')
+    expect(row.text()).toContain('待审批')
+    expect(row.text()).toContain('缺失')
+    expect(row.text()).toContain('已禁用')
+    expect(row.findAll('a')).toHaveLength(3)
+    expect(row.find('[data-stage="S2"] a').exists()).toBe(false)
+  })
+
+  it('shows an explicit empty state when the gap filter has no matching word', async () => {
+    const api = createDraftApi({
+      detail: readyDetail,
+      coverage: readyCoverage,
+      items: [{ ...draftExercise, status: 'approved' as const }],
+    })
+    const wrapper = mountPage(api)
+    await flushPromises()
+
+    await wrapper.get('[data-gap-filter]').setValue(true)
+
+    expect(wrapper.get('[data-gap-empty]').text()).toContain('当前条件下没有缺口')
+    expect(wrapper.findAll('[data-matrix-row]')).toHaveLength(0)
+  })
+
+  it('shows selected drafts against the authoritative pending total', async () => {
+    const secondDraft = {
+      ...draftExercise,
+      id: 'item-2',
+      wordId: 'word-2',
+      word: 'pear',
+    }
+    const api = createDraftApi({ items: [draftExercise, secondDraft] })
+    const wrapper = mountPage(api)
+    await flushPromises()
+
+    expect(wrapper.get('[data-selection-count]').text()).toContain('已选 0 / 待审批 2')
+    await wrapper.get('input[type="checkbox"][value="item-1"]').setValue(true)
+    expect(wrapper.get('[data-selection-count]').text()).toContain('已选 1 / 待审批 2')
+  })
+
+  it('renders a blocker processing route only when coverage exposes a real item', async () => {
+    const noItemBlocker = {
+      word: 'pear',
+      stage: 'S2' as const,
+      taskType: 'multiple_choice' as const,
+      reason: 'exercise_item_required' as const,
+    }
+    const draftCell = draftCoverage.cells[0]
+    if (!draftCell) throw new Error('Expected the draft coverage fixture cell')
+    const api = createDraftApi({
+      detail: { ...draftDetail, missingItems: [missingItem, noItemBlocker] },
+      coverage: {
+        ...draftCoverage,
+        cells: [
+          draftCell,
+          {
+            wordId: 'word-2',
+            word: 'pear',
+            stage: 'S2' as const,
+            taskType: 'multiple_choice' as const,
+            status: 'missing' as const,
+            reason: 'exercise_item_required' as const,
+          },
+        ],
+      },
+    })
+    const wrapper = mountPage(api)
+    await flushPromises()
+
+    const blockers = wrapper.findAll('[data-blocker-item]')
+    expect(blockers).toHaveLength(2)
+    expect(blockers[0]?.text()).toContain('apple · S1')
+    expect(blockers[0]?.text()).toContain('题型 回忆单词')
+    expect(blockers[0]?.text()).toContain('原因 练习待审批')
+    expect(blockers[0]?.find('a').text()).toContain('打开练习')
+    expect(blockers[1]?.find('a').exists()).toBe(false)
+    expect(blockers[1]?.text()).toContain('暂无可处理项目')
+  })
+
+  it('removes every detail mutation at 479px and restores draft actions at 480px', async () => {
+    const compact = installMatchMedia(true)
+    const compactWrapper = mountPage(createDraftApi())
+    await flushPromises()
+
+    expect(compactWrapper.get('[data-compact-readonly]').text()).toContain('480px')
+    expect(compactWrapper.find('[data-command-bar]').exists()).toBe(false)
+    expect(compactWrapper.find('[data-approval-list]').exists()).toBe(false)
+    compactWrapper.unmount()
+    compact.restore()
+
+    const editable = installMatchMedia(false)
+    const editableWrapper = mountPage(createDraftApi())
+    await flushPromises()
+
+    expect(editableWrapper.find('[data-command-bar]').exists()).toBe(true)
+    expect(editableWrapper.find('[data-approval-list]').exists()).toBe(true)
+    editableWrapper.unmount()
+    editable.restore()
+  })
+
+  it('removes the published next-version mutation at 479px and restores it at 480px', async () => {
+    const published = {
+      ...readyDetail,
+      status: 'published' as const,
+      publishedAt: '2026-07-13T01:00:00.000Z',
+    }
+    const compact = installMatchMedia(true)
+    const compactWrapper = mountPage(createDraftApi({ detail: published }))
+    await flushPromises()
+    expect(compactWrapper.find('[data-next-version]').exists()).toBe(false)
+    compactWrapper.unmount()
+    compact.restore()
+
+    const editable = installMatchMedia(false)
+    const editableWrapper = mountPage(createDraftApi({ detail: published }))
+    await flushPromises()
+    expect(editableWrapper.get('[data-next-version]').text()).toContain('创建下一草稿版本')
+    editableWrapper.unmount()
+    editable.restore()
+  })
+
   it('chunks a selection larger than the shared API limit and refreshes once after all batches', async () => {
     const draftItems = Array.from({ length: 501 }, (_, index) => ({
       ...draftExercise,
@@ -329,6 +535,9 @@ describe('SourceVersionDetailPage', () => {
     expect(wrapper.get('[role="status"]').text()).toContain('已发布，只读')
     expect(wrapper.find('[data-build]').exists()).toBe(false)
     expect(wrapper.find('[data-publish]').exists()).toBe(false)
+    expect(wrapper.find('[data-discard]').exists()).toBe(false)
+    expect(wrapper.find('[data-approve-selected]').exists()).toBe(false)
+    expect(wrapper.find('[data-select-all]').exists()).toBe(false)
     expect(wrapper.get('[data-next-version]').text()).toContain('创建下一草稿版本')
   })
 
@@ -488,3 +697,40 @@ describe('SourceVersionDetailPage', () => {
     expect(wrapper.find('[data-version-workspace]').exists()).toBe(false)
   })
 })
+
+const createDraftApi = (overrides: {
+  detail?: SourceVersionDetailDto
+  coverage?: BuildCoverageDto
+  items?: AdminExerciseItemDto[]
+} = {}): VersionDetailApi => ({
+  getSourceVersion: vi.fn().mockResolvedValue(overrides.detail ?? draftDetail),
+  getCoverage: vi.fn().mockResolvedValue(overrides.coverage ?? draftCoverage),
+  listExerciseItems: vi.fn().mockResolvedValue(overrides.items ?? [draftExercise]),
+  buildSourceVersion: vi.fn(),
+  approveExerciseItems: vi.fn(),
+  publishSourceVersion: vi.fn(),
+  discardSourceVersion: vi.fn(),
+})
+
+const isBefore = (first: Element, second: Element): boolean =>
+  (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+
+const installMatchMedia = (matches: boolean) => {
+  const previous = window.matchMedia
+  window.matchMedia = vi.fn().mockReturnValue({
+    matches,
+    media: '(max-width: 479px)',
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })
+
+  return {
+    restore: () => {
+      window.matchMedia = previous
+    },
+  }
+}

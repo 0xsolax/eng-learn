@@ -1,5 +1,6 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { nextTick } from 'vue'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiFailureError, ApiNetworkError } from '@/api/errors'
 import CoursesPage from '@/pages/admin/CoursesPage.vue'
 
@@ -29,8 +30,154 @@ const courseEntry = {
   credentialVersion: 1,
 }
 
+afterEach(() => {
+  clearClipboard()
+  setViewportWidth(1024)
+})
+
 describe('CoursesPage', () => {
   it('creates a course from a published server version and shows the code only until acknowledged', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    setClipboard(writeText)
+    const api = {
+      listCourses: vi
+        .fn()
+        .mockResolvedValueOnce({ courses: [] })
+        .mockResolvedValueOnce({ courses: [courseEntry] }),
+      listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
+      createCourse: vi.fn().mockResolvedValue({
+        ...courseEntry,
+        learner: { ...courseEntry.learner, accessCode: 'ABCDEFGH23' },
+      }),
+      rotateAccessCode: vi.fn(),
+    }
+    const wrapper = mount(CoursesPage, { props: { api }, attachTo: document.body })
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('还没有课程')
+    expect(wrapper.get('[data-toggle-create]').attributes('aria-expanded')).toBe('true')
+    expect(wrapper.get('select[name="source-version-id"]').text()).toContain('Starter words · v1')
+
+    await wrapper.get('input[name="learner-name"]').setValue('小林')
+    await wrapper.get('form[data-course-form]').trigger('submit')
+    await flushPromises()
+
+    const command = requireRecord((api.createCourse.mock.calls as unknown[][])[0]?.[0])
+    expect(command).toMatchObject({
+      learnerName: '小林',
+      sourceVersionId: 'version-1',
+    })
+    expect(command.operationToken).toMatch(/^[0-9a-f]{64}$/)
+    const dialog = wrapper.get('[data-one-time-code]')
+    expect(dialog.text()).toContain('ABCDEFGH23')
+    expect(dialog.text()).toContain('仅本次显示')
+    expect(dialog.attributes('role')).toBe('dialog')
+    expect(dialog.attributes('aria-modal')).toBe('true')
+    expect(document.activeElement).toBe(dialog.element)
+    expect(wrapper.get('table').text()).toContain('小林')
+
+    const copyButton = wrapper.get('[data-copy-code]')
+    const dismissButton = wrapper.get('[data-dismiss-code]')
+    await dialog.trigger('keydown', { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(dismissButton.element)
+    ;(copyButton.element as HTMLButtonElement).focus()
+    await dialog.trigger('keydown', { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(dismissButton.element)
+    await dialog.trigger('keydown', { key: 'Tab' })
+    expect(document.activeElement).toBe(copyButton.element)
+
+    await copyButton.trigger('click')
+    await flushPromises()
+    expect(writeText).toHaveBeenCalledWith('ABCDEFGH23')
+    expect(wrapper.get('[data-copy-feedback]').attributes('role')).toBe('status')
+    expect(wrapper.get('[data-copy-feedback]').text()).toContain('复制成功')
+
+    await dismissButton.trigger('click')
+    expect(wrapper.text()).not.toContain('ABCDEFGH23')
+    expect(document.activeElement).toBe(wrapper.get('[data-toggle-create]').element)
+    await wrapper.get('[data-toggle-create]').trigger('click')
+    expect(wrapper.text()).not.toContain('ABCDEFGH23')
+
+    wrapper.unmount()
+    clearClipboard()
+  })
+
+  it('keeps the course table primary and only expands creation from the title action', async () => {
+    const api = {
+      listCourses: vi.fn().mockResolvedValue({ courses: [courseEntry] }),
+      listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
+      createCourse: vi.fn(),
+      rotateAccessCode: vi.fn(),
+    }
+    const wrapper = mount(CoursesPage, { props: { api } })
+    await flushPromises()
+
+    expect(wrapper.get('table').text()).toContain('小林')
+    expect(wrapper.find('form[data-course-form]').exists()).toBe(false)
+    expect(wrapper.get('[data-toggle-create]').attributes('aria-expanded')).toBe('false')
+
+    await wrapper.get('[data-toggle-create]').trigger('click')
+    const table = wrapper.get('table')
+    const form = wrapper.get('form[data-course-form]')
+    expect(
+      table.element.compareDocumentPosition(form.element) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy()
+  })
+
+  it('requires explicit confirmation before rotating a learner code', async () => {
+    const api = {
+      listCourses: vi.fn().mockResolvedValue({ courses: [courseEntry] }),
+      listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
+      createCourse: vi.fn(),
+      rotateAccessCode: vi.fn().mockResolvedValue({
+        accessCode: 'JKLMNPQR45',
+        credentialVersion: 2,
+        revokedSessionCount: 2,
+      }),
+    }
+    const wrapper = mount(CoursesPage, { props: { api }, attachTo: document.body })
+    await flushPromises()
+
+    const trigger = wrapper.get('[data-rotate-code]')
+    ;(trigger.element as HTMLButtonElement).focus()
+    await trigger.trigger('click')
+    expect(api.rotateAccessCode).not.toHaveBeenCalled()
+    const confirmation = wrapper.get('[data-rotate-confirmation]')
+    expect(confirmation.text()).toContain('现有学习会话会全部失效')
+    expect(trigger.element.closest('td')?.contains(confirmation.element)).toBe(true)
+    expect(document.activeElement).toBe(confirmation.element)
+
+    const cancel = confirmation.findAll('button').find((button) => button.text() === '取消')
+    expect(cancel).toBeDefined()
+    await cancel?.trigger('click')
+    await nextTick()
+    expect(document.activeElement).toBe(trigger.element)
+
+    await trigger.trigger('click')
+
+    await wrapper.get('[data-confirm-rotate]').trigger('click')
+    await flushPromises()
+
+    const rotateCall = (api.rotateAccessCode.mock.calls as unknown[][])[0]
+    expect(rotateCall?.[0]).toBe('learner-1')
+    const rotateCommand = requireRecord(rotateCall?.[1])
+    expect(rotateCommand).toMatchObject({
+      expectedCredentialVersion: 1,
+    })
+    expect(rotateCommand.operationToken).toMatch(/^[0-9a-f]{64}$/)
+    expect(wrapper.get('[data-one-time-code]').text()).toContain('JKLMNPQR45')
+    expect(wrapper.get('[data-one-time-code]').text()).toContain('2 个旧会话已失效')
+    expect(document.activeElement).toBe(wrapper.get('[data-one-time-code]').element)
+
+    await wrapper.get('[data-dismiss-code]').trigger('click')
+    await nextTick()
+    expect(document.activeElement).toBe(trigger.element)
+    wrapper.unmount()
+  })
+
+  it('keeps copy failure visible inside the one-time-code dialog', async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error('clipboard denied'))
+    setClipboard(writeText)
     const api = {
       listCourses: vi
         .fn()
@@ -45,58 +192,16 @@ describe('CoursesPage', () => {
     }
     const wrapper = mount(CoursesPage, { props: { api } })
     await flushPromises()
-
-    expect(wrapper.text()).toContain('还没有课程')
-    expect(wrapper.get('select[name="source-version-id"]').text()).toContain('Starter words · v1')
-
     await wrapper.get('input[name="learner-name"]').setValue('小林')
     await wrapper.get('form[data-course-form]').trigger('submit')
     await flushPromises()
 
-    const command = requireRecord((api.createCourse.mock.calls as unknown[][])[0]?.[0])
-    expect(command).toMatchObject({
-      learnerName: '小林',
-      sourceVersionId: 'version-1',
-    })
-    expect(command.operationToken).toMatch(/^[0-9a-f]{64}$/)
+    await wrapper.get('[data-copy-code]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-copy-feedback]').attributes('role')).toBe('alert')
+    expect(wrapper.get('[data-copy-feedback]').text()).toContain('复制失败')
     expect(wrapper.get('[data-one-time-code]').text()).toContain('ABCDEFGH23')
-    expect(wrapper.get('[data-one-time-code]').text()).toContain('仅本次显示')
-    expect(wrapper.get('table').text()).toContain('小林')
-
-    await wrapper.get('[data-dismiss-code]').trigger('click')
-    expect(wrapper.text()).not.toContain('ABCDEFGH23')
-  })
-
-  it('requires explicit confirmation before rotating a learner code', async () => {
-    const api = {
-      listCourses: vi.fn().mockResolvedValue({ courses: [courseEntry] }),
-      listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
-      createCourse: vi.fn(),
-      rotateAccessCode: vi.fn().mockResolvedValue({
-        accessCode: 'JKLMNPQR45',
-        credentialVersion: 2,
-        revokedSessionCount: 2,
-      }),
-    }
-    const wrapper = mount(CoursesPage, { props: { api } })
-    await flushPromises()
-
-    await wrapper.get('[data-rotate-code]').trigger('click')
-    expect(api.rotateAccessCode).not.toHaveBeenCalled()
-    expect(wrapper.get('[data-rotate-confirmation]').text()).toContain('现有学习会话会全部失效')
-
-    await wrapper.get('[data-confirm-rotate]').trigger('click')
-    await flushPromises()
-
-    const rotateCall = (api.rotateAccessCode.mock.calls as unknown[][])[0]
-    expect(rotateCall?.[0]).toBe('learner-1')
-    const rotateCommand = requireRecord(rotateCall?.[1])
-    expect(rotateCommand).toMatchObject({
-      expectedCredentialVersion: 1,
-    })
-    expect(rotateCommand.operationToken).toMatch(/^[0-9a-f]{64}$/)
-    expect(wrapper.get('[data-one-time-code]').text()).toContain('JKLMNPQR45')
-    expect(wrapper.get('[data-one-time-code]').text()).toContain('2 个旧会话已失效')
+    clearClipboard()
   })
 
   it('keeps entered form data when course creation conflicts', async () => {
@@ -132,7 +237,45 @@ describe('CoursesPage', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-no-published]').text()).toContain('先发布一个词库版本')
+    expect(wrapper.get('[data-source-workbench-link]').text()).toContain('前往词库工作台')
     expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('removes create, copy, and rotate entrances at 479px and restores them at 480px', async () => {
+    setViewportWidth(479)
+    const api = {
+      listCourses: vi.fn().mockResolvedValue({ courses: [courseEntry] }),
+      listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
+      createCourse: vi.fn(),
+      rotateAccessCode: vi.fn().mockResolvedValue({
+        accessCode: 'JKLMNPQR45',
+        credentialVersion: 2,
+        revokedSessionCount: 0,
+      }),
+    }
+    const wrapper = mount(CoursesPage, { props: { api } })
+    await flushPromises()
+
+    expect(wrapper.get('[data-mobile-readonly]').text()).toContain('至少 480px')
+    expect(wrapper.find('[data-toggle-create]').exists()).toBe(false)
+    expect(wrapper.find('form[data-course-form]').exists()).toBe(false)
+    expect(wrapper.find('[data-rotate-code]').exists()).toBe(false)
+
+    setViewportWidth(480)
+    await nextTick()
+    expect(wrapper.find('[data-toggle-create]').exists()).toBe(true)
+    expect(wrapper.find('[data-rotate-code]').exists()).toBe(true)
+
+    await wrapper.get('[data-rotate-code]').trigger('click')
+    await wrapper.get('[data-confirm-rotate]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-copy-code]').exists()).toBe(true)
+
+    setViewportWidth(479)
+    await nextTick()
+    expect(wrapper.find('[data-copy-code]').exists()).toBe(false)
+    wrapper.unmount()
+    setViewportWidth(1024)
   })
 
   it('does not render partial course data when the initial read fails', async () => {
@@ -185,6 +328,12 @@ describe('CoursesPage', () => {
     )
     expect(firstCommand.operationToken).toMatch(/^[0-9a-f]{64}$/)
 
+    setViewportWidth(479)
+    await nextTick()
+    expect(wrapper.find('[data-retry-unknown]').exists()).toBe(false)
+    setViewportWidth(480)
+    await nextTick()
+
     await wrapper.get('[data-retry-unknown]').trigger('click')
     await flushPromises()
 
@@ -205,6 +354,7 @@ describe('CoursesPage', () => {
     await flushPromises()
 
     await wrapper.get('[data-rotate-code]').trigger('click')
+    await wrapper.get('[data-toggle-create]').trigger('click')
     await wrapper.get('input[name="learner-name"]').setValue('小林')
     await wrapper.get('form[data-course-form]').trigger('submit')
     await flushPromises()
@@ -265,4 +415,23 @@ const requireRecord = (value: unknown): Record<string, unknown> => {
   }
 
   return value as Record<string, unknown>
+}
+
+const setClipboard = (writeText: (value: string) => Promise<void>): void => {
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText },
+  })
+}
+
+const clearClipboard = (): void => {
+  Reflect.deleteProperty(navigator, 'clipboard')
+}
+
+const setViewportWidth = (width: number): void => {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    value: width,
+  })
+  window.dispatchEvent(new Event('resize'))
 }

@@ -1,43 +1,169 @@
 <script setup lang="ts">
-import { onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, provide, readonly, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import type { AdminSessionDto } from '@shared/api/adminAuthSchemas'
 import { createAdminApi } from '@/api/adminApi'
-import { subscribeAdminAuthorizationFailure } from '@/api/adminAuthorizationBoundary'
+import {
+  isAdminSessionFailureCode,
+  subscribeAdminAuthorizationFailure,
+  type AdminSessionFailureCode,
+} from '@/api/adminAuthorizationBoundary'
 import { ApiFailureError, InvalidApiResponseError } from '@/api/errors'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
+import { resolveSafeAdminReturnTo } from '@/features/admin-auth/adminRoutePolicy'
+import {
+  adminSessionContextKey,
+  type AdminSessionContext,
+} from '@/features/admin-auth/adminSessionContext'
 
-type AdminSessionApi = Pick<ReturnType<typeof createAdminApi>, 'getAdminSession'>
-type GateState = 'checking' | 'ready' | 'unauthorized' | 'error'
+type AdminSessionApi = Pick<
+  ReturnType<typeof createAdminApi>,
+  'getAdminSession' | 'logoutAdmin'
+>
+type GateState = 'checking' | 'ready' | 'error'
 
 const props = defineProps<{
   api?: AdminSessionApi
+  navigateToAccessLogout?: () => void
 }>()
 
 const api = props.api ?? createAdminApi()
+const router = useRouter()
+const route = useRoute()
 const state = ref<GateState>('checking')
-const unsubscribeAuthorizationFailure = subscribeAdminAuthorizationFailure(() => {
-  state.value = 'unauthorized'
-})
+const session = ref<AdminSessionDto | null>(null)
+let requestVersion = 0
+const SERVICE_TOKEN_BROWSER_REJECTED = new Error(
+  'Service-token identities cannot mount the browser admin shell',
+)
 
 const isRejectedAdminIdentity = (error: unknown): boolean =>
-  (error instanceof ApiFailureError &&
-    ['unauthorized', 'admin_disabled', 'admin_identity_invalid'].includes(error.code)) ||
+  (error instanceof ApiFailureError && isAdminSessionFailureCode(error.code)) ||
   (error instanceof InvalidApiResponseError &&
     (error.status === 401 || error.status === 403))
 
-const verifyIdentity = async (): Promise<void> => {
+const sessionFailureReason = (error: ApiFailureError): 'expired' | 'invalid' | undefined =>
+  error.code === 'admin_session_expired'
+    ? 'expired'
+    : error.code === 'admin_session_revoked' || error.code === 'admin_identity_invalid'
+      ? 'invalid'
+      : undefined
+
+const clearPrivateState = (): void => {
+  requestVersion += 1
+  session.value = null
+  state.value = 'checking'
+}
+
+const redirectToLogin = async (reason?: 'expired' | 'invalid'): Promise<void> => {
+  const returnTo = resolveSafeAdminReturnTo(router, route.fullPath)
+  await router.replace({
+    name: 'admin-login',
+    query: {
+      returnTo,
+      ...(reason ? { reason } : {}),
+    },
+  })
+}
+
+const refreshSession = async (): Promise<AdminSessionDto> => {
+  const version = ++requestVersion
   state.value = 'checking'
 
   try {
-    await api.getAdminSession()
+    const currentSession = await api.getAdminSession()
+    if (version !== requestVersion) {
+      return currentSession
+    }
+    if (currentSession.source === 'service_token') {
+      session.value = null
+      await redirectToLogin('invalid')
+      throw SERVICE_TOKEN_BROWSER_REJECTED
+    }
+    session.value = currentSession
     state.value = 'ready'
+    return currentSession
   } catch (error) {
-    state.value = isRejectedAdminIdentity(error) ? 'unauthorized' : 'error'
+    if (version !== requestVersion) {
+      throw error
+    }
+    session.value = null
+    if (error === SERVICE_TOKEN_BROWSER_REJECTED) {
+      state.value = 'checking'
+    } else if (isRejectedAdminIdentity(error)) {
+      await redirectToLogin(
+        error instanceof ApiFailureError ? sessionFailureReason(error) : undefined,
+      )
+    } else {
+      state.value = 'error'
+    }
+    throw error
   }
 }
 
-onUnmounted(unsubscribeAuthorizationFailure)
-void verifyIdentity()
+const navigateToAccessLogout = (): void => {
+  if (props.navigateToAccessLogout) {
+    props.navigateToAccessLogout()
+    return
+  }
+  window.location.assign('/cdn-cgi/access/logout')
+}
+
+const logout = async (): Promise<void> => {
+  if (session.value?.source === 'cloudflare_access') {
+    navigateToAccessLogout()
+    return
+  }
+  if (session.value?.source !== 'application_session') {
+    throw new Error('Service-token sessions cannot enter the browser admin shell')
+  }
+
+  await api.logoutAdmin()
+  clearPrivateState()
+  try {
+    await router.replace({ name: 'admin-login', query: { reason: 'logged_out' } })
+  } catch (error) {
+    state.value = 'error'
+    throw error
+  }
+}
+
+const invalidateSession = (code: AdminSessionFailureCode): void => {
+  clearPrivateState()
+  void redirectToLogin(
+    code === 'admin_session_expired' ? 'expired' : 'invalid',
+  ).catch(() => {
+    state.value = 'error'
+  })
+}
+
+const context: AdminSessionContext = {
+  session: readonly(session),
+  refreshSession,
+  logout,
+  clearPrivateState,
+}
+provide(adminSessionContextKey, context)
+
+const unsubscribeAuthorizationFailure = subscribeAdminAuthorizationFailure(invalidateSession)
+
+const handlePageShow = (event: PageTransitionEvent): void => {
+  if (event.persisted) {
+    void refreshSession().catch(() => undefined)
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('pageshow', handlePageShow)
+  void refreshSession().catch(() => undefined)
+})
+
+onUnmounted(() => {
+  requestVersion += 1
+  unsubscribeAuthorizationFailure()
+  window.removeEventListener('pageshow', handlePageShow)
+})
 </script>
 
 <template>
@@ -56,14 +182,6 @@ void verifyIdentity()
       业务工作台会在服务端确认身份后显示。
     </ui-status-message>
 
-    <ui-status-message
-      v-else-if="state === 'unauthorized'"
-      tone="error"
-      title="管理员身份未通过"
-    >
-      请通过受保护的管理端入口重新进入。
-    </ui-status-message>
-
     <template v-else>
       <ui-status-message
         tone="error"
@@ -73,7 +191,7 @@ void verifyIdentity()
       </ui-status-message>
       <ui-button
         variant="secondary"
-        @click="verifyIdentity"
+        @click="refreshSession"
       >
         重新验证
       </ui-button>

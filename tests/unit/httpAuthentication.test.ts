@@ -7,6 +7,11 @@ import {
 import type { LearnerSessionService } from '../../server/services/LearnerSessionService'
 import { parseRawSessionToken } from '../../server/security/credentialCrypto'
 import { createLearnerSessionCookie } from '../../server/security/learnerHttpSecurity'
+import {
+  ADMIN_SESSION_COOKIE_NAME,
+  createAdminSessionCookie,
+} from '../../server/security/adminHttpSecurity'
+import type { AdminSessionService } from '../../server/services/AdminSessionService'
 
 const ORIGIN = 'https://eng-learn.test'
 const TOKEN = parseRawSessionToken('a'.repeat(64))
@@ -68,6 +73,69 @@ describe('HTTP authentication boundary', () => {
     ).resolves.toMatchObject({ source: 'service_token' })
   })
 
+  it('resolves an application cookie before service token and enforces browser write Origin', async () => {
+    const token = 'b'.repeat(64)
+    const applicationSessionService = adminSessionService({
+      status: 'active',
+      session: {
+        id: 'credential-1',
+        source: 'application_session',
+        displayName: 'Solazhu',
+      },
+    })
+    const validRead = new Request(`${ORIGIN}/api/admin/session`, {
+      headers: {
+        cookie: createAdminSessionCookie(token),
+        'x-admin-token': 'valid-service-token',
+      },
+    })
+    const invalidWriteOrigin = new Request(`${ORIGIN}/api/admin/courses`, {
+      method: 'POST',
+      headers: {
+        cookie: createAdminSessionCookie(token),
+        origin: 'https://attacker.test',
+      },
+    })
+
+    await expect(
+      requireAdminIdentity(validRead, {
+        browserMode: 'application_session',
+        applicationSessionService,
+        serviceAuthenticator: authenticator({ source: 'service_token', subject: 'smoke' }),
+        allowedOrigin: ORIGIN,
+      }),
+    ).resolves.toEqual({
+      source: 'application_session',
+      subject: 'credential-1',
+      displayName: 'Solazhu',
+    })
+    await expect(
+      requireAdminIdentity(invalidWriteOrigin, {
+        browserMode: 'application_session',
+        applicationSessionService,
+        allowedOrigin: ORIGIN,
+      }),
+    ).rejects.toMatchObject({ code: 'origin_forbidden' })
+  })
+
+  it('never downgrades an invalid application cookie to a valid service token', async () => {
+    const request = new Request(`${ORIGIN}/api/admin/session`, {
+      headers: {
+        cookie: `${ADMIN_SESSION_COOKIE_NAME}=invalid`,
+        'x-admin-token': 'valid-service-token',
+      },
+    })
+
+    await expect(
+      requireAdminIdentity(request, {
+        browserMode: 'application_session',
+        applicationSessionService: adminSessionService({ status: 'invalid' }),
+        serviceAuthenticator: authenticator({ source: 'service_token', subject: 'smoke' }),
+        allowedOrigin: ORIGIN,
+      }),
+    ).rejects.toMatchObject({ code: 'admin_session_required' })
+  })
+
   it('maps learner cookie resolution states and returns only an active principal', async () => {
     const request = new Request(`${ORIGIN}/api/app/course`, {
       headers: { cookie: createLearnerSessionCookie(TOKEN) },
@@ -104,4 +172,12 @@ const sessionService = (
   revoke: () => Promise.resolve(false),
   revokeAll: () => Promise.resolve(0),
   rotateAccessCode: () => Promise.resolve(undefined),
+})
+
+const adminSessionService = (
+  result: Awaited<ReturnType<AdminSessionService['resolve']>>,
+): AdminSessionService => ({
+  login: () => Promise.reject(new Error('Not used in this test')),
+  resolve: () => Promise.resolve(result),
+  logout: () => Promise.resolve(false),
 })

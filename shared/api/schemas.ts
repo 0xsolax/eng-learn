@@ -48,6 +48,11 @@ const simpleApiErrorSchema = z
       'unauthorized',
       'admin_disabled',
       'admin_identity_invalid',
+      'admin_not_configured',
+      'admin_session_required',
+      'admin_session_expired',
+      'admin_session_revoked',
+      'invalid_admin_credentials',
       'learner_session_required',
       'learner_session_expired',
       'learner_session_revoked',
@@ -79,6 +84,15 @@ const simpleApiErrorSchema = z
 
 export const apiErrorSchema = z.union([
   simpleApiErrorSchema,
+  z
+    .object({
+      code: z.literal('admin_login_rate_limited'),
+      message: errorMessageSchema,
+      details: z
+        .object({ retryAfterSeconds: z.number().int().positive() })
+        .strict(),
+    })
+    .strict(),
   z
     .object({
       code: z.literal('validation_error'),

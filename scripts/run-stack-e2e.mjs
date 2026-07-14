@@ -1,12 +1,14 @@
 import { spawn } from 'node:child_process'
-import { cp, mkdir, mkdtemp, rm, symlink } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { get as httpsGet } from 'node:https'
 import { homedir, tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import process from 'node:process'
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
+import { createSerializedAdminConfig } from './admin-init.mjs'
+import { createSecretFreeEnvironment } from './isolated-secret-environment.mjs'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, '..')
@@ -15,6 +17,14 @@ const projectRoot = join(temporaryRoot, 'project')
 const stateRoot = join(temporaryRoot, 'state')
 const outputRoot = join(temporaryRoot, 'test-results')
 const dbSentinel = randomUUID()
+const adminUsername = 'e2e-admin'
+const adminPassword = `E2E-${randomBytes(24).toString('base64url')}`
+const adminAuthConfig = await createSerializedAdminConfig({
+  username: adminUsername,
+  displayName: 'E2E 管理员',
+  password: adminPassword,
+  confirmation: adminPassword,
+})
 let worker
 
 const playwrightBrowsersPath =
@@ -44,21 +54,7 @@ const copiedEntries = [
   'wrangler.e2e.jsonc',
 ]
 
-const environment = { ...process.env }
-for (const name of [
-  'ADMIN_API_TOKEN',
-  'CF_API_KEY',
-  'CF_API_TOKEN',
-  'CF_ACCESS_CLIENT_SECRET',
-  'CLOUDFLARE_ACCOUNT_ID',
-  'CLOUDFLARE_API_KEY',
-  'CLOUDFLARE_API_TOKEN',
-  'CLOUDFLARE_ACCESS_CLIENT_SECRET',
-  'CLOUDFLARE_EMAIL',
-  'WRANGLER_API_TOKEN',
-]) {
-  delete environment[name]
-}
+const environment = createSecretFreeEnvironment(process.env)
 environment.CI = '1'
 environment.CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV = 'false'
 environment.PLAYWRIGHT_BROWSERS_PATH = playwrightBrowsersPath
@@ -180,6 +176,12 @@ try {
     })
   }
   await symlink(join(repositoryRoot, 'node_modules'), join(projectRoot, 'node_modules'), 'dir')
+  const devVarsPath = join(projectRoot, '.dev.vars')
+  await writeFile(devVarsPath, `ADMIN_AUTH_CONFIG=${adminAuthConfig}\n`, {
+    encoding: 'utf8',
+    mode: 0o600,
+  })
+  await chmod(devVarsPath, 0o600)
 
   const vite = join(repositoryRoot, 'node_modules', '.bin', 'vite')
   const wrangler = join(repositoryRoot, 'node_modules', '.bin', 'wrangler')
@@ -251,6 +253,8 @@ try {
       STACK_BASE_URL: baseURL,
       STACK_DB_SENTINEL: dbSentinel,
       STACK_OUTPUT_DIR: outputRoot,
+      STACK_ADMIN_USERNAME: adminUsername,
+      STACK_ADMIN_PASSWORD: adminPassword,
     },
   })
   await run(process.execPath, [

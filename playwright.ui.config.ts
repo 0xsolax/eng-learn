@@ -28,8 +28,10 @@ const reflowProjects: Project[] = [
 
 const adminProjects: Project[] = [
   { name: 'admin-375', use: { viewport: { width: 375, height: 812 } } },
+  { name: 'admin-480', use: { viewport: { width: 480, height: 812 } } },
   { name: 'admin-768', use: { viewport: { width: 768, height: 1024 } } },
   { name: 'admin-1024', use: { viewport: { width: 1024, height: 768 } } },
+  { name: 'admin-1200', use: { viewport: { width: 1200, height: 800 } } },
   { name: 'admin-1280', use: { viewport: { width: 1280, height: 800 } } },
   { name: 'admin-1440', use: { viewport: { width: 1440, height: 900 } } },
 ].map((project) => ({ ...project, grep: /@admin/, grepInvert: /@reflow-200-/ }))
@@ -44,6 +46,14 @@ const rendererProjects: Project[] = [
   { name: 'renderers-375', use: { viewport: { width: 375, height: 812 } } },
   { name: 'renderers-1280', use: { viewport: { width: 1280, height: 800 } } },
 ].map((project) => ({ ...project, grep: /@renderers/ }))
+
+const visualQaProjects: Project[] = [
+  {
+    name: 'admin-visual-qa',
+    grep: /@visual-qa/,
+    use: { viewport: { width: 1280, height: 900 } },
+  },
+]
 
 export default defineConfig({
   testDir: './tests/e2e/ui',
@@ -67,6 +77,7 @@ export default defineConfig({
     ...controlProjects,
     ...rendererProjects,
     ...reflowProjects,
+    ...visualQaProjects,
   ],
   webServer: {
     command:

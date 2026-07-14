@@ -1,4 +1,10 @@
-import { expect, test, type APIResponse } from '@playwright/test'
+import {
+  expect,
+  test,
+  type APIRequestContext,
+  type APIResponse,
+  type Page,
+} from '@playwright/test'
 import { z } from 'zod'
 import {
   adminExerciseItemListSchema,
@@ -20,10 +26,15 @@ import {
 import { apiErrorSchema } from '../../../shared/api/schemas'
 import { taskAnswerResultSchema } from '../../../shared/api/taskSchemas'
 import { generateAdminOperationToken } from '../../../shared/security/adminOperationToken'
+import { ADMIN_SESSION_COOKIE_NAME } from '../../../server/security/adminHttpSecurity'
 
 const expectedSentinel = process.env.STACK_DB_SENTINEL
+const adminUsername = process.env.STACK_ADMIN_USERNAME
+const adminPassword = process.env.STACK_ADMIN_PASSWORD
 
-if (!expectedSentinel) throw new Error('STACK_DB_SENTINEL is required')
+if (!expectedSentinel || !adminUsername || !adminPassword) {
+  throw new Error('STACK_DB_SENTINEL and administrator credentials are required')
+}
 
 test('uses only the isolated Worker and D1 identity', async ({ request }) => {
   const response = await request.get('/api/e2e/identity')
@@ -40,11 +51,39 @@ test('uses only the isolated Worker and D1 identity', async ({ request }) => {
   })
 })
 
+test('establishes and revokes a real D1 administrator session without Access injection', async ({
+  request,
+  baseURL,
+}) => {
+  if (!baseURL) throw new Error('Expected stack base URL')
+  await authenticateAdminRequest(request, baseURL)
+  const state = await request.storageState()
+  const sessionCookie = state.cookies.find(
+    (cookie) => cookie.name === ADMIN_SESSION_COOKIE_NAME,
+  )
+  if (!sessionCookie) throw new Error('Expected an administrator session cookie')
+
+  const active = await request.get('/api/admin/session')
+  expect(active.status()).toBe(200)
+  const logout = await request.post('/api/admin/auth/logout', {
+    headers: { origin: new URL(baseURL).origin },
+  })
+  expect(logout.status()).toBe(200)
+  const replay = await request.get('/api/admin/session', {
+    headers: {
+      cookie: `${ADMIN_SESSION_COOKIE_NAME}=${sessionCookie.value}`,
+    },
+  })
+  expect(replay.status()).toBe(401)
+  expect(await failureCode(replay)).toBe('admin_session_revoked')
+})
+
 test('enforces response-loss replay, token boundaries, and one-winner rotation in D1', async ({
   request,
   baseURL,
 }) => {
   if (!baseURL) throw new Error('Expected stack base URL')
+  await authenticateAdminRequest(request, baseURL)
   const originHeaders = { origin: new URL(baseURL).origin }
   const sourceName = `Lost response ${generateAdminOperationToken().slice(0, 8)}`
   const importCommand = {
@@ -209,6 +248,7 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   baseURL,
 }) => {
   if (!baseURL) throw new Error('Expected stack base URL')
+  await authenticateAdminPage(page)
   const sourceName = 'Browser stack source'
   const csv = [
     'word,meaning,exampleSentence,partOfSpeech',
@@ -221,6 +261,8 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
 
   await page.goto('/admin/source-versions')
   await expect(page.getByRole('heading', { level: 1, name: '词库版本' })).toBeVisible()
+  await page.getByRole('button', { name: '导入词表' }).click()
+  await expect(page.locator('form[data-import-form]')).toBeVisible()
   await page.getByLabel('词库名称').fill(sourceName)
   await page.locator('input[name="source-file"]').setInputFiles({
     name: 'browser-stack.csv',
@@ -261,6 +303,8 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   await expect(page.locator('[data-build]')).toHaveCount(0)
 
   await page.goto('/admin/courses')
+  await page.getByRole('button', { name: '创建课程' }).click()
+  await expect(page.locator('form[data-course-form]')).toBeVisible()
   await page.getByLabel('学习者姓名').fill('Browser learner')
   await expect(page.locator('select[name="source-version-id"]')).toHaveValue(/.+/u)
   await page.getByRole('button', { name: '创建课程并生成学习码' }).click()
@@ -268,6 +312,10 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   await expect(firstCode).toHaveText(/^[A-Z2-9]{10}$/u)
   const accessCode = (await firstCode.textContent())?.trim()
   if (!accessCode) throw new Error('Browser-created learning code is required')
+  await page.getByRole('button', { name: '我已安全记录' }).click()
+  await expect(page.locator('[data-one-time-code]')).toHaveCount(0)
+  await page.getByRole('button', { name: '创建课程' }).click()
+  await expect(page.locator('form[data-course-form]')).toBeVisible()
 
   const createCommands: unknown[] = []
   let createAttempt = 0
@@ -380,6 +428,7 @@ test('runs admin lifecycle, learner isolation, capped v2 reflux, recovery, and c
   baseURL,
 }) => {
   if (!baseURL) throw new Error('Expected stack base URL')
+  await authenticateAdminRequest(request, baseURL)
   const originHeaders = { origin: new URL(baseURL).origin }
   const imported = await success(
     await request.post('/api/admin/source-versions/import', {
@@ -600,4 +649,24 @@ const failureCode = async (response: APIResponse): Promise<string> => {
     .parse(await response.json())
 
   return envelope.error.code
+}
+
+const authenticateAdminRequest = async (
+  request: APIRequestContext,
+  baseURL: string,
+): Promise<void> => {
+  const response = await request.post('/api/admin/auth/login', {
+    headers: { origin: new URL(baseURL).origin },
+    data: { username: adminUsername, password: adminPassword },
+  })
+  expect(response.status()).toBe(200)
+}
+
+const authenticateAdminPage = async (page: Page): Promise<void> => {
+  await page.goto('/admin/login')
+  await expect(page.getByRole('heading', { level: 1, name: '管理员登录' })).toBeVisible()
+  await page.getByLabel('账号').fill(adminUsername)
+  await page.getByLabel('密码').fill(adminPassword)
+  await page.getByRole('button', { name: '登录管理台' }).click()
+  await expect(page).toHaveURL(/\/admin\/source-versions$/u)
 }

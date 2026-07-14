@@ -77,14 +77,6 @@ export const completedLessonSchema = z
   })
   .strict()
 
-export const adminSessionSchema = z
-  .object({
-    id: nonEmptyText,
-    source: z.enum(['cloudflare_access', 'service_token']),
-    email: z.email().optional(),
-  })
-  .strict()
-
 export const rotatedAccessCodeSchema = z
   .object({
     accessCode: z.string().regex(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{10}$/),

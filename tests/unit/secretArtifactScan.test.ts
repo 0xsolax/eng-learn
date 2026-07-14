@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
 import { afterEach, describe, expect, it } from 'vitest'
 
 const scannerPath = fileURLToPath(
@@ -186,5 +187,32 @@ describe('secret artifact scanner', () => {
     expect(result.status).toBe(1)
     expect(output).toContain('sensitive-assignment')
     expect(output).not.toContain(operationToken)
+  })
+
+  it('rejects randomized administrator configuration and session canaries without echoing them', async () => {
+    const root = await createArtifactRoot()
+    const canaries = {
+      adminAuthConfig: `v1.${randomBytes(96).toString('base64url')}`,
+      adminSession: randomBytes(32).toString('hex'),
+      verifier: randomBytes(32).toString('base64url'),
+      rateLimitKey: randomBytes(32).toString('base64url'),
+    }
+    const files = {
+      'admin-config.log': `administrator configuration: ${canaries.adminAuthConfig}`,
+      'admin-cookie.log': `cookie: __Host-eng_learn_admin_session=${canaries.adminSession}`,
+      'admin-verifier.json': JSON.stringify({ verifier: canaries.verifier }),
+      'admin-rate-limit.json': JSON.stringify({ rateLimitKey: canaries.rateLimitKey }),
+    }
+
+    await Promise.all(
+      Object.entries(files).map(([name, content]) => writeFile(join(root, name), content)),
+    )
+
+    const result = runScanner(root)
+    const output = `${result.stdout}${result.stderr}`
+
+    expect(result.status).toBe(1)
+    for (const name of Object.keys(files)) expect(output).toContain(name)
+    for (const canary of Object.values(canaries)) expect(output).not.toContain(canary)
   })
 })

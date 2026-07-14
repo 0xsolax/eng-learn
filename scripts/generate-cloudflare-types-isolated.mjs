@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import process from 'node:process'
+import { createSecretFreeEnvironment } from './isolated-secret-environment.mjs'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const repositoryRoot = resolve(scriptDirectory, '..')
@@ -52,21 +53,7 @@ try {
   }
   await symlink(join(repositoryRoot, 'node_modules'), join(projectRoot, 'node_modules'), 'dir')
 
-  const environment = { ...process.env }
-  for (const name of [
-    'ADMIN_API_TOKEN',
-    'CF_API_KEY',
-    'CF_API_TOKEN',
-    'CF_ACCESS_CLIENT_SECRET',
-    'CLOUDFLARE_ACCOUNT_ID',
-    'CLOUDFLARE_API_KEY',
-    'CLOUDFLARE_API_TOKEN',
-    'CLOUDFLARE_ACCESS_CLIENT_SECRET',
-    'CLOUDFLARE_EMAIL',
-    'WRANGLER_API_TOKEN',
-  ]) {
-    delete environment[name]
-  }
+  const environment = createSecretFreeEnvironment(process.env)
   environment.CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV = 'false'
   environment.WRANGLER_SEND_METRICS = 'false'
   environment.HOME = join(temporaryRoot, 'home')

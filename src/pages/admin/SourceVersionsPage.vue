@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { SourceVersionSummaryDto } from '@shared/api/contentSchemas'
 import { generateAdminOperationToken } from '@shared/security/adminOperationToken'
+import { Upload } from '@lucide/vue'
 import { createAdminApi } from '@/api/adminApi'
 import {
   ApiFailureError,
@@ -47,6 +48,12 @@ const importError = ref('')
 const importSuccess = ref('')
 const pendingNewSource = ref<NewSourceCommand | null>(null)
 const unknownResultMode = ref<ImportMode | null>(null)
+const importExpanded = ref(
+  props.initialMode === 'next_version' || props.initialSourceId.length > 0,
+)
+const compactMediaQuery = window.matchMedia('(max-width: 479px)')
+const isCompactReadOnly = ref(compactMediaQuery.matches)
+let importVisibilityInitialized = false
 let fileSelectionSequence = 0
 
 const sources = computed(() => {
@@ -66,6 +73,7 @@ const canImport = computed(
   () =>
     preview.value?.ok === true &&
     !importing.value &&
+    !isCompactReadOnly.value &&
     unknownResultMode.value === null &&
     (mode.value === 'new_source' ? sourceName.value.trim().length > 0 : sourceId.value.length > 0),
 )
@@ -76,6 +84,12 @@ const loadVersions = async (): Promise<void> => {
   try {
     versions.value = await api.listSourceVersions()
     listState.value = 'ready'
+
+    if (!importVisibilityInitialized) {
+      importExpanded.value =
+        importExpanded.value || versions.value.length === 0
+      importVisibilityInitialized = true
+    }
 
     if (mode.value === 'next_version' && !sourceId.value) {
       sourceId.value = sources.value[0]?.id ?? ''
@@ -186,6 +200,27 @@ const setMode = (nextMode: ImportMode): void => {
   }
 }
 
+const toggleImport = (): void => {
+  if (
+    isCompactReadOnly.value ||
+    importing.value ||
+    unknownResultMode.value !== null
+  ) {
+    return
+  }
+  importExpanded.value = !importExpanded.value
+}
+
+const syncCompactReadOnly = (event: MediaQueryListEvent): void => {
+  isCompactReadOnly.value = event.matches
+}
+
+const formatAdminTime = (value: string): string =>
+  value.replace(
+    /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}).*$/,
+    '$1 $2',
+  )
+
 const getImportError = (error: unknown): string => {
   if (error instanceof ApiFailureError && error.code === 'source_draft_exists') {
     return '该词库已有草稿版本，请先继续处理或丢弃现有草稿。'
@@ -207,7 +242,14 @@ const isUnknownResult = (error: unknown): boolean =>
 const statusLabel = (status: SourceVersionSummaryDto['status']): string =>
   ({ draft: '草稿', published: '已发布', archived: '已丢弃' })[status]
 
-onMounted(loadVersions)
+onMounted(() => {
+  compactMediaQuery.addEventListener('change', syncCompactReadOnly)
+  void loadVersions()
+})
+
+onBeforeUnmount(() => {
+  compactMediaQuery.removeEventListener('change', syncCompactReadOnly)
+})
 </script>
 
 <template>
@@ -218,9 +260,177 @@ onMounted(loadVersions)
         <h1>词库版本</h1>
         <span>先预览并校验 CSV，再由服务端创建新词库或同一词库的下一版本。</span>
       </div>
+      <ui-button
+        v-if="listState === 'ready' && !isCompactReadOnly"
+        data-toggle-import
+        :aria-expanded="importExpanded"
+        aria-controls="source-import-workspace"
+        :disabled="importing || unknownResultMode !== null"
+        @click="toggleImport"
+      >
+        <upload
+          :size="18"
+          aria-hidden="true"
+        />
+        {{ importExpanded ? '收起导入' : '导入词表' }}
+      </ui-button>
     </header>
 
+    <ui-status-message
+      v-if="isCompactReadOnly"
+      data-compact-readonly
+      tone="info"
+      title="当前仅供查看"
+    >
+      请使用至少 480px 宽的设备导入词表或创建草稿版本。
+    </ui-status-message>
+
     <section
+      class="versions"
+      aria-labelledby="versions-title"
+    >
+      <header class="section-heading">
+        <div>
+          <h2 id="versions-title">
+            已有版本
+          </h2>
+          <p>版本状态和统计均来自服务端。</p>
+        </div>
+        <span v-if="listState === 'ready'">{{ versions.length }} 个版本</span>
+      </header>
+
+      <ui-status-message
+        v-if="listState === 'loading'"
+        tone="info"
+        title="正在读取词库版本"
+      >
+        等待服务端返回可查看的版本。
+      </ui-status-message>
+
+      <div
+        v-else-if="listState === 'error'"
+        class="error-actions"
+      >
+        <ui-status-message
+          tone="error"
+          title="无法读取词库版本"
+        >
+          当前没有显示旧缓存，请重新请求服务端状态。
+        </ui-status-message>
+        <ui-button
+          data-retry-list
+          variant="secondary"
+          @click="loadVersions"
+        >
+          重新读取
+        </ui-button>
+      </div>
+
+      <div
+        v-else-if="versions.length === 0"
+        class="empty-state"
+      >
+        <h3>还没有词库版本</h3>
+        <p>{{ isCompactReadOnly ? '可在当前设备查看；导入请使用至少 480px 宽的设备。' : '在下方导入第一份通过预览的 CSV。' }}</p>
+      </div>
+
+      <div
+        v-else
+        data-version-table
+        data-scroll-region="versions"
+        class="table-scroll"
+        tabindex="0"
+        aria-label="词库版本表格"
+      >
+        <table>
+          <thead data-sticky-header>
+            <tr>
+              <th scope="col">
+                词库
+              </th>
+              <th scope="col">
+                版本
+              </th>
+              <th scope="col">
+                状态
+              </th>
+              <th
+                scope="col"
+                class="numeric"
+              >
+                词数
+              </th>
+              <th
+                scope="col"
+                class="numeric"
+              >
+                分组
+              </th>
+              <th
+                scope="col"
+                class="numeric"
+              >
+                已批准 / 全部
+              </th>
+              <th scope="col">
+                时间
+              </th>
+              <th scope="col">
+                操作
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr
+              v-for="version in versions"
+              :key="version.versionId"
+            >
+              <th scope="row">
+                {{ version.sourceName }}
+              </th>
+              <td class="numeric">
+                v{{ version.versionNo }}
+              </td>
+              <td>
+                <span
+                  class="status-badge"
+                  :data-status="version.status"
+                >{{ statusLabel(version.status) }}</span>
+              </td>
+              <td class="numeric">
+                {{ version.wordCount }}
+              </td>
+              <td class="numeric">
+                {{ version.groupCount }}
+              </td>
+              <td class="numeric">
+                {{ version.approvedItemCount }} / {{ version.exerciseItemCount }}
+              </td>
+              <td class="time-cell">
+                <time :datetime="version.createdAt">创建 {{ formatAdminTime(version.createdAt) }}</time>
+                <time
+                  v-if="version.publishedAt"
+                  :datetime="version.publishedAt"
+                >发布 {{ formatAdminTime(version.publishedAt) }}</time>
+              </td>
+              <td>
+                <router-link
+                  class="row-link"
+                  :to="`/admin/source-versions/${encodeURIComponent(version.versionId)}`"
+                >
+                  查看详情
+                </router-link>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section
+      v-if="importExpanded && !isCompactReadOnly"
+      id="source-import-workspace"
+      data-import-workspace
       class="import-workspace"
       aria-labelledby="import-title"
     >
@@ -407,132 +617,6 @@ onMounted(loadVersions)
         </div>
       </form>
     </section>
-
-    <section
-      class="versions"
-      aria-labelledby="versions-title"
-    >
-      <header class="section-heading">
-        <div>
-          <h2 id="versions-title">
-            已有版本
-          </h2>
-          <p>版本状态和统计均来自服务端。</p>
-        </div>
-        <span v-if="listState === 'ready'">{{ versions.length }} 个版本</span>
-      </header>
-
-      <ui-status-message
-        v-if="listState === 'loading'"
-        tone="info"
-        title="正在读取词库版本"
-      >
-        等待服务端返回可查看的版本。
-      </ui-status-message>
-
-      <div
-        v-else-if="listState === 'error'"
-        class="error-actions"
-      >
-        <ui-status-message
-          tone="error"
-          title="无法读取词库版本"
-        >
-          当前没有显示旧缓存，请重新请求服务端状态。
-        </ui-status-message>
-        <ui-button
-          data-retry-list
-          variant="secondary"
-          @click="loadVersions"
-        >
-          重新读取
-        </ui-button>
-      </div>
-
-      <div
-        v-else-if="versions.length === 0"
-        class="empty-state"
-      >
-        <h3>还没有词库版本</h3>
-        <p>在上方导入第一份通过预览的 CSV。</p>
-      </div>
-
-      <div
-        v-else
-        class="table-scroll"
-      >
-        <table>
-          <thead>
-            <tr>
-              <th scope="col">
-                词库
-              </th>
-              <th scope="col">
-                版本
-              </th>
-              <th scope="col">
-                状态
-              </th>
-              <th
-                scope="col"
-                class="numeric"
-              >
-                词数
-              </th>
-              <th
-                scope="col"
-                class="numeric"
-              >
-                分组
-              </th>
-              <th
-                scope="col"
-                class="numeric"
-              >
-                已批准 / 全部
-              </th>
-              <th scope="col">
-                操作
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr
-              v-for="version in versions"
-              :key="version.versionId"
-            >
-              <th scope="row">
-                {{ version.sourceName }}
-              </th>
-              <td>v{{ version.versionNo }}</td>
-              <td>
-                <span
-                  class="status-badge"
-                  :data-status="version.status"
-                >{{ statusLabel(version.status) }}</span>
-              </td>
-              <td class="numeric">
-                {{ version.wordCount }}
-              </td>
-              <td class="numeric">
-                {{ version.groupCount }}
-              </td>
-              <td class="numeric">
-                {{ version.approvedItemCount }} / {{ version.exerciseItemCount }}
-              </td>
-              <td>
-                <router-link
-                  class="row-link"
-                  :to="`/admin/source-versions/${encodeURIComponent(version.versionId)}`"
-                >
-                  查看详情
-                </router-link>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
   </section>
 </template>
 
@@ -546,7 +630,8 @@ onMounted(loadVersions)
 }
 
 .admin-page {
-  gap: var(--space-8);
+  min-width: 0;
+  gap: var(--space-6);
 }
 
 .page-heading,
@@ -578,7 +663,9 @@ onMounted(loadVersions)
 
 .page-heading h1 {
   margin-block: var(--space-1);
-  font-size: 26px;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.3;
 }
 
 .page-heading span,
@@ -714,7 +801,8 @@ onMounted(loadVersions)
 }
 
 .table-scroll {
-  overflow-x: auto;
+  max-height: min(560px, calc(100vh - 260px));
+  overflow: auto;
   border: 1px solid var(--color-line);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
@@ -722,7 +810,7 @@ onMounted(loadVersions)
 
 table {
   width: 100%;
-  min-width: 760px;
+  min-width: 940px;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -736,6 +824,9 @@ td {
 }
 
 thead th {
+  position: sticky;
+  z-index: 1;
+  top: 0;
   background: var(--color-canvas);
   color: var(--color-muted);
   font-size: 12px;
@@ -749,6 +840,24 @@ tbody tr:last-child > * {
 .numeric {
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+
+.time-cell {
+  min-width: 174px;
+  padding-block: var(--space-2);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.45;
+}
+
+.time-cell time {
+  display: block;
+  white-space: nowrap;
+}
+
+.table-scroll:focus-visible {
+  outline: 3px solid var(--color-brand);
+  outline-offset: 2px;
 }
 
 .status-badge {
@@ -768,7 +877,14 @@ tbody tr:last-child > * {
   color: var(--color-brand-strong);
 }
 
+.status-badge[data-status='draft'] {
+  border-color: color-mix(in srgb, var(--color-sun) 60%, var(--color-line));
+  background: var(--color-sun-soft);
+  color: #71550a;
+}
+
 .status-badge[data-status='archived'] {
+  background: var(--color-canvas);
   color: var(--color-muted);
   text-decoration: line-through;
 }

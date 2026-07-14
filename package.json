@@ -20,7 +20,10 @@
     "scan:artifacts": "node scripts/check-no-secret-artifacts.mjs",
     "cf:check": "node scripts/check-cloudflare-isolated.mjs check startup",
     "cf:types:check": "node scripts/check-cloudflare-isolated.mjs types --check",
-    "cf:types": "node scripts/generate-cloudflare-types-isolated.mjs"
+    "cf:types": "node scripts/generate-cloudflare-types-isolated.mjs",
+    "admin:init:local": "node scripts/admin-init.mjs local",
+    "admin:init:remote": "node scripts/admin-init.mjs remote",
+    "admin:benchmark:local": "node scripts/benchmark-admin-credential.mjs"
   },
   "dependencies": {
     "@lucide/vue": "1.24.0",

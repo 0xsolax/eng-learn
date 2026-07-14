@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import type { AdminExerciseItemDto } from '@shared/api/contentSchemas'
 import {
   exerciseItemContentSchema,
@@ -25,20 +25,79 @@ const props = withDefaults(
   defineProps<{
     item: AdminExerciseItemDto
     readonly?: boolean
+    mobileReadonly?: boolean
     saving?: boolean
   }>(),
   {
     readonly: false,
+    mobileReadonly: false,
     saving: false,
   },
 )
 
 const emit = defineEmits<{
   save: [content: ExerciseItemContent]
+  'dirty-change': [dirty: boolean]
 }>()
 
 const fields = reactive<EditorFields>(emptyFields())
+const fieldErrors = reactive<Partial<Record<keyof EditorFields, string>>>({})
 const formError = ref('')
+let initialFieldsKey = ''
+
+const readonlyRows = computed<Array<{ label: string; value: string }>>(() => {
+  switch (props.item.taskType) {
+    case 'recognize_meaning':
+      return [
+        { label: '题面单词', value: props.item.prompt.word },
+        { label: '中文词义', value: props.item.prompt.meaning },
+        { label: '例句', value: props.item.prompt.exampleSentence || '未填写' },
+        { label: '标准单词', value: props.item.answer.word },
+      ]
+    case 'recall_word':
+      return [
+        { label: '中文词义', value: props.item.prompt.meaning },
+        { label: '标准单词', value: props.item.answer.word },
+      ]
+    case 'multiple_choice':
+      return [
+        { label: '中文词义', value: props.item.prompt.meaning },
+        { label: '选项', value: props.item.prompt.options.join('、') },
+        { label: '正确选项', value: props.item.answer.word },
+      ]
+    case 'fill_blank':
+      return [
+        { label: '填空句', value: props.item.prompt.sentence },
+        { label: '标准答案', value: props.item.answer.word },
+      ]
+    case 'sentence_build':
+      return [
+        {
+          label: '题面词块',
+          value: props.item.prompt.pieces.map((piece) => piece.text).join(' / '),
+        },
+        { label: '正确顺序', value: props.item.answer.pieceIds.join(' → ') },
+        { label: '参考句', value: props.item.answer.referenceSentence },
+      ]
+    case 'sentence_output':
+      return [
+        { label: '中文词义', value: props.item.prompt.meaning },
+        { label: '作答指令', value: props.item.prompt.instruction },
+        { label: '参考句', value: props.item.answer.referenceSentence },
+      ]
+  }
+})
+
+function clearErrors(): void {
+  formError.value = ''
+  for (const field of Object.keys(fieldErrors) as Array<keyof EditorFields>) {
+    fieldErrors[field] = ''
+  }
+}
+
+function fieldsKey(): string {
+  return JSON.stringify(fields)
+}
 
 watch(
   () => props.item,
@@ -77,17 +136,34 @@ watch(
         break
     }
 
-    formError.value = ''
+    initialFieldsKey = fieldsKey()
+    clearErrors()
+    emit('dirty-change', false)
   },
   { immediate: true },
 )
 
+watch(
+  fields,
+  () => {
+    emit('dirty-change', fieldsKey() !== initialFieldsKey)
+  },
+  { deep: true },
+)
+
 const submit = (): void => {
-  formError.value = ''
+  clearErrors()
   const result = exerciseItemContentSchema.safeParse(toCandidate(props.item, fields))
 
   if (!result.success) {
-    formError.value = toFormError(result.error.issues[0]?.message)
+    for (const issue of result.error.issues) {
+      const field = fieldForPath(issue.path)
+      if (field && !fieldErrors[field]) {
+        fieldErrors[field] = toFormError(issue.message)
+      }
+    }
+    const issueCount = Math.max(Object.values(fieldErrors).filter(Boolean).length, 1)
+    formError.value = `发现 ${String(issueCount)} 个字段问题，请逐项修正后再保存。`
     return
   }
 
@@ -182,6 +258,22 @@ const toFormError = (message: string | undefined): string => {
   return '请补齐当前题型要求的结构化字段。'
 }
 
+const fieldForPath = (path: PropertyKey[]): keyof EditorFields | undefined => {
+  const key = path.map(String).join('.')
+  return {
+    'prompt.word': 'promptWord',
+    'prompt.meaning': 'meaning',
+    'prompt.exampleSentence': 'exampleSentence',
+    'prompt.options': 'options',
+    'prompt.sentence': 'sentence',
+    'prompt.pieces': 'pieces',
+    'prompt.instruction': 'instruction',
+    'answer.word': 'answerWord',
+    'answer.pieceIds': 'pieceIds',
+    'answer.referenceSentence': 'referenceSentence',
+  }[key] as keyof EditorFields | undefined
+}
+
 function emptyFields(): EditorFields {
   return {
     promptWord: '',
@@ -199,7 +291,35 @@ function emptyFields(): EditorFields {
 </script>
 
 <template>
+  <div
+    v-if="mobileReadonly"
+    data-mobile-exercise-summary
+    class="exercise-readonly"
+  >
+    <div class="identity-grid">
+      <div>
+        <span>阶段</span>
+        <strong>{{ item.stage }}</strong>
+      </div>
+      <div>
+        <span>题型</span>
+        <strong>{{ item.taskType }}</strong>
+      </div>
+    </div>
+    <dl>
+      <div
+        v-for="row in readonlyRows"
+        :key="row.label"
+      >
+        <dt>{{ row.label }}</dt>
+        <dd>{{ row.value }}</dd>
+      </div>
+    </dl>
+    <p>当前视口只展示练习内容摘要，不提供可编辑字段。</p>
+  </div>
+
   <form
+    v-else
     class="exercise-form"
     @submit.prevent="submit"
   >
@@ -219,12 +339,14 @@ function emptyFields(): EditorFields {
         v-model="fields.promptWord"
         name="prompt-word"
         label="题面单词"
+        v-bind="fieldErrors.promptWord ? { error: fieldErrors.promptWord } : {}"
         :disabled="readonly || saving"
       />
       <ui-input
         v-model="fields.meaning"
         name="meaning"
         label="中文词义"
+        v-bind="fieldErrors.meaning ? { error: fieldErrors.meaning } : {}"
         :disabled="readonly || saving"
       />
       <label class="native-field">
@@ -233,13 +355,22 @@ function emptyFields(): EditorFields {
           v-model="fields.exampleSentence"
           name="example-sentence"
           rows="3"
+          :aria-invalid="fieldErrors.exampleSentence ? 'true' : undefined"
+          :aria-describedby="fieldErrors.exampleSentence ? 'example-sentence-error' : undefined"
           :disabled="readonly || saving"
         />
+        <small
+          v-if="fieldErrors.exampleSentence"
+          id="example-sentence-error"
+          class="field-error"
+          role="alert"
+        >{{ fieldErrors.exampleSentence }}</small>
       </label>
       <ui-input
         v-model="fields.answerWord"
         name="answer-word"
         label="标准单词"
+        v-bind="fieldErrors.answerWord ? { error: fieldErrors.answerWord } : {}"
         :disabled="readonly || saving"
       />
       <p class="fixed-contract">
@@ -252,12 +383,14 @@ function emptyFields(): EditorFields {
         v-model="fields.meaning"
         name="meaning"
         label="中文词义"
+        v-bind="fieldErrors.meaning ? { error: fieldErrors.meaning } : {}"
         :disabled="readonly || saving"
       />
       <ui-input
         v-model="fields.answerWord"
         name="answer-word"
         label="标准单词"
+        v-bind="fieldErrors.answerWord ? { error: fieldErrors.answerWord } : {}"
         :disabled="readonly || saving"
       />
     </template>
@@ -267,6 +400,7 @@ function emptyFields(): EditorFields {
         v-model="fields.meaning"
         name="meaning"
         label="中文词义"
+        v-bind="fieldErrors.meaning ? { error: fieldErrors.meaning } : {}"
         :disabled="readonly || saving"
       />
       <label class="native-field">
@@ -275,13 +409,22 @@ function emptyFields(): EditorFields {
           v-model="fields.options"
           name="options"
           rows="5"
+          :aria-invalid="fieldErrors.options ? 'true' : undefined"
+          :aria-describedby="fieldErrors.options ? 'options-error' : undefined"
           :disabled="readonly || saving"
         />
+        <small
+          v-if="fieldErrors.options"
+          id="options-error"
+          class="field-error"
+          role="alert"
+        >{{ fieldErrors.options }}</small>
       </label>
       <ui-input
         v-model="fields.answerWord"
         name="answer-word"
         label="正确选项"
+        v-bind="fieldErrors.answerWord ? { error: fieldErrors.answerWord } : {}"
         :disabled="readonly || saving"
       />
     </template>
@@ -293,14 +436,23 @@ function emptyFields(): EditorFields {
           v-model="fields.sentence"
           name="sentence"
           rows="3"
+          :aria-invalid="fieldErrors.sentence ? 'true' : undefined"
+          :aria-describedby="fieldErrors.sentence ? 'sentence-error' : undefined"
           :disabled="readonly || saving"
         />
+        <small
+          v-if="fieldErrors.sentence"
+          id="sentence-error"
+          class="field-error"
+          role="alert"
+        >{{ fieldErrors.sentence }}</small>
         <small>用 ____ 标记需要填写单词的位置。</small>
       </label>
       <ui-input
         v-model="fields.answerWord"
         name="answer-word"
         label="标准答案"
+        v-bind="fieldErrors.answerWord ? { error: fieldErrors.answerWord } : {}"
         :disabled="readonly || saving"
       />
     </template>
@@ -312,8 +464,16 @@ function emptyFields(): EditorFields {
           v-model="fields.pieces"
           name="pieces"
           rows="6"
+          :aria-invalid="fieldErrors.pieces ? 'true' : undefined"
+          :aria-describedby="fieldErrors.pieces ? 'pieces-error' : undefined"
           :disabled="readonly || saving"
         />
+        <small
+          v-if="fieldErrors.pieces"
+          id="pieces-error"
+          class="field-error"
+          role="alert"
+        >{{ fieldErrors.pieces }}</small>
       </label>
       <label class="native-field">
         <span>正确编号顺序（每行一个）</span>
@@ -321,8 +481,16 @@ function emptyFields(): EditorFields {
           v-model="fields.pieceIds"
           name="piece-ids"
           rows="6"
+          :aria-invalid="fieldErrors.pieceIds ? 'true' : undefined"
+          :aria-describedby="fieldErrors.pieceIds ? 'piece-ids-error' : undefined"
           :disabled="readonly || saving"
         />
+        <small
+          v-if="fieldErrors.pieceIds"
+          id="piece-ids-error"
+          class="field-error"
+          role="alert"
+        >{{ fieldErrors.pieceIds }}</small>
       </label>
       <label class="native-field">
         <span>参考句</span>
@@ -330,8 +498,16 @@ function emptyFields(): EditorFields {
           v-model="fields.referenceSentence"
           name="reference-sentence"
           rows="3"
+          :aria-invalid="fieldErrors.referenceSentence ? 'true' : undefined"
+          :aria-describedby="fieldErrors.referenceSentence ? 'reference-sentence-error' : undefined"
           :disabled="readonly || saving"
         />
+        <small
+          v-if="fieldErrors.referenceSentence"
+          id="reference-sentence-error"
+          class="field-error"
+          role="alert"
+        >{{ fieldErrors.referenceSentence }}</small>
       </label>
     </template>
 
@@ -340,6 +516,7 @@ function emptyFields(): EditorFields {
         v-model="fields.meaning"
         name="meaning"
         label="中文词义"
+        v-bind="fieldErrors.meaning ? { error: fieldErrors.meaning } : {}"
         :disabled="readonly || saving"
       />
       <label class="native-field">
@@ -348,8 +525,16 @@ function emptyFields(): EditorFields {
           v-model="fields.instruction"
           name="instruction"
           rows="3"
+          :aria-invalid="fieldErrors.instruction ? 'true' : undefined"
+          :aria-describedby="fieldErrors.instruction ? 'instruction-error' : undefined"
           :disabled="readonly || saving"
         />
+        <small
+          v-if="fieldErrors.instruction"
+          id="instruction-error"
+          class="field-error"
+          role="alert"
+        >{{ fieldErrors.instruction }}</small>
       </label>
       <label class="native-field">
         <span>参考句</span>
@@ -357,13 +542,22 @@ function emptyFields(): EditorFields {
           v-model="fields.referenceSentence"
           name="reference-sentence"
           rows="3"
+          :aria-invalid="fieldErrors.referenceSentence ? 'true' : undefined"
+          :aria-describedby="fieldErrors.referenceSentence ? 'reference-sentence-error' : undefined"
           :disabled="readonly || saving"
         />
+        <small
+          v-if="fieldErrors.referenceSentence"
+          id="reference-sentence-error"
+          class="field-error"
+          role="alert"
+        >{{ fieldErrors.referenceSentence }}</small>
       </label>
     </template>
 
     <p
       v-if="formError"
+      data-form-error-summary
       class="form-error"
       role="alert"
     >
@@ -389,6 +583,47 @@ function emptyFields(): EditorFields {
   padding: var(--space-6);
   border: 1px solid var(--color-line);
   background: var(--color-surface);
+}
+
+.exercise-readonly {
+  display: grid;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--color-line);
+  background: var(--color-surface);
+}
+
+.exercise-readonly > p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 13px;
+}
+
+.exercise-readonly dl {
+  display: grid;
+  margin: 0;
+  border-top: 1px solid var(--color-line);
+}
+
+.exercise-readonly dl > div {
+  display: grid;
+  grid-template-columns: minmax(88px, 0.35fr) minmax(0, 1fr);
+  gap: var(--space-3);
+  padding-block: var(--space-3);
+  border-bottom: 1px solid var(--color-line);
+}
+
+.exercise-readonly dt,
+.exercise-readonly dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.exercise-readonly dt {
+  color: var(--color-muted);
+  font-weight: 700;
 }
 
 .identity-grid {
@@ -446,6 +681,11 @@ function emptyFields(): EditorFields {
   color: var(--color-muted);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.native-field .field-error {
+  color: var(--color-coral-strong);
+  font-weight: 600;
 }
 
 .form-error {

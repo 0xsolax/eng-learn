@@ -11,6 +11,8 @@ import {
 import type { LessonReportDto, StartedLessonDto } from '@shared/api/courseSchemas'
 
 const adminApi = vi.hoisted(() => ({
+  loginAdmin: vi.fn(),
+  logoutAdmin: vi.fn(),
   getAdminSession: vi.fn(),
   listSourceVersions: vi.fn(),
   importSourceVersion: vi.fn(),
@@ -40,7 +42,10 @@ beforeEach(() => {
   adminApi.getAdminSession.mockReset().mockResolvedValue({
     id: 'admin-1',
     source: 'cloudflare_access',
+    displayName: 'Solazhu',
   })
+  adminApi.loginAdmin.mockReset()
+  adminApi.logoutAdmin.mockReset().mockResolvedValue({ loggedOut: true })
   adminApi.listSourceVersions.mockReset().mockResolvedValue([])
 })
 
@@ -184,16 +189,19 @@ describe('application router', () => {
   })
 
   it('does not mount the admin business shell or read business data when identity fails', async () => {
-    adminApi.getAdminSession.mockRejectedValueOnce(
+    adminApi.getAdminSession.mockRejectedValue(
       new ApiFailureError(401, {
-        code: 'unauthorized',
+        code: 'admin_session_required',
         message: 'Access identity required',
       }),
     )
 
-    await renderRoute('/admin')
+    const router = await renderRoute('/admin')
 
-    expect(wrapper?.get('[role="alert"]').text()).toContain('管理员身份未通过')
+    await vi.waitFor(() => {
+      expect(router.currentRoute.value.path).toBe('/admin/login')
+    })
+    expect(wrapper?.get('h1').text()).toBe('管理员登录')
     expect(wrapper?.find('[data-layout="admin"]').exists()).toBe(false)
     expect(adminApi.listSourceVersions).not.toHaveBeenCalled()
   })
@@ -201,19 +209,36 @@ describe('application router', () => {
   it.each([401, 403])(
     'keeps the admin route closed when Cloudflare Access returns non-JSON %s',
     async (status) => {
-      adminApi.getAdminSession.mockRejectedValueOnce(
+      adminApi.getAdminSession.mockRejectedValue(
         new InvalidApiResponseError(status),
       )
 
-      await renderRoute('/admin')
+      const router = await renderRoute('/admin')
 
-      expect(wrapper?.get('[role="alert"] h2').text()).toBe('管理员身份未通过')
-      expect(wrapper?.text()).not.toContain('无法验证管理员身份')
+      await vi.waitFor(() => {
+        expect(router.currentRoute.value.path).toBe('/admin/login')
+      })
+      expect(wrapper?.get('h1').text()).toBe('管理员登录')
       expect(wrapper?.find('[data-layout="admin"]').exists()).toBe(false)
-      expect(wrapper?.find('button').exists()).toBe(false)
       expect(adminApi.listSourceVersions).not.toHaveBeenCalled()
     },
   )
+
+  it('renders the public admin login route without mounting the business shell', async () => {
+    adminApi.getAdminSession.mockRejectedValue(
+      new ApiFailureError(401, {
+        code: 'admin_session_required',
+        message: 'Admin session required',
+      }),
+    )
+
+    const router = await renderRoute('/admin/login')
+
+    expect(router.currentRoute.value.path).toBe('/admin/login')
+    expect(wrapper?.get('h1').text()).toBe('管理员登录')
+    expect(wrapper?.find('[data-layout="admin"]').exists()).toBe(false)
+    expect(adminApi.listSourceVersions).not.toHaveBeenCalled()
+  })
 
   it('maps the explicit next-version query into the import page without local persistence', async () => {
     adminApi.listSourceVersions.mockResolvedValueOnce([
@@ -256,6 +281,8 @@ describe('application router', () => {
     ])
 
     const router = await renderRoute('/admin/source-versions')
+    await wrapper?.get('[data-toggle-import]').trigger('click')
+    await flushPromises()
     expect(wrapper?.get('input[value="new_source"]').attributes('checked')).toBeDefined()
 
     await router.push('/admin/source-versions?mode=next_version&sourceId=source-1')
@@ -374,6 +401,7 @@ describe('application router', () => {
   it('keeps layouts and route pages lazy-loaded', () => {
     const router = createAppRouter(createMemoryHistory())
     const routeNames = [
+      'admin-login',
       'admin-gate',
       'admin',
       'admin-source-versions',
@@ -388,6 +416,27 @@ describe('application router', () => {
     for (const routeName of routeNames) {
       const route = router.getRoutes().find((candidate) => candidate.name === routeName)
       expect(typeof route?.components?.default).toBe('function')
+    }
+  })
+
+  it('keeps the login page public and marks every business route as protected', () => {
+    const router = createAppRouter(createMemoryHistory())
+    const login = router.getRoutes().find((route) => route.name === 'admin-login')
+    const protectedRoutes = [
+      'admin-gate',
+      'admin',
+      'admin-home',
+      'admin-source-versions',
+      'admin-source-version-detail',
+      'admin-exercise-item',
+      'admin-courses',
+    ]
+
+    expect(login?.path).toBe('/admin/login')
+    expect(login?.meta.requiresAdmin).toBe(false)
+
+    for (const name of protectedRoutes) {
+      expect(router.getRoutes().find((route) => route.name === name)?.meta.requiresAdmin).toBe(true)
     }
   })
 

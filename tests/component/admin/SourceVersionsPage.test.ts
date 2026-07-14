@@ -32,6 +32,115 @@ const setCsvFile = async (wrapper: ReturnType<typeof mount>, contents: string): 
 }
 
 describe('SourceVersionsPage', () => {
+  it('keeps an existing-version table first, collapses import by default, and exposes real timestamps', async () => {
+    const api = {
+      listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
+      importSourceVersion: vi.fn(),
+    }
+    const wrapper = mount(SourceVersionsPage, {
+      props: { api },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    })
+    await flushPromises()
+
+    expect(wrapper.find('form[data-import-form]').exists()).toBe(false)
+    expect(wrapper.get('[data-toggle-import]').text()).toContain('导入词表')
+    expect(wrapper.get('[data-version-table]').text()).toContain('创建 2026-07-13 00:00')
+    expect(wrapper.get('[data-version-table]').text()).toContain('发布 2026-07-13 01:00')
+    expect(wrapper.find('[data-sticky-header]').exists()).toBe(true)
+
+    await wrapper.get('[data-toggle-import]').trigger('click')
+
+    expect(wrapper.find('form[data-import-form]').exists()).toBe(true)
+    const tablePosition = wrapper.get('[data-version-table]').element.compareDocumentPosition(
+      wrapper.get('[data-import-workspace]').element,
+    )
+    expect(tablePosition & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+  })
+
+  it('expands import automatically for the empty state', async () => {
+    const api = {
+      listSourceVersions: vi.fn().mockResolvedValue([]),
+      importSourceVersion: vi.fn(),
+    }
+    const wrapper = mount(SourceVersionsPage, {
+      props: { api },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    })
+    await flushPromises()
+
+    expect(wrapper.find('form[data-import-form]').exists()).toBe(true)
+    expect(wrapper.get('[data-toggle-import]').text()).toContain('收起导入')
+  })
+
+  it('keeps a completed import result while the workspace is collapsed and reopened', async () => {
+    const api = {
+      listSourceVersions: vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([publishedVersion]),
+      importSourceVersion: vi.fn().mockResolvedValue({
+        sourceId: 'source-1',
+        versionId: 'version-1',
+        versionNo: 1,
+        status: 'draft' as const,
+        wordCount: 1,
+        groupCount: 1,
+      }),
+    }
+    const wrapper = mount(SourceVersionsPage, {
+      props: { api },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    })
+    await flushPromises()
+    await wrapper.get('input[name="source-name"]').setValue('Starter words')
+    await setCsvFile(
+      wrapper,
+      'word,meaning,exampleSentence,partOfSpeech\napple,苹果,I eat an apple.,noun',
+    )
+    await wrapper.get('form[data-import-form]').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[role="status"]').text()).toContain('服务端已创建 v1')
+    await wrapper.get('[data-toggle-import]').trigger('click')
+    expect(wrapper.find('form[data-import-form]').exists()).toBe(false)
+    await wrapper.get('[data-toggle-import]').trigger('click')
+
+    expect(wrapper.get('[role="status"]').text()).toContain('服务端已创建 v1')
+    expect(wrapper.get('[data-csv-preview]').text()).toContain('apple')
+  })
+
+  it('removes import mutations at 479px and restores the empty-state flow at 480px', async () => {
+    const compact = installMatchMedia(true)
+    const api = {
+      listSourceVersions: vi.fn().mockResolvedValue([]),
+      importSourceVersion: vi.fn(),
+    }
+    const compactWrapper = mount(SourceVersionsPage, {
+      props: { api },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    })
+    await flushPromises()
+
+    expect(compactWrapper.get('[data-compact-readonly]').text()).toContain('480px')
+    expect(compactWrapper.find('[data-toggle-import]').exists()).toBe(false)
+    expect(compactWrapper.find('form[data-import-form]').exists()).toBe(false)
+    compactWrapper.unmount()
+    compact.restore()
+
+    const editable = installMatchMedia(false)
+    const editableWrapper = mount(SourceVersionsPage, {
+      props: { api },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    })
+    await flushPromises()
+
+    expect(editableWrapper.find('[data-compact-readonly]').exists()).toBe(false)
+    expect(editableWrapper.find('form[data-import-form]').exists()).toBe(true)
+    editableWrapper.unmount()
+    editable.restore()
+  })
+
   it('separates loading, empty and a server-refreshed successful import', async () => {
     let resolveVersions: ((value: never[]) => void) | undefined
     const initialVersions = new Promise<never[]>((resolve) => {
@@ -150,6 +259,7 @@ describe('SourceVersionsPage', () => {
       global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
     })
     await flushPromises()
+    await wrapper.get('[data-toggle-import]').trigger('click')
     await wrapper.get('input[name="source-name"]').setValue('Starter words')
     await setCsvFile(
       wrapper,
@@ -386,4 +496,24 @@ const requireRecord = (value: unknown): Record<string, unknown> => {
   }
 
   return value as Record<string, unknown>
+}
+
+const installMatchMedia = (matches: boolean) => {
+  const previous = window.matchMedia
+  window.matchMedia = vi.fn().mockReturnValue({
+    matches,
+    media: '(max-width: 479px)',
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })
+
+  return {
+    restore: () => {
+      window.matchMedia = previous
+    },
+  }
 }

@@ -8,12 +8,17 @@ const secretFileName = /^(?:\.dev\.vars(?:\..+)?|\.env(?:\..+)?)$/i
 const sensitiveTestArtifact = /^(?:trace\.zip|.+\.har|storage[-_.]?state(?:\..+)?\.json)$/i
 const sensitiveAssignments = [
   /\b(?:ADMIN_API_TOKEN|CF_ACCESS_CLIENT_SECRET|CLOUDFLARE_ACCESS_CLIENT_SECRET)\s*[:=]\s*(?:["'`][^"'`\r\n]{8,}["'`]|[^\s"'`]{8,})/i,
+  /\bADMIN_AUTH_CONFIG\s*[:=]\s*["'`]?v1\.[A-Za-z0-9_-]{32,}(?=["'`\s,}]|$)/i,
+  /\bv1\.[A-Za-z0-9_-]{128,}(?=["'`\s,}]|$)/,
   /["']?authorization["']?\s*[:=]\s*["'`]?(?:Bearer|Basic)\s+[^\s"'`]{8,}/i,
   /["']?x-admin-token["']?\s*[:=]\s*["'`]?[^\s"'`]{8,}/i,
   /["']?cf-access-jwt-assertion["']?\s*[:=]\s*["'`]?eyJ[^\s"'`]{8,}/i,
   /["']?access(?:_|-)?code["']?\s*[:=]\s*["'`]?[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{10}(?=["'`\s,}]|$)/i,
   /["']?operation(?:_|-)?token["']?\s*[:=]\s*["'`]?[0-9a-f]{64}(?=["'`\s,}]|$)/i,
   /__Host-eng_learn_session=[0-9a-f]{64}/i,
+  /__Host-eng_learn_admin_session=[0-9a-f]{64}(?=[;"'`\s,}]|$)/i,
+  /["']?verifier["']?\s*[:=]\s*["'`]?[A-Za-z0-9_-]{43}(?=["'`\s,}]|$)/i,
+  /["']?rateLimitKey["']?\s*[:=]\s*["'`]?[A-Za-z0-9_-]{43}(?=["'`\s,}]|$)/i,
 ]
 const hostPathMetadata = [
   /\/\/#region[^\r\n]*(?:\/(?:Users|home|root|private\/var|tmp|workspace|builds)\/|[A-Za-z]:[\\/])/i,

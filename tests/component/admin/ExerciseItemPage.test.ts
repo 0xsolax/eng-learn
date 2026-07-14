@@ -1,7 +1,13 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { nextTick } from 'vue'
+import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { createAdminApi } from '@/api/adminApi'
 import { ApiFailureError, ApiNetworkError } from '@/api/errors'
+import {
+  adminPageContextKey,
+  type AdminPageContextPort,
+} from '@/features/admin-auth/adminPageContext'
 import ExerciseItemPage from '@/pages/admin/ExerciseItemPage.vue'
 
 type ExerciseItemApi = Pick<
@@ -40,13 +46,66 @@ const multipleChoiceItem = {
   answer: { word: 'apple' },
 }
 
-const mountPage = (api: ExerciseItemApi) =>
+const createPageContext = (): AdminPageContextPort => ({
+  setPageContext: vi.fn(),
+  clearPageContext: vi.fn(),
+})
+
+const mountPage = (
+  api: ExerciseItemApi,
+  pageContext: AdminPageContextPort = createPageContext(),
+) =>
   mount(ExerciseItemPage, {
     props: { api, versionId: 'version-1', itemId: 'item-1' },
-    global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    global: {
+      provide: { [adminPageContextKey]: pageContext },
+      stubs: { RouterLink: { template: '<a><slot /></a>' } },
+    },
   })
 
+afterEach(() => {
+  setViewportWidth(1024)
+  Reflect.deleteProperty(window, 'confirm')
+})
+
 describe('ExerciseItemPage', () => {
+  it('reports authoritative exercise breadcrumbs and exposes the same dirty leave guard', async () => {
+    const pageContext = createPageContext()
+    const confirm = vi.fn().mockReturnValue(false)
+    Object.defineProperty(window, 'confirm', {
+      configurable: true,
+      value: confirm,
+    })
+    const api = {
+      getSourceVersion: vi.fn().mockResolvedValue(draftVersion),
+      getExerciseItem: vi.fn().mockResolvedValue(multipleChoiceItem),
+      editExerciseItem: vi.fn(),
+      approveExerciseItem: vi.fn(),
+      disableExerciseItem: vi.fn(),
+    }
+    const wrapper = mountPage(api, pageContext)
+    await flushPromises()
+
+    const reportedContext = vi.mocked(pageContext.setPageContext).mock
+      .calls[0]?.[0]
+    expect(reportedContext?.breadcrumbs).toEqual([
+      '词库工作台',
+      'Starter words',
+      'v1',
+      'apple',
+      'S2',
+    ])
+    expect(typeof reportedContext?.confirmLeave).toBe('function')
+    expect(await reportedContext?.confirmLeave?.()).toBe(true)
+
+    await wrapper.get('input[name="meaning"]').setValue('一种水果')
+    expect(await reportedContext?.confirmLeave?.()).toBe(false)
+    expect(confirm).toHaveBeenCalledWith('当前练习有未保存修改，确定离开吗？')
+
+    wrapper.unmount()
+    expect(pageContext.clearPageContext).toHaveBeenCalledOnce()
+  })
+
   it('edits a draft through task-specific fields instead of raw JSON', async () => {
     const editedItem = {
       ...multipleChoiceItem,
@@ -102,7 +161,14 @@ describe('ExerciseItemPage', () => {
     await wrapper.get('form').trigger('submit')
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"]').text()).toContain('答案必须是选项之一')
+    const answerInput = wrapper.get('input[name="answer-word"]')
+    const fieldErrorId = answerInput.attributes('aria-describedby')
+    expect(answerInput.attributes('aria-invalid')).toBe('true')
+    expect(fieldErrorId).toBeDefined()
+    expect(wrapper.get(`[id="${String(fieldErrorId)}"]`).text()).toContain(
+      '答案必须是选项之一',
+    )
+    expect(wrapper.get('[data-form-error-summary]').text()).toContain('字段问题')
     expect(api.editExerciseItem).not.toHaveBeenCalled()
   })
 
@@ -128,9 +194,104 @@ describe('ExerciseItemPage', () => {
     expect(wrapper.get('[role="status"]').text()).toContain('已发布版本只读')
     expect(wrapper.find('button[type="submit"]').exists()).toBe(false)
     expect(wrapper.find('[data-approve]').exists()).toBe(false)
+    expect(wrapper.findAll('button').some((button) => button.text() === '禁用项目')).toBe(false)
     expect(wrapper.findAll('input').every((input) => input.attributes('disabled') !== undefined)).toBe(
       true,
     )
+  })
+
+  it('guards route and browser exits only while task fields are dirty', async () => {
+    const api = {
+      getSourceVersion: vi.fn().mockResolvedValue(draftVersion),
+      getExerciseItem: vi.fn().mockResolvedValue(multipleChoiceItem),
+      editExerciseItem: vi.fn().mockResolvedValue(multipleChoiceItem),
+      approveExerciseItem: vi.fn(),
+      disableExerciseItem: vi.fn(),
+    }
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        {
+          path: '/exercise',
+          component: ExerciseItemPage,
+          props: { api, versionId: 'version-1', itemId: 'item-1' },
+        },
+        { path: '/next', component: { template: '<p>next page</p>' } },
+      ],
+    })
+    const addEventListener = vi.spyOn(window, 'addEventListener')
+    const removeEventListener = vi.spyOn(window, 'removeEventListener')
+    const confirm = vi.fn().mockReturnValue(false)
+    Object.defineProperty(window, 'confirm', {
+      configurable: true,
+      value: confirm,
+    })
+
+    await router.push('/exercise')
+    await router.isReady()
+    const wrapper = mount(RouterView, {
+      attachTo: document.body,
+      global: {
+        plugins: [router],
+        provide: { [adminPageContextKey]: createPageContext() },
+      },
+    })
+    await flushPromises()
+
+    expect(addEventListener.mock.calls.some(([type]) => type === 'beforeunload')).toBe(false)
+    const input = wrapper.get('input[name="meaning"]')
+    ;(input.element as HTMLInputElement).focus()
+    await input.setValue('一种水果')
+    await nextTick()
+
+    expect(addEventListener.mock.calls.some(([type]) => type === 'beforeunload')).toBe(true)
+    const unload = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(unload)
+    expect(unload.defaultPrevented).toBe(true)
+
+    await router.push('/next')
+    expect(confirm).toHaveBeenCalledWith('当前练习有未保存修改，确定离开吗？')
+    expect(router.currentRoute.value.path).toBe('/exercise')
+    expect(document.activeElement).toBe(input.element)
+
+    confirm.mockReturnValue(true)
+    await router.push('/next')
+    expect(router.currentRoute.value.path).toBe('/next')
+    expect(removeEventListener.mock.calls.some(([type]) => type === 'beforeunload')).toBe(true)
+
+    wrapper.unmount()
+    Reflect.deleteProperty(window, 'confirm')
+    addEventListener.mockRestore()
+    removeEventListener.mockRestore()
+  })
+
+  it('removes every edit entrance at 479px and restores the core editor at 480px', async () => {
+    setViewportWidth(479)
+    const api = {
+      getSourceVersion: vi.fn().mockResolvedValue(draftVersion),
+      getExerciseItem: vi.fn().mockResolvedValue(multipleChoiceItem),
+      editExerciseItem: vi.fn(),
+      approveExerciseItem: vi.fn(),
+      disableExerciseItem: vi.fn(),
+    }
+    const wrapper = mountPage(api)
+    await flushPromises()
+
+    expect(wrapper.get('[data-mobile-readonly]').text()).toContain('至少 480px')
+    expect(wrapper.find('form').exists()).toBe(false)
+    expect(wrapper.get('[data-mobile-exercise-summary]').text()).toContain('苹果')
+    expect(wrapper.get('[data-mobile-exercise-summary]').text()).toContain('apple、pear、banana')
+    expect(wrapper.find('[data-approve]').exists()).toBe(false)
+    expect(wrapper.findAll('button').some((button) => button.text() === '禁用项目')).toBe(false)
+
+    setViewportWidth(480)
+    await nextTick()
+
+    expect(wrapper.find('[data-mobile-readonly]').exists()).toBe(false)
+    expect(wrapper.find('form').exists()).toBe(true)
+    expect(wrapper.get('button[type="submit"]').text()).toContain('保存练习内容')
+    wrapper.unmount()
+    setViewportWidth(1024)
   })
 
   it('reloads authoritative state when a concurrent publish makes a save immutable', async () => {
@@ -223,6 +384,42 @@ describe('ExerciseItemPage', () => {
     expect(wrapper.find('[data-disable-confirmation]').exists()).toBe(false)
   })
 
+  it('moves focus into disable confirmation and restores the trigger on cancel', async () => {
+    setViewportWidth(1024)
+    const api = {
+      getSourceVersion: vi.fn().mockResolvedValue(draftVersion),
+      getExerciseItem: vi.fn().mockResolvedValue(multipleChoiceItem),
+      editExerciseItem: vi.fn(),
+      approveExerciseItem: vi.fn(),
+      disableExerciseItem: vi.fn(),
+    }
+    const wrapper = mount(ExerciseItemPage, {
+      attachTo: document.body,
+      props: { api, versionId: 'version-1', itemId: 'item-1' },
+      global: {
+        provide: { [adminPageContextKey]: createPageContext() },
+        stubs: { RouterLink: { template: '<a><slot /></a>' } },
+      },
+    })
+    await flushPromises()
+
+    const trigger = wrapper.findAll('button').find((button) => button.text() === '禁用项目')
+    expect(trigger).toBeDefined()
+    ;(trigger?.element as HTMLButtonElement).focus()
+    await trigger?.trigger('click')
+    await nextTick()
+
+    const confirmation = wrapper.get('[data-disable-confirmation]')
+    expect(document.activeElement).toBe(confirmation.element)
+    const cancel = confirmation.findAll('button').find((button) => button.text() === '取消')
+    await cancel?.trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('[data-disable-confirmation]').exists()).toBe(false)
+    expect(document.activeElement).toBe(trigger?.element)
+    wrapper.unmount()
+  })
+
   it('does not render a partial editor when either required resource fails to load', async () => {
     const api = {
       getSourceVersion: vi.fn().mockResolvedValue(draftVersion),
@@ -259,3 +456,11 @@ describe('ExerciseItemPage', () => {
     expect(api.disableExerciseItem).not.toHaveBeenCalled()
   })
 })
+
+const setViewportWidth = (width: number): void => {
+  Object.defineProperty(window, 'innerWidth', {
+    configurable: true,
+    value: width,
+  })
+  window.dispatchEvent(new Event('resize'))
+}

@@ -1,182 +1,333 @@
-import { defineComponent, h, onMounted, onUnmounted } from 'vue'
+/* eslint-disable vue/one-component-per-file */
+import { defineComponent, h, onUnmounted } from 'vue'
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { createMemoryHistory, createRouter } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createAdminApi } from '@/api/adminApi'
-import { ApiFailureError, ApiNetworkError } from '@/api/errors'
-import { createHttpClient, type FetchImplementation } from '@/api/httpClient'
+import type { createAdminApi } from '@/api/adminApi'
+import {
+  reportAdminAuthorizationFailure,
+} from '@/api/adminAuthorizationBoundary'
+import { ApiFailureError, ApiNetworkError, InvalidApiResponseError } from '@/api/errors'
 import AdminGate from '@/app/AdminGate.vue'
+import { useAdminSessionContext } from '@/features/admin-auth/adminSessionContext'
 
 enableAutoUnmount(afterEach)
 
+type AdminGateApi = Pick<
+  ReturnType<typeof createAdminApi>,
+  'getAdminSession' | 'logoutAdmin'
+>
+
+const session = {
+  id: 'admin-1',
+  source: 'application_session' as const,
+  displayName: 'Solazhu',
+}
+
+const sessionFailure = (
+  code:
+    | 'admin_session_required'
+    | 'admin_session_expired'
+    | 'admin_session_revoked',
+) =>
+  new ApiFailureError(401, { code, message: 'Session unavailable' })
+
+const mountGate = async (
+  api: AdminGateApi,
+  slot?: string | (() => ReturnType<typeof h>),
+) => {
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [
+      {
+        path: '/admin/login',
+        name: 'admin-login',
+        component: { template: '<div />' },
+        meta: { requiresAdmin: false },
+      },
+      {
+        path: '/admin/source-versions',
+        name: 'admin-source-versions',
+        component: { template: '<div />' },
+        meta: { requiresAdmin: true },
+      },
+      {
+        path: '/admin/courses',
+        name: 'admin-courses',
+        component: { template: '<div />' },
+        meta: { requiresAdmin: true },
+      },
+    ],
+  })
+  await router.push('/admin/courses?filter=active')
+  await router.isReady()
+  const wrapper = mount(AdminGate, {
+    props: { api },
+    global: { plugins: [router] },
+    ...(slot ? { slots: { default: slot } } : {}),
+  })
+
+  return { router, wrapper }
+}
+
 describe('AdminGate', () => {
-  it('does not expose the admin workspace before the server confirms an admin session', async () => {
-    let resolveSession: ((value: { id: string; source: 'cloudflare_access' }) => void) | undefined
-    const session = new Promise<{ id: string; source: 'cloudflare_access' }>((resolve) => {
-      resolveSession = resolve
-    })
-    const api = { getAdminSession: vi.fn().mockReturnValue(session) }
-    const wrapper = mount(AdminGate, {
-      props: { api },
-      slots: { default: '<div data-admin-workspace>私有业务数据</div>' },
-    })
+  it('does not expose the workspace before the server confirms a session', async () => {
+    let resolveSession!: (value: typeof session) => void
+    const api: AdminGateApi = {
+      getAdminSession: vi.fn().mockReturnValue(
+        new Promise<typeof session>((resolve) => {
+          resolveSession = resolve
+        }),
+      ),
+      logoutAdmin: vi.fn(),
+    }
+    const { wrapper } = await mountGate(api, '<div data-admin-workspace>私有业务数据</div>')
 
-    expect(wrapper.get('[role="status"]').text()).toContain('正在验证管理员身份')
+    expect(wrapper.text()).toContain('正在验证管理员身份')
     expect(wrapper.find('[data-admin-workspace]').exists()).toBe(false)
-    expect(api.getAdminSession).toHaveBeenCalledTimes(1)
 
-    resolveSession?.({ id: 'admin-1', source: 'cloudflare_access' })
+    resolveSession(session)
     await flushPromises()
 
     expect(wrapper.get('[data-admin-workspace]').text()).toBe('私有业务数据')
   })
 
-  it('keeps the business shell unmounted when the admin identity is rejected', async () => {
-    const api = {
-      getAdminSession: vi.fn().mockRejectedValue(
-        new ApiFailureError(401, {
-          code: 'unauthorized',
-          message: 'Access identity required',
-        }),
-      ),
-    }
-    const wrapper = mount(AdminGate, {
-      props: { api },
-      slots: { default: '<div data-admin-workspace>私有业务数据</div>' },
+  it('provides the authoritative session to the private subtree', async () => {
+    const SessionProbe = defineComponent({
+      setup() {
+        const context = useAdminSessionContext()
+        return () => h('p', { 'data-session': '' }, context.session.value?.displayName)
+      },
     })
-
+    const api: AdminGateApi = {
+      getAdminSession: vi.fn().mockResolvedValue(session),
+      logoutAdmin: vi.fn(),
+    }
+    const { wrapper } = await mountGate(api, () => h(SessionProbe))
     await flushPromises()
 
-    const main = wrapper.get('main')
-    expect(main.get('h1').text()).toBe('管理端身份验证')
-    expect(main.get('[role="alert"] h2').text()).toBe('管理员身份未通过')
-    expect(wrapper.get('[role="alert"]').text()).toContain('管理员身份未通过')
-    expect(wrapper.find('[data-admin-workspace]').exists()).toBe(false)
-    expect(wrapper.find('button').exists()).toBe(false)
+    expect(wrapper.get('[data-session]').text()).toBe('Solazhu')
   })
-
-  it.each([401, 403])(
-    'treats an initial non-JSON Cloudflare Access %s response as unauthorized',
-    async (status) => {
-      const fetchImpl = vi.fn<FetchImplementation>().mockResolvedValue(
-        new Response('<html>Cloudflare Access</html>', {
-          status,
-          headers: { 'content-type': 'text/html' },
-        }),
-      )
-      const api = createAdminApi(createHttpClient(fetchImpl))
-      const wrapper = mount(AdminGate, {
-        props: { api },
-        slots: { default: '<div data-admin-workspace>私有业务数据</div>' },
-        global: { stubs: { RouterView: true } },
-      })
-
-      await flushPromises()
-
-      expect(wrapper.get('[role="alert"] h2').text()).toBe('管理员身份未通过')
-      expect(wrapper.text()).not.toContain('无法验证管理员身份')
-      expect(wrapper.find('[data-admin-workspace]').exists()).toBe(false)
-      expect(wrapper.find('button').exists()).toBe(false)
-    },
-  )
 
   it.each([
-    {
-      label: 'a non-JSON 500 response',
-      response: () => new Response('<html>Server error</html>', { status: 500 }),
-    },
-    {
-      label: 'an invalid 200 JSON response',
-      response: () => Response.json({ unexpected: true }),
-    },
-  ])('keeps $label on the retryable verification-error path', async ({ response }) => {
-    const fetchImpl = vi.fn<FetchImplementation>().mockResolvedValue(response())
-    const api = createAdminApi(createHttpClient(fetchImpl))
-    const wrapper = mount(AdminGate, {
-      props: { api },
-      slots: { default: '<div data-admin-workspace>私有业务数据</div>' },
-      global: { stubs: { RouterView: true } },
-    })
-
+    sessionFailure('admin_session_required'),
+    sessionFailure('admin_session_expired'),
+    new InvalidApiResponseError(401),
+    new InvalidApiResponseError(403),
+  ])('fails closed into login when the initial session check rejects identity', async (error) => {
+    const api: AdminGateApi = {
+      getAdminSession: vi.fn().mockRejectedValue(error),
+      logoutAdmin: vi.fn(),
+    }
+    const { router, wrapper } = await mountGate(
+      api,
+      '<div data-admin-workspace>私有业务数据</div>',
+    )
     await flushPromises()
 
-    expect(wrapper.get('[role="alert"] h2').text()).toBe('无法验证管理员身份')
-    expect(wrapper.get('button').text()).toBe('重新验证')
     expect(wrapper.find('[data-admin-workspace]').exists()).toBe(false)
+    expect(router.currentRoute.value.path).toBe('/admin/login')
+    expect(router.currentRoute.value.query.returnTo).toBe('/admin/courses?filter=active')
   })
 
-  it('allows an explicit retry after a temporary identity-check failure', async () => {
-    const api = {
+  it('labels a revoked initial session as invalid on the login route', async () => {
+    const api: AdminGateApi = {
+      getAdminSession: vi.fn().mockRejectedValue(sessionFailure('admin_session_revoked')),
+      logoutAdmin: vi.fn(),
+    }
+    const { router } = await mountGate(api)
+    await flushPromises()
+
+    expect(router.currentRoute.value.query.reason).toBe('invalid')
+  })
+
+  it('does not mount the browser shell for a service-token identity', async () => {
+    const api: AdminGateApi = {
+      getAdminSession: vi.fn().mockResolvedValue({
+        ...session,
+        source: 'service_token' as const,
+      }),
+      logoutAdmin: vi.fn(),
+    }
+    const { router, wrapper } = await mountGate(
+      api,
+      '<div data-admin-workspace>私有业务数据</div>',
+    )
+    await flushPromises()
+
+    expect(wrapper.find('[data-admin-workspace]').exists()).toBe(false)
+    expect(router.currentRoute.value.path).toBe('/admin/login')
+    expect(router.currentRoute.value.query.reason).toBe('invalid')
+  })
+
+  it('keeps the private subtree unmounted and allows retry after a network failure', async () => {
+    const api: AdminGateApi = {
       getAdminSession: vi
         .fn()
         .mockRejectedValueOnce(new ApiNetworkError(new Error('offline')))
-        .mockResolvedValueOnce({ id: 'admin-1', source: 'cloudflare_access' as const }),
+        .mockResolvedValueOnce(session),
+      logoutAdmin: vi.fn(),
     }
-    const wrapper = mount(AdminGate, {
-      props: { api },
-      slots: { default: '<div data-admin-workspace>私有业务数据</div>' },
-    })
-
+    const { wrapper } = await mountGate(
+      api,
+      '<div data-admin-workspace>私有业务数据</div>',
+    )
     await flushPromises()
-    expect(wrapper.get('[role="alert"]').text()).toContain('无法验证管理员身份')
+
+    expect(wrapper.text()).toContain('无法验证管理员身份')
+    expect(wrapper.find('[data-admin-workspace]').exists()).toBe(false)
 
     await wrapper.get('button').trigger('click')
     await flushPromises()
 
     expect(wrapper.get('[data-admin-workspace]').text()).toBe('私有业务数据')
-    expect(api.getAdminSession).toHaveBeenCalledTimes(2)
   })
 
-  it.each([401, 403])(
-    'fails closed and unmounts stale business state when an admin request returns %s',
-    async (status) => {
-      let resolveRequest: ((response: Response) => void) | undefined
-      let businessWorkspaceUnmounted = false
-      const response = new Promise<Response>((resolve) => {
-        resolveRequest = resolve
-      })
-      const fetchImpl = vi.fn<FetchImplementation>().mockReturnValue(response)
-      const BusinessWorkspace = defineComponent({
-        setup() {
-          const api = createAdminApi(createHttpClient(fetchImpl))
-          onMounted(() => {
-            void api.listSourceVersions().catch(() => undefined)
-          })
-          onUnmounted(() => {
-            businessWorkspaceUnmounted = true
-          })
-          return () => h('div', { 'data-admin-workspace': '' }, '旧页面私有状态')
+  it('unmounts stale private state only for a stable session-failure code', async () => {
+    let unmounted = false
+    const PrivateWorkspace = defineComponent({
+      setup() {
+        onUnmounted(() => {
+          unmounted = true
+        })
+        return () => h('div', { 'data-admin-workspace': '' }, '旧页面私有状态')
+      },
+    })
+    const api: AdminGateApi = {
+      getAdminSession: vi.fn().mockResolvedValue(session),
+      logoutAdmin: vi.fn(),
+    }
+    const { router, wrapper } = await mountGate(api, () => h(PrivateWorkspace))
+    await flushPromises()
+
+    reportAdminAuthorizationFailure('admin_session_revoked')
+    await flushPromises()
+
+    expect(wrapper.find('[data-admin-workspace]').exists()).toBe(false)
+    expect(unmounted).toBe(true)
+    expect(router.currentRoute.value.path).toBe('/admin/login')
+  })
+
+  it('revalidates the server session when a persisted page is restored', async () => {
+    const api: AdminGateApi = {
+      getAdminSession: vi
+        .fn()
+        .mockResolvedValueOnce(session)
+        .mockRejectedValueOnce(sessionFailure('admin_session_revoked')),
+      logoutAdmin: vi.fn(),
+    }
+    const { router } = await mountGate(api, '<div data-admin-workspace />')
+    await flushPromises()
+
+    const event = new Event('pageshow') as PageTransitionEvent
+    Object.defineProperty(event, 'persisted', { value: true })
+    window.dispatchEvent(event)
+    await flushPromises()
+
+    expect(api.getAdminSession).toHaveBeenCalledTimes(2)
+    expect(router.currentRoute.value.path).toBe('/admin/login')
+  })
+
+  it('revokes an application session and clears the private subtree on logout', async () => {
+    const LogoutProbe = defineComponent({
+      setup() {
+        const context = useAdminSessionContext()
+        return () =>
+          h(
+            'button',
+            { 'data-logout': '', onClick: () => void context.logout() },
+            '退出',
+          )
+      },
+    })
+    const api: AdminGateApi = {
+      getAdminSession: vi.fn().mockResolvedValue(session),
+      logoutAdmin: vi.fn().mockResolvedValue({ loggedOut: true as const }),
+    }
+    const { router, wrapper } = await mountGate(api, () => h(LogoutProbe))
+    await flushPromises()
+
+    await wrapper.get('[data-logout]').trigger('click')
+    await flushPromises()
+
+    expect(api.logoutAdmin).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-logout]').exists()).toBe(false)
+    expect(router.currentRoute.value.fullPath).toBe('/admin/login?reason=logged_out')
+  })
+
+  it('uses Cloudflare Access logout without calling the application logout API', async () => {
+    const accessSession = {
+      ...session,
+      source: 'cloudflare_access' as const,
+    }
+    const navigateToAccessLogout = vi.fn()
+    const LogoutProbe = defineComponent({
+      setup() {
+        const context = useAdminSessionContext()
+        return () =>
+          h(
+            'button',
+            { 'data-logout': '', onClick: () => void context.logout() },
+            '退出',
+          )
+      },
+    })
+    const api: AdminGateApi = {
+      getAdminSession: vi.fn().mockResolvedValue(accessSession),
+      logoutAdmin: vi.fn(),
+    }
+    const router = createRouter({
+      history: createMemoryHistory(),
+      routes: [
+        {
+          path: '/admin/courses',
+          component: { template: '<div />' },
+          meta: { requiresAdmin: true },
         },
-      })
-      const wrapper = mount(AdminGate, {
-        props: {
-          api: {
-            getAdminSession: vi.fn().mockResolvedValue({
-              id: 'admin-1',
-              source: 'cloudflare_access' as const,
-            }),
-          },
-        },
-        slots: { default: () => h(BusinessWorkspace) },
-      })
+      ],
+    })
+    await router.push('/admin/courses')
+    await router.isReady()
+    const wrapper = mount(AdminGate, {
+      props: { api, navigateToAccessLogout },
+      slots: { default: () => h(LogoutProbe) },
+      global: { plugins: [router] },
+    })
+    await flushPromises()
 
-      await flushPromises()
-      expect(wrapper.get('[data-admin-workspace]').text()).toBe('旧页面私有状态')
+    await wrapper.get('[data-logout]').trigger('click')
+    await flushPromises()
 
-      resolveRequest?.(
-        Response.json(
-          {
-            ok: false,
-            error: { code: 'unauthorized', message: 'Admin identity expired' },
-          },
-          { status },
-        ),
-      )
-      await flushPromises()
+    expect(navigateToAccessLogout).toHaveBeenCalledTimes(1)
+    expect(api.logoutAdmin).not.toHaveBeenCalled()
+  })
 
-      expect(wrapper.get('main h1').text()).toBe('管理端身份验证')
-      expect(wrapper.get('[role="alert"]').text()).toContain('管理员身份未通过')
-      expect(wrapper.find('[data-admin-workspace]').exists()).toBe(false)
-      expect(businessWorkspaceUnmounted).toBe(true)
-    },
-  )
+  it('keeps the private subtree when application logout fails', async () => {
+    const LogoutProbe = defineComponent({
+      setup() {
+        const context = useAdminSessionContext()
+        return () =>
+          h(
+            'button',
+            {
+              'data-logout': '',
+              onClick: () => void context.logout().catch(() => undefined),
+            },
+            '退出',
+          )
+      },
+    })
+    const api: AdminGateApi = {
+      getAdminSession: vi.fn().mockResolvedValue(session),
+      logoutAdmin: vi.fn().mockRejectedValue(new Error('D1 unavailable')),
+    }
+    const { router, wrapper } = await mountGate(api, () => h(LogoutProbe))
+    await flushPromises()
+
+    await wrapper.get('[data-logout]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-logout]').exists()).toBe(true)
+    expect(router.currentRoute.value.path).toBe('/admin/courses')
+  })
 })

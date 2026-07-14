@@ -2,11 +2,13 @@ import { createWorkerApp, type WorkerApp } from './app'
 import { createD1ContentRepository } from './repositories/d1ContentRepository'
 import { createD1CourseRepository } from './repositories/d1CourseRepository'
 import { createD1SessionRepository } from './repositories/d1SessionRepository'
+import { createD1AdminSessionRepository } from './repositories/d1AdminSessionRepository'
 import { createContentBuilder } from './services/ContentBuilder'
 import { createCourseRuntime } from './services/CourseRuntime'
 import { createCourseQueryService } from './services/CourseQueryService'
 import { createLearnerSessionService } from './services/LearnerSessionService'
-import type { AdminAuthenticator } from './security/adminAuthentication'
+import { createAdminSessionService } from './services/AdminSessionService'
+import { parseAdminAuthConfig } from './security/adminCredential'
 import { createD1AdminOperationLedger } from './repositories/adminOperationLedger'
 
 type E2EEnv = {
@@ -15,6 +17,7 @@ type E2EEnv = {
   APP_ORIGIN: string
   E2E_ENVIRONMENT: string
   E2E_RUN_ID: string
+  ADMIN_AUTH_CONFIG: string
 }
 
 let application: WorkerApp | undefined
@@ -52,7 +55,7 @@ export default {
       applicationRunId = env.E2E_RUN_ID
     }
 
-    return application.fetch(withControlledAdminIdentity(request))
+    return application.fetch(request)
   },
 } satisfies ExportedHandler<E2EEnv>
 
@@ -98,14 +101,13 @@ const createE2EApplication = (env: E2EEnv): WorkerApp => {
   const contentRepository = createD1ContentRepository(env.DB)
   const courseRepository = createD1CourseRepository(env.DB)
   const sessionRepository = createD1SessionRepository(env.DB)
-  const accessAuthenticator: AdminAuthenticator = {
-    authenticate: () =>
-      Promise.resolve({
-        source: 'cloudflare_access',
-        subject: 'e2e-admin',
-        email: 'e2e-admin@example.test',
-      }),
-  }
+  const adminSessionRepository = createD1AdminSessionRepository(env.DB)
+  const adminSessionService = createAdminSessionService({
+    sessionRepository: adminSessionRepository,
+    rateLimitRepository: adminSessionRepository,
+    config: parseAdminAuthConfig(env.ADMIN_AUTH_CONFIG),
+    now,
+  })
 
   return createWorkerApp({
     contentBuilder: createContentBuilder({
@@ -129,20 +131,10 @@ const createE2EApplication = (env: E2EEnv): WorkerApp => {
       now,
     }),
     adminAuthentication: {
-      accessAuthenticator,
+      applicationSessionService: adminSessionService,
       allowedOrigin: env.APP_ORIGIN,
+      browserMode: 'application_session',
     },
     assets: env.ASSETS,
   })
-}
-
-const withControlledAdminIdentity = (request: Request): Request => {
-  const path = new URL(request.url).pathname
-
-  if (!path.startsWith('/admin') && !path.startsWith('/api/admin/')) return request
-
-  const headers = new Headers(request.headers)
-  headers.set('cf-access-jwt-assertion', 'controlled-local-e2e-identity')
-
-  return new Request(request, { headers })
 }
