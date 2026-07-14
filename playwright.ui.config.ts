@@ -28,6 +28,7 @@ const reflowProjects: Project[] = [
 
 const adminProjects: Project[] = [
   { name: 'admin-375', use: { viewport: { width: 375, height: 812 } } },
+  { name: 'admin-479', use: { viewport: { width: 479, height: 812 } } },
   { name: 'admin-480', use: { viewport: { width: 480, height: 812 } } },
   { name: 'admin-768', use: { viewport: { width: 768, height: 1024 } } },
   { name: 'admin-1024', use: { viewport: { width: 1024, height: 768 } } },

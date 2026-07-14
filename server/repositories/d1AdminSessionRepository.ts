@@ -56,6 +56,34 @@ export const createD1AdminSessionRepository = (
     return result.meta.changes > 0
   },
 
+  async cleanupExpired(input) {
+    await db
+      .prepare(
+        `DELETE FROM admin_sessions
+        WHERE id IN (
+          SELECT id FROM admin_sessions
+          WHERE expires_at <= ?
+          ORDER BY expires_at
+          LIMIT 100
+        )`,
+      )
+      .bind(input.sessionsExpiredBefore)
+      .run()
+    await db
+      .prepare(
+        `DELETE FROM admin_login_rate_limits
+        WHERE key_hash IN (
+          SELECT key_hash FROM admin_login_rate_limits
+          WHERE updated_at <= ?
+            AND (blocked_until IS NULL OR blocked_until <= ?)
+          ORDER BY updated_at
+          LIMIT 100
+        )`,
+      )
+      .bind(input.rateLimitsUpdatedBefore, input.rateLimitsUnblockedBefore)
+      .run()
+  },
+
   async reserveAttempt(input) {
     const row = await db
       .prepare(

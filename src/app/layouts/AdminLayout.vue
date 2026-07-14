@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, provide, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { BookOpenText, LogOut, UsersRound } from '@lucide/vue'
 import {
@@ -16,6 +16,9 @@ const pageContext = ref<AdminPageContext | null>(null)
 const isWideSidebar = ref(window.innerWidth >= 1200)
 const logoutPending = ref(false)
 const logoutError = ref('')
+const mainRoot = ref<HTMLElement | null>(null)
+let focusRequested = false
+let headingObserver: MutationObserver | undefined
 
 const defaultBreadcrumbs = computed<readonly string[]>(() => {
   switch (route.name) {
@@ -52,6 +55,21 @@ const confirmPageLeave = async (): Promise<boolean> => {
   }
 }
 
+const focusRequestedHeading = (): void => {
+  if (!focusRequested) return
+  const heading = mainRoot.value?.querySelector<HTMLElement>('h1')
+  if (!heading) return
+  heading.setAttribute('tabindex', '-1')
+  heading.focus()
+  focusRequested = false
+}
+
+const requestPageHeadingFocus = async (): Promise<void> => {
+  focusRequested = true
+  await nextTick()
+  focusRequestedHeading()
+}
+
 const removeRouteGuard = router.beforeEach(async (to, from) => {
   if (to.fullPath === from.fullPath) {
     return true
@@ -66,8 +84,10 @@ const removeRouteGuard = router.beforeEach(async (to, from) => {
   return confirmPageLeave()
 })
 
-const removeAfterEach = router.afterEach(() => {
+const removeAfterEach = router.afterEach((_to, _from, failure) => {
+  if (failure) return
   pageContextPort.clearPageContext()
+  void requestPageHeadingFocus()
 })
 
 const handleLogout = async (): Promise<void> => {
@@ -92,11 +112,17 @@ const updateSidebarMode = (): void => {
 
 onMounted(() => {
   window.addEventListener('resize', updateSidebarMode)
+  if (mainRoot.value) {
+    headingObserver = new MutationObserver(focusRequestedHeading)
+    headingObserver.observe(mainRoot.value, { childList: true, subtree: true })
+  }
+  void requestPageHeadingFocus()
 })
 
 onUnmounted(() => {
   removeRouteGuard()
   removeAfterEach()
+  headingObserver?.disconnect()
   window.removeEventListener('resize', updateSidebarMode)
 })
 </script>
@@ -129,6 +155,7 @@ onUnmounted(() => {
       >
         <router-link
           to="/admin/source-versions"
+          aria-label="词库工作台"
           title="词库工作台"
         >
           <book-open-text
@@ -139,6 +166,7 @@ onUnmounted(() => {
         </router-link>
         <router-link
           to="/admin/courses"
+          aria-label="课程工作台"
           title="课程工作台"
         >
           <users-round
@@ -226,6 +254,7 @@ onUnmounted(() => {
 
       <main
         id="admin-main"
+        ref="mainRoot"
         class="admin-main"
         tabindex="-1"
       >
@@ -302,6 +331,7 @@ onUnmounted(() => {
 }
 
 .admin-nav a {
+  position: relative;
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
   min-height: 40px;
@@ -460,14 +490,32 @@ onUnmounted(() => {
 
   .admin-nav__label {
     position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
+    z-index: 10;
+    left: calc(100% + var(--space-2));
+    width: max-content;
+    height: auto;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--color-line-strong);
+    border-radius: var(--radius-sm);
+    background: var(--color-ink);
+    color: var(--color-surface);
+    box-shadow: var(--shadow-low);
+    font-size: 12px;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateX(-4px);
+    visibility: hidden;
     white-space: nowrap;
-    border: 0;
+    transition:
+      opacity 120ms ease,
+      transform 120ms ease;
+  }
+
+  .admin-nav a:hover .admin-nav__label,
+  .admin-nav a:focus-visible .admin-nav__label {
+    opacity: 1;
+    transform: translateX(0);
+    visibility: visible;
   }
 }
 

@@ -181,4 +181,91 @@ describe('admin session service', () => {
       }),
     ).rejects.toMatchObject({ code: 'invalid_admin_credentials' })
   })
+
+  it('does not let opportunistic cleanup failures change the login result', async () => {
+    const config = await createConfig()
+    const repository = createInMemoryAdminSessionRepository()
+    vi.spyOn(repository, 'cleanupExpired').mockRejectedValue(
+      new Error('cleanup unavailable'),
+    )
+    const service = createAdminSessionService({
+      sessionRepository: repository,
+      rateLimitRepository: repository,
+      config,
+      now: () => NOW,
+      verifyCredential: vi.fn().mockResolvedValue(true),
+      generateToken: () => RAW_TOKEN,
+    })
+
+    await expect(
+      service.login({
+        username: 'admin',
+        password: 'correct horse battery staple',
+        clientIdentifier: '203.0.113.8',
+      }),
+    ).resolves.toMatchObject({
+      token: RAW_TOKEN,
+      session: { source: 'application_session' },
+    })
+  })
+
+  it('maps session-store read failures to dependency_failure', async () => {
+    const config = await createConfig()
+    const repository = createInMemoryAdminSessionRepository()
+    vi.spyOn(repository, 'getByTokenHash').mockRejectedValue(new Error('D1 read failed'))
+    const service = createAdminSessionService({
+      sessionRepository: repository,
+      rateLimitRepository: repository,
+      config,
+      now: () => NOW,
+    })
+
+    await expect(service.resolve(RAW_TOKEN)).rejects.toMatchObject({
+      code: 'dependency_failure',
+    })
+  })
+
+  it('maps session-store write failures to dependency_failure', async () => {
+    const config = await createConfig()
+    const repository = createInMemoryAdminSessionRepository()
+    vi.spyOn(repository, 'create').mockRejectedValue(new Error('D1 write failed'))
+    const service = createAdminSessionService({
+      sessionRepository: repository,
+      rateLimitRepository: repository,
+      config,
+      now: () => NOW,
+      verifyCredential: vi.fn().mockResolvedValue(true),
+      generateToken: () => RAW_TOKEN,
+    })
+
+    await expect(
+      service.login({
+        username: 'admin',
+        password: 'correct horse battery staple',
+        clientIdentifier: '203.0.113.9',
+      }),
+    ).rejects.toMatchObject({ code: 'dependency_failure' })
+  })
+
+  it('maps temporary logout-store failures to dependency_failure', async () => {
+    const config = await createConfig()
+    const repository = createInMemoryAdminSessionRepository()
+    const service = createAdminSessionService({
+      sessionRepository: repository,
+      rateLimitRepository: repository,
+      config,
+      now: () => NOW,
+      generateToken: () => RAW_TOKEN,
+    })
+    await service.login({
+      username: 'admin',
+      password: 'correct horse battery staple',
+      clientIdentifier: '203.0.113.10',
+    })
+    vi.spyOn(repository, 'revokeById').mockRejectedValue(new Error('D1 write failed'))
+
+    await expect(service.logout(RAW_TOKEN)).rejects.toMatchObject({
+      code: 'dependency_failure',
+    })
+  })
 })

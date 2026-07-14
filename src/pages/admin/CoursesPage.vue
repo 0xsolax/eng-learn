@@ -436,6 +436,13 @@ onBeforeUnmount(() => {
         </ui-button>
       </ui-status-message>
 
+      <div
+        v-if="oneTimeCode"
+        data-one-time-code-backdrop
+        class="one-time-dialog-backdrop"
+        aria-hidden="true"
+      />
+
       <section
         v-if="oneTimeCode"
         ref="oneTimeCodeDialog"
@@ -513,7 +520,10 @@ onBeforeUnmount(() => {
 
         <div
           v-else
+          data-scroll-region="courses"
           class="table-scroll"
+          tabindex="0"
+          aria-label="课程列表表格"
         >
           <table>
             <thead>
@@ -821,6 +831,13 @@ onBeforeUnmount(() => {
   transform: translate(-50%, -50%);
 }
 
+.one-time-dialog-backdrop {
+  position: fixed;
+  z-index: 29;
+  inset: 0;
+  background: rgb(35 52 58 / 40%);
+}
+
 .one-time-dialog:focus-visible {
   outline: 3px solid var(--color-focus);
   outline-offset: 3px;
@@ -880,6 +897,12 @@ onBeforeUnmount(() => {
   overflow-x: auto;
   border: 1px solid var(--color-line);
   background: var(--color-surface);
+}
+
+.table-scroll:focus-visible {
+  border-color: var(--color-brand-strong);
+  outline: 3px solid var(--color-focus-ring);
+  outline-offset: 2px;
 }
 
 table {

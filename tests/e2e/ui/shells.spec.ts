@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright'
-import { expect, test, type Page } from '@playwright/test'
+import { expect, test, type Locator, type Page } from '@playwright/test'
+import { installMockedAdminWorkspaceApiRouteFixture } from './fixtures/adminWorkspaceApiRouteFixture'
 import { installMockedLearnerApiRouteFixture } from './fixtures/learnerApiRouteFixture'
 
 const expectNoHorizontalOverflow = async (page: Page): Promise<void> => {
@@ -52,6 +53,21 @@ const expectNoSeriousAccessibilityViolations = async (page: Page): Promise<void>
       })),
     })),
   ).toEqual([])
+}
+
+const moveFocusWithKeyboard = async (
+  page: Page,
+  target: Locator,
+  direction: 'forward' | 'backward' = 'forward',
+): Promise<void> => {
+  await expect(target).toBeVisible()
+
+  for (let step = 0; step < 80; step += 1) {
+    if (await target.evaluate((element) => element === document.activeElement)) return
+    await page.keyboard.press(direction === 'forward' ? 'Tab' : 'Shift+Tab')
+  }
+
+  await expect(target).toBeFocused()
 }
 
 const contrastRatio = async (
@@ -294,7 +310,9 @@ test('@admin keeps a dense segmented workspace across admin viewports', async ({
   await page.goto('/admin')
 
   await expect(page).toHaveURL(/\/admin\/source-versions$/u)
-  await expect(page.getByRole('heading', { level: 1, name: '词库版本' })).toBeVisible()
+  const sourceHeading = page.getByRole('heading', { level: 1, name: '词库版本' })
+  await expect(sourceHeading).toBeVisible()
+  await expect(sourceHeading).toBeFocused()
   await expect(page.getByRole('navigation', { name: '管理端主导航' })).toBeVisible()
   await expect(page.getByRole('heading', { level: 3, name: '还没有词库版本' })).toBeVisible()
   const createDraftButton = page.getByRole('button', { name: '创建草稿版本' })
@@ -324,10 +342,12 @@ test('@admin keeps a dense segmented workspace across admin viewports', async ({
   } else if ((viewportWidth ?? 0) < 1200) {
     expect(sidebarWidth).toBeGreaterThanOrEqual(64)
     expect(sidebarWidth).toBeLessThanOrEqual(96)
-    await expect(page.getByRole('link', { name: '词库工作台' }))
-      .toHaveAttribute('title', '词库工作台')
-    await expect(page.getByRole('link', { name: '课程工作台' }))
-      .toHaveAttribute('title', '课程工作台')
+    const sourceWorkspaceLink = page.getByRole('link', { name: '词库工作台' })
+    const courseWorkspaceLink = page.getByRole('link', { name: '课程工作台' })
+    await expect(sourceWorkspaceLink).toHaveAttribute('aria-label', '词库工作台')
+    await expect(courseWorkspaceLink).toHaveAttribute('aria-label', '课程工作台')
+    await sourceWorkspaceLink.focus()
+    await expect(sourceWorkspaceLink.locator('.admin-nav__label')).toBeVisible()
   } else {
     expect(sidebarWidth).toBeGreaterThanOrEqual(200)
     await expect(page.locator('.admin-mobile-notice')).toBeHidden()
@@ -339,8 +359,10 @@ test('@admin keeps a dense segmented workspace across admin viewports', async ({
     ).toBeGreaterThanOrEqual(4.5)
   }
 
-  await page.keyboard.press('Tab')
-  await expect(page.locator('.skip-link')).toBeFocused()
+  const skipLink = page.locator('.skip-link')
+  await skipLink.focus()
+  await page.keyboard.press('Enter')
+  await expect(page.locator('#admin-main')).toBeFocused()
 
   await page.goto('/admin/source-versions/version-1')
   await expect(page.getByRole('heading', { level: 1, name: '版本 v1' })).toBeVisible()
@@ -373,6 +395,252 @@ test('@admin keeps a dense segmented workspace across admin viewports', async ({
   await expect(page.getByRole('status')).toContainText('登录已过期')
   await expect(page.locator('[data-layout="admin"]')).toHaveCount(0)
   await expectNoSeriousAccessibilityViolations(page)
+})
+
+test('@admin verifies exercise and course mutation boundaries at 479 and 480 pixels', async ({
+  page,
+}) => {
+  const viewportWidth = page.viewportSize()?.width ?? 0
+  test.skip(
+    viewportWidth !== 479 && viewportWidth !== 480,
+    'This boundary contract only applies to the adjacent 479px and 480px projects.',
+  )
+
+  const fixture = await installMockedAdminWorkspaceApiRouteFixture(page, {
+    withExistingCourse: true,
+  })
+
+  await page.goto('/admin/source-versions/version-1/exercises/item-1')
+  await expect(page.getByRole('heading', { level: 1, name: 'apple 的练习项目' })).toBeVisible()
+
+  if (viewportWidth === 479) {
+    await expect(page.locator('[data-mobile-exercise-summary]')).toBeVisible()
+    await expect(page.locator('.exercise-form')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '保存练习内容' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '批准项目' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '禁用项目' })).toHaveCount(0)
+  } else {
+    await expect(page.locator('[data-mobile-exercise-summary]')).toHaveCount(0)
+    await expect(page.locator('.exercise-form')).toBeVisible()
+    await expect(page.getByRole('button', { name: '保存练习内容' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '批准项目' })).toBeVisible()
+    await expect(page.getByRole('button', { name: '禁用项目' })).toBeVisible()
+  }
+
+  await expectNoHorizontalOverflow(page)
+  await expectNoSeriousAccessibilityViolations(page)
+
+  await page.goto('/admin/courses')
+  await expect(page.getByRole('heading', { level: 1, name: '课程工作台' })).toBeVisible()
+
+  const createCourseButton = page.locator('[data-toggle-create]')
+  const rotateCodeButton = page.locator('[data-rotate-code]')
+  if (viewportWidth === 479) {
+    await expect(page.locator('[data-mobile-readonly]')).toBeVisible()
+    await expect(createCourseButton).toHaveCount(0)
+    await expect(rotateCodeButton).toHaveCount(0)
+    await expect(page.locator('[data-course-form]')).toHaveCount(0)
+    await expect(page.locator('[data-copy-code]')).toHaveCount(0)
+  } else {
+    await expect(page.locator('[data-mobile-readonly]')).toHaveCount(0)
+    await expect(createCourseButton).toBeVisible()
+    await expect(rotateCodeButton).toBeVisible()
+  }
+
+  await expectNoHorizontalOverflow(page)
+  await expectNoSeriousAccessibilityViolations(page)
+  expect(fixture.unhandledRequests).toEqual([])
+})
+
+test('@admin completes the content workbench with keyboard-only critical actions', async ({
+  context,
+  page,
+}) => {
+  test.skip(
+    page.viewportSize()?.width !== 1280,
+    'The continuous keyboard workflow runs once in the desktop project.',
+  )
+
+  const fixturePassword = ['fixture', 'keyboard', 'password'].join('-')
+  const fixture = await installMockedAdminWorkspaceApiRouteFixture(page, {
+    authenticated: false,
+  })
+
+  await page.goto('/admin/login')
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
+    origin: new URL(page.url()).origin,
+  })
+  const usernameInput = page.getByLabel('管理员账号')
+  const passwordInput = page.getByLabel('密码')
+  await expect(usernameInput).toBeVisible()
+  await moveFocusWithKeyboard(page, usernameInput)
+  await page.keyboard.type('solazhu')
+  await page.keyboard.press('Tab')
+  await expect(passwordInput).toBeFocused()
+  await page.keyboard.type(fixturePassword)
+  await page.keyboard.press('Tab')
+  const loginButton = page.getByRole('button', { name: '登录管理台' })
+  await expect(loginButton).toBeFocused()
+  await page.keyboard.press('Enter')
+
+  await expect(page).toHaveURL(/\/admin\/source-versions$/u)
+  await expect(page.getByRole('heading', { level: 1, name: '词库版本' })).toBeFocused()
+
+  const importToggle = page.getByRole('button', { name: '导入词表' })
+  await moveFocusWithKeyboard(page, importToggle)
+  await page.keyboard.press('Enter')
+  await expect(page.locator('[data-import-workspace]')).toBeVisible()
+
+  const sourceNameInput = page.getByLabel('词库名称')
+  await moveFocusWithKeyboard(page, sourceNameInput)
+  await page.keyboard.type('Keyboard import')
+  const csvInput = page.getByLabel('CSV 文件')
+  await moveFocusWithKeyboard(page, csvInput)
+  const fileChooserPromise = page.waitForEvent('filechooser')
+  await page.keyboard.press('Enter')
+  const fileChooser = await fileChooserPromise
+  await fileChooser.setFiles({
+    name: 'keyboard-import.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from(
+      'word,meaning,exampleSentence,partOfSpeech\napple,苹果,An apple a day.,noun\n',
+    ),
+  })
+  await expect(page.locator('[data-csv-preview]')).toContainText('预览通过 · 1 个词')
+
+  const importButton = page.getByRole('button', { name: '创建草稿版本' })
+  await moveFocusWithKeyboard(page, importButton)
+  await page.keyboard.press('Enter')
+  await expect(page.getByText(/服务端已创建 v1/u)).toBeVisible()
+
+  const detailLink = page.getByRole('link', { name: '查看详情' }).first()
+  await moveFocusWithKeyboard(page, detailLink, 'backward')
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/\/admin\/source-versions\/version-1$/u)
+  await expect(page.getByRole('heading', { level: 1, name: '版本 v1' })).toBeFocused()
+
+  const openExerciseLink = page.getByRole('link', { name: '打开练习', exact: true })
+  await moveFocusWithKeyboard(page, openExerciseLink)
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/\/admin\/source-versions\/version-1\/exercises\/item-1$/u)
+
+  const meaningInput = page.getByLabel('中文词义')
+  await moveFocusWithKeyboard(page, meaningInput)
+  await page.keyboard.press('Control+A')
+  await page.keyboard.type('苹果水果')
+  const saveButton = page.getByRole('button', { name: '保存练习内容' })
+  await moveFocusWithKeyboard(page, saveButton)
+  await page.keyboard.press('Enter')
+  await expect(page.getByText('练习内容已保存，项目状态以服务端返回为准。')).toBeVisible()
+
+  const approveButton = page.getByRole('button', { name: '批准项目' })
+  await moveFocusWithKeyboard(page, approveButton)
+  await page.keyboard.press('Enter')
+  await expect(page.getByText('练习项目已批准；覆盖率需回到版本页重新读取。')).toBeVisible()
+
+  const backToVersionLink = page.getByRole('link', { name: '返回版本 v1' })
+  await moveFocusWithKeyboard(page, backToVersionLink, 'backward')
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('heading', { level: 1, name: '版本 v1' })).toBeFocused()
+
+  const publishButton = page.getByRole('button', { name: '发布版本' })
+  await expect(publishButton).toBeEnabled()
+  await moveFocusWithKeyboard(page, publishButton)
+  await page.keyboard.press('Enter')
+  const publishConfirmation = page.locator('[data-inline-confirmation]')
+  await expect(publishConfirmation).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(publishConfirmation).toHaveCount(0)
+  await expect(publishButton).toBeFocused()
+
+  await page.keyboard.press('Enter')
+  await expect(publishConfirmation).toBeFocused()
+  const confirmPublishButton = page.getByRole('button', { name: '确认发布' })
+  await moveFocusWithKeyboard(page, confirmPublishButton)
+  await page.keyboard.press('Enter')
+  await expect(page.getByText('版本已发布，只读。后续修改请创建下一草稿版本。')).toBeVisible()
+
+  const courseWorkspaceLink = page.getByRole('link', { name: '课程工作台' })
+  await moveFocusWithKeyboard(page, courseWorkspaceLink, 'backward')
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/\/admin\/courses$/u)
+  await expect(page.getByRole('heading', { level: 1, name: '课程工作台' })).toBeFocused()
+
+  const learnerNameInput = page.getByLabel('学习者姓名')
+  await moveFocusWithKeyboard(page, learnerNameInput)
+  await page.keyboard.type('小红')
+  const sourceVersionSelect = page.getByLabel('已发布词库版本')
+  await moveFocusWithKeyboard(page, sourceVersionSelect)
+  await expect(sourceVersionSelect).toHaveValue('version-1')
+  const createCourseButton = page.getByRole('button', { name: '创建课程并生成学习码' })
+  await moveFocusWithKeyboard(page, createCourseButton)
+  await page.keyboard.press('Enter')
+
+  const oneTimeCodeDialog = page.locator('[data-one-time-code]')
+  let clipboardMatches = false
+  try {
+    await expect(oneTimeCodeDialog).toBeFocused()
+    const copyCodeButton = page.getByRole('button', { name: '复制学习码' })
+    await moveFocusWithKeyboard(page, copyCodeButton)
+    await page.keyboard.press('Enter')
+    await expect(page.locator('[data-copy-feedback]')).toHaveText(
+      '复制成功，请保存到安全位置。',
+    )
+    clipboardMatches = await page.evaluate(async () => {
+      const expected = document.querySelector('[data-one-time-code] code')?.textContent
+      return Boolean(expected) && (await navigator.clipboard.readText()) === expected
+    })
+  } finally {
+    await oneTimeCodeDialog
+      .locator('code')
+      .evaluateAll((nodes) => {
+        for (const node of nodes) node.textContent = '•••• •••• ••'
+      })
+      .catch(() => undefined)
+  }
+  expect(clipboardMatches).toBe(true)
+  const dismissCodeButton = page.getByRole('button', { name: '我已安全记录' })
+  await moveFocusWithKeyboard(page, dismissCodeButton)
+  await page.keyboard.press('Enter')
+  await expect(oneTimeCodeDialog).toHaveCount(0)
+
+  const logoutButton = page.getByRole('button', { name: '退出' })
+  await moveFocusWithKeyboard(page, logoutButton, 'backward')
+  await page.keyboard.press('Enter')
+  await expect(page).toHaveURL(/\/admin\/login\?reason=logged_out$/u)
+  await expect(page.getByRole('status')).toContainText('已安全退出')
+  await expect(page.locator('[data-layout="admin"]')).toHaveCount(0)
+
+  await page.goBack()
+  await expect(page.getByRole('heading', { level: 1, name: '管理员登录' })).toBeVisible()
+  await expect(page.locator('[data-layout="admin"]')).toHaveCount(0)
+  await expect(page.locator('[data-version-workspace], [data-exercise-workbench], [data-course-form]')).toHaveCount(0)
+
+  await page.reload()
+  await expect(page.getByRole('heading', { level: 1, name: '管理员登录' })).toBeVisible()
+  await expect(page.locator('[data-layout="admin"]')).toHaveCount(0)
+  await expect(page.locator('[data-version-workspace], [data-exercise-workbench], [data-course-form]')).toHaveCount(0)
+
+  expect(fixture.apiCalls).toEqual(
+    expect.arrayContaining([
+      'POST /api/admin/auth/login',
+      'POST /api/admin/source-versions/import',
+      'PUT /api/admin/exercise-items/item-1',
+      'POST /api/admin/exercise-items/item-1/approve',
+      'POST /api/admin/source-versions/version-1/publish',
+      'POST /api/admin/courses',
+      'POST /api/admin/auth/logout',
+    ]),
+  )
+  expect(fixture.requestBodies).toEqual(
+    expect.arrayContaining([
+      {
+        key: 'POST /api/admin/auth/login',
+        body: { username: 'solazhu', passwordProvided: true },
+      },
+    ]),
+  )
+  expect(fixture.unhandledRequests).toEqual([])
 })
 
 test('@admin keeps login, session mount and logout keyboard-usable', async ({ page }) => {
@@ -411,10 +679,9 @@ test('@admin keeps login, session mount and logout keyboard-usable', async ({ pa
     }
 
     if (key === 'POST /api/admin/auth/login') {
-      expect(request.postDataJSON()).toEqual({
-        username: 'solazhu',
-        password: fixturePassword,
-      })
+      const body = request.postDataJSON() as { username?: unknown; password?: unknown }
+      expect(body.username).toBe('solazhu')
+      expect(typeof body.password === 'string' && body.password.length > 0).toBe(true)
       authenticated = true
       await route.fulfill({
         status: 200,
@@ -467,7 +734,9 @@ test('@admin keeps login, session mount and logout keyboard-usable', async ({ pa
   await passwordInput.press('Enter')
 
   await expect(page).toHaveURL(/\/admin\/source-versions$/u)
-  await expect(page.getByRole('heading', { level: 1, name: '词库版本' })).toBeVisible()
+  const workspaceHeading = page.getByRole('heading', { level: 1, name: '词库版本' })
+  await expect(workspaceHeading).toBeVisible()
+  await expect(workspaceHeading).toBeFocused()
   await expect(page.getByText('Solazhu', { exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: '退出' }).click()

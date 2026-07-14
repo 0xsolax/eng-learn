@@ -29,10 +29,9 @@ import {
 } from '@shared/api/schemas'
 import { z } from 'zod'
 import {
-  isAdminSessionFailureCode,
+  getAdminSessionFailureCode,
   reportAdminAuthorizationFailure,
 } from './adminAuthorizationBoundary'
-import { ApiFailureError } from './errors'
 import { createHttpClient, type HttpRequestOptions } from './httpClient'
 
 type HttpClient = ReturnType<typeof createHttpClient>
@@ -55,12 +54,9 @@ export const createAdminApi = (client: HttpClient = createHttpClient()) => {
     try {
       return await client.request(path, options)
     } catch (error) {
-      if (
-        broadcastSessionFailure &&
-        error instanceof ApiFailureError &&
-        isAdminSessionFailureCode(error.code)
-      ) {
-        reportAdminAuthorizationFailure(error.code)
+      const sessionFailureCode = getAdminSessionFailureCode(error)
+      if (broadcastSessionFailure && sessionFailureCode) {
+        reportAdminAuthorizationFailure(sessionFailureCode)
       }
       throw error
     }

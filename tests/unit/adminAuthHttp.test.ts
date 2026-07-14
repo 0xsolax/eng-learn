@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { DomainError } from '../../server/errors/DomainError'
 import { createTestWorkerApp } from '../../server/app'
 import { createAdminAuthConfig } from '../../server/security/adminCredential'
 import { ADMIN_SESSION_COOKIE_NAME } from '../../server/security/adminHttpSecurity'
+import { adminSessionSchema } from '../../shared/api/adminAuthSchemas'
 
 const ORIGIN = 'https://eng-learn.test'
 const PASSWORD = 'correct horse battery staple'
@@ -142,6 +144,116 @@ describe('administrator application-session HTTP flow', () => {
     })
   })
 
+  it('idempotently clears missing, expired, and already-revoked cookies', async () => {
+    let now = new Date('2026-07-13T00:00:00.000Z')
+    const app = createTestWorkerApp({
+      adminAuthConfig: await createAdminAuthConfig({
+        username: 'admin',
+        displayName: 'Solazhu',
+        password: PASSWORD,
+      }),
+      allowedOrigin: ORIGIN,
+      assets,
+      browserMode: 'application_session',
+      now: () => now,
+    })
+    const logout = (cookie?: string) =>
+      app.fetch(
+        new Request(`${ORIGIN}/api/admin/auth/logout`, {
+          method: 'POST',
+          headers: {
+            origin: ORIGIN,
+            ...(cookie ? { cookie } : {}),
+          },
+        }),
+      )
+
+    const missingCookieResponse = await logout()
+    expect(missingCookieResponse.status).toBe(200)
+    expect(missingCookieResponse.headers.get('set-cookie')).toContain('Max-Age=0')
+    await expect(readJson(missingCookieResponse)).resolves.toMatchObject({
+      data: { loggedOut: true },
+    })
+
+    const loginResponse = await app.fetch(
+      login({ username: 'admin', password: PASSWORD }),
+    )
+    const cookie = (loginResponse.headers.get('set-cookie') ?? '').split(';', 1)[0] ?? ''
+    now = new Date('2026-07-13T09:00:00.000Z')
+
+    const expiredCookieResponse = await logout(cookie)
+    expect(expiredCookieResponse.status).toBe(200)
+    expect(expiredCookieResponse.headers.get('cache-control')).toBe('no-store')
+    expect(expiredCookieResponse.headers.get('set-cookie')).toContain('Max-Age=0')
+    await expect(readJson(expiredCookieResponse)).resolves.toMatchObject({
+      data: { loggedOut: true },
+    })
+
+    const revokedCookieResponse = await logout(cookie)
+    expect(revokedCookieResponse.status).toBe(200)
+    expect(revokedCookieResponse.headers.get('set-cookie')).toContain('Max-Age=0')
+    await expect(readJson(revokedCookieResponse)).resolves.toMatchObject({
+      data: { loggedOut: true },
+    })
+  })
+
+  it('keeps the cookie when authentication storage prevents logout confirmation', async () => {
+    const app = createTestWorkerApp({
+      adminSessionService: {
+        login: () => Promise.reject(new Error('not used')),
+        resolve: () => Promise.resolve({ status: 'invalid' }),
+        logout: () =>
+          Promise.reject(
+            new DomainError(
+              'dependency_failure',
+              'Administrator authentication storage is unavailable',
+            ),
+          ),
+      },
+      allowedOrigin: ORIGIN,
+      browserMode: 'application_session',
+    })
+    const response = await app.fetch(
+      new Request(`${ORIGIN}/api/admin/auth/logout`, {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          cookie: `${ADMIN_SESSION_COOKIE_NAME}=${'a'.repeat(64)}`,
+        },
+      }),
+    )
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('set-cookie')).toBeNull()
+    await expect(readJson(response)).resolves.toMatchObject({
+      error: { code: 'dependency_failure' },
+    })
+  })
+
+  it('keeps a presented cookie when application-session configuration is unavailable', async () => {
+    const app = createTestWorkerApp({
+      allowedOrigin: ORIGIN,
+      browserMode: 'application_session',
+    })
+    const response = await app.fetch(
+      new Request(`${ORIGIN}/api/admin/auth/logout`, {
+        method: 'POST',
+        headers: {
+          origin: ORIGIN,
+          cookie: `${ADMIN_SESSION_COOKIE_NAME}=${'a'.repeat(64)}`,
+        },
+      }),
+    )
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('set-cookie')).toBeNull()
+    await expect(readJson(response)).resolves.toMatchObject({
+      error: { code: 'admin_not_configured' },
+    })
+  })
+
   it('returns Retry-After when the fifth failed login starts persistent cooldown', async () => {
     const app = await createApplication()
     const responses: Response[] = []
@@ -202,6 +314,30 @@ describe('administrator application-session HTTP flow', () => {
     })
   })
 
+  it('accepts only the configured browser identity for protected documents', async () => {
+    const app = createTestWorkerApp({
+      adminIdentity: { id: 'access-admin', email: 'admin@example.test' },
+      adminAuthConfig: await createAdminAuthConfig({
+        username: 'admin',
+        displayName: 'Solazhu',
+        password: PASSWORD,
+      }),
+      assets,
+      browserMode: 'application_session',
+      allowedOrigin: ORIGIN,
+    })
+    const response = await app.fetch(
+      new Request(`${ORIGIN}/admin/source-versions`, {
+        headers: { 'cf-access-jwt-assertion': 'valid-access-assertion' },
+      }),
+    )
+
+    expect(response.status).toBe(302)
+    expect(response.headers.get('location')).toBe(
+      '/admin/login?returnTo=%2Fadmin%2Fsource-versions',
+    )
+  })
+
   it('does not expose the application password endpoint in Access mode', async () => {
     const app = createTestWorkerApp({
       adminIdentity: { id: 'access-admin', email: 'admin@example.test' },
@@ -214,5 +350,51 @@ describe('administrator application-session HTTP flow', () => {
     )
 
     expect(response.status).toBe(404)
+  })
+
+  it('normalizes a long Access email into the shared administrator session contract', async () => {
+    const email = `${'a'.repeat(60)}@long-example-domain.test`
+    const app = createTestWorkerApp({
+      adminIdentity: { id: 'access-admin', email },
+      browserMode: 'cloudflare_access',
+      allowedOrigin: ORIGIN,
+    })
+    const response = await app.fetch(
+      new Request(`${ORIGIN}/api/admin/session`, {
+        headers: { 'cf-access-jwt-assertion': 'valid-test-assertion' },
+      }),
+    )
+    const body = (await readJson(response)) as { data?: unknown }
+
+    expect(response.status).toBe(200)
+    const session = adminSessionSchema.parse(body.data)
+    expect(session.email).toBe(email)
+    expect(Array.from(session.displayName)).toHaveLength(64)
+  })
+
+  it('uses the Access subject when the email claim is absent or invalid', async () => {
+    for (const email of [undefined, 'not-an-email']) {
+      const app = createTestWorkerApp({
+        adminIdentity: {
+          id: 'access-subject-1',
+          ...(email ? { email } : {}),
+        },
+        browserMode: 'cloudflare_access',
+        allowedOrigin: ORIGIN,
+      })
+      const response = await app.fetch(
+        new Request(`${ORIGIN}/api/admin/session`, {
+          headers: { 'cf-access-jwt-assertion': 'valid-test-assertion' },
+        }),
+      )
+      const body = (await readJson(response)) as { data?: unknown }
+
+      expect(response.status).toBe(200)
+      expect(adminSessionSchema.parse(body.data)).toEqual({
+        id: 'access-subject-1',
+        source: 'cloudflare_access',
+        displayName: 'access-subject-1',
+      })
+    }
   })
 })

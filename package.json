@@ -21,9 +21,13 @@
     "cf:check": "node scripts/check-cloudflare-isolated.mjs check startup",
     "cf:types:check": "node scripts/check-cloudflare-isolated.mjs types --check",
     "cf:types": "node scripts/generate-cloudflare-types-isolated.mjs",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "admin:prepare:local": "pnpm db:migrate:local && node scripts/admin-init.mjs prepare-local",
+    "admin:setup:local": "pnpm admin:prepare:local && pnpm admin:init:local",
     "admin:init:local": "node scripts/admin-init.mjs local",
     "admin:init:remote": "node scripts/admin-init.mjs remote",
-    "admin:benchmark:local": "node scripts/benchmark-admin-credential.mjs"
+    "admin:benchmark:local": "node scripts/benchmark-admin-credential.mjs",
+    "dev:admin:local": "pnpm build && pnpm db:migrate:local && wrangler dev --local --ip 127.0.0.1 --port 8787 --local-protocol https"
   },
   "dependencies": {
     "@lucide/vue": "1.24.0",

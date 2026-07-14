@@ -3,11 +3,10 @@ import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { LoaderCircle, LogIn } from '@lucide/vue'
 import { createAdminApi } from '@/api/adminApi'
-import { isAdminSessionFailureCode } from '@/api/adminAuthorizationBoundary'
+import { isAdminSessionAccessError } from '@/api/adminAuthorizationBoundary'
 import {
   ApiFailureError,
   ApiNetworkError,
-  InvalidApiResponseError,
 } from '@/api/errors'
 import UiButton from '@/components/ui/UiButton.vue'
 import { resolveSafeAdminReturnTo } from '@/features/admin-auth/adminRoutePolicy'
@@ -40,6 +39,7 @@ const state = ref<LoginState>('checking')
 const username = ref('')
 const password = ref('')
 const passwordInput = ref<HTMLInputElement | null>(null)
+const retryRegion = ref<HTMLElement | null>(null)
 const cooldownSeconds = ref(0)
 let cooldownTimer: ReturnType<typeof setInterval> | undefined
 const errorMessage = computed(() =>
@@ -73,11 +73,6 @@ const errorTone = computed(() =>
     : 'error',
 )
 
-const isUnavailableSession = (error: unknown): boolean =>
-  (error instanceof ApiFailureError && isAdminSessionFailureCode(error.code)) ||
-  (error instanceof InvalidApiResponseError &&
-    (error.status === 401 || error.status === 403))
-
 const startCooldown = (seconds: number): void => {
   if (cooldownTimer !== undefined) {
     clearInterval(cooldownTimer)
@@ -102,7 +97,7 @@ const checkExistingSession = async (): Promise<void> => {
     await api.getAdminSession()
     await router.replace(resolveSafeAdminReturnTo(router, route.query.returnTo))
   } catch (error) {
-    state.value = isUnavailableSession(error)
+    state.value = isAdminSessionAccessError(error)
       ? 'idle'
       : error instanceof ApiNetworkError
         ? 'checkNetworkError'
@@ -113,6 +108,9 @@ const checkExistingSession = async (): Promise<void> => {
     ) {
       await nextTick()
       passwordInput.value?.focus()
+    } else if (state.value === 'checkNetworkError' || state.value === 'checkServiceError') {
+      await nextTick()
+      retryRegion.value?.querySelector<HTMLButtonElement>('button')?.focus()
     }
   }
 }
@@ -157,9 +155,18 @@ const submitLogin = async (): Promise<void> => {
         await router.replace(resolveSafeAdminReturnTo(router, route.query.returnTo))
         return
       } catch (sessionError) {
-        state.value = isUnavailableSession(sessionError) ? 'networkError' : 'serviceError'
+        if (isAdminSessionAccessError(sessionError)) {
+          state.value = 'networkError'
+          await nextTick()
+          passwordInput.value?.focus()
+          return
+        }
+
+        state.value = sessionError instanceof ApiNetworkError
+          ? 'checkNetworkError'
+          : 'checkServiceError'
         await nextTick()
-        passwordInput.value?.focus()
+        retryRegion.value?.querySelector<HTMLButtonElement>('button')?.focus()
         return
       }
     }
@@ -216,6 +223,7 @@ onUnmounted(() => {
       </p>
       <div
         v-else-if="state === 'checkNetworkError' || state === 'checkServiceError'"
+        ref="retryRegion"
         class="admin-login-check-error"
       >
         <p

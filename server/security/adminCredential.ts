@@ -2,6 +2,7 @@ import { z } from 'zod'
 
 export const ADMIN_PASSWORD_ITERATIONS = 600_000
 export const ADMIN_PASSWORD_ALGORITHM = 'PBKDF2-HMAC-SHA256' as const
+const NON_VISIBLE_CHARACTER_PATTERN = /[\p{C}\p{Zl}\p{Zp}]/u
 
 const usernameSchema = z
   .string()
@@ -20,11 +21,22 @@ const base64UrlBytes = (byteLength: number) =>
     }
   })
 
+const displayNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => !NON_VISIBLE_CHARACTER_PATTERN.test(value), {
+    message: 'Admin display name must contain only visible characters',
+  })
+  .refine((value) => Array.from(value).length <= 64, {
+    message: 'Admin display name must contain at most 64 Unicode code points',
+  })
+
 const adminAuthConfigSchema = z
   .object({
     version: z.literal(1),
     username: usernameSchema,
-    displayName: z.string().trim().min(1).max(64),
+    displayName: displayNameSchema,
     credentialId: z.uuid(),
     algorithm: z.literal(ADMIN_PASSWORD_ALGORITHM),
     iterations: z.literal(ADMIN_PASSWORD_ITERATIONS),
@@ -42,7 +54,7 @@ export const createAdminAuthConfig = async (input: {
   password: string
 }): Promise<AdminAuthConfig> => {
   const username = usernameSchema.parse(input.username)
-  const displayName = z.string().trim().min(1).max(64).parse(input.displayName)
+  const displayName = displayNameSchema.parse(input.displayName)
   assertStrongAdminPassword(input.password, username, displayName)
   const salt = crypto.getRandomValues(new Uint8Array(16))
   const verifier = await derivePassword(input.password, salt, ADMIN_PASSWORD_ITERATIONS)
@@ -198,12 +210,14 @@ const sha256 = async (value: Uint8Array): Promise<Uint8Array> =>
   )
 
 const constantTimeBytesEqual = (left: Uint8Array, right: Uint8Array): boolean => {
-  let difference = left.byteLength === right.byteLength ? 0 : 1
-  const length = Math.max(left.byteLength, right.byteLength)
-  for (let index = 0; index < length; index += 1) {
-    difference |= (left[index] ?? 0) ^ (right[index] ?? 0)
+  if (left.byteLength !== right.byteLength) return false
+  const subtle = crypto.subtle as SubtleCrypto & {
+    timingSafeEqual(
+      first: ArrayBuffer | ArrayBufferView,
+      second: ArrayBuffer | ArrayBufferView,
+    ): boolean
   }
-  return difference === 0
+  return subtle.timingSafeEqual(left, right)
 }
 
 const toArrayBuffer = (value: Uint8Array): ArrayBuffer => {

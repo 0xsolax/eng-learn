@@ -53,6 +53,24 @@ export const createInMemoryAdminSessionRepository = (): AdminSessionRepository &
       return true
     },
 
+    cleanupExpired(input) {
+      for (const [tokenHash, session] of sessionsByHash) {
+        if (session.expiresAt <= input.sessionsExpiredBefore) {
+          sessionsByHash.delete(tokenHash)
+        }
+      }
+      for (const [keyHash, rateLimit] of rateLimitsByHash) {
+        if (
+          rateLimit.updatedAt <= input.rateLimitsUpdatedBefore &&
+          (!rateLimit.blockedUntil ||
+            rateLimit.blockedUntil <= input.rateLimitsUnblockedBefore)
+        ) {
+          rateLimitsByHash.delete(keyHash)
+        }
+      }
+      return Promise.resolve()
+    },
+
     reserveAttempt(input) {
       return runExclusive(() => {
         const existing = rateLimitsByHash.get(input.keyHash)

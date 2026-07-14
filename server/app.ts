@@ -1,5 +1,6 @@
 import {
   adminLoginRequestSchema,
+  adminSessionSchema,
 } from '../shared/api/adminAuthSchemas'
 import {
   createCourseRequestSchema,
@@ -61,6 +62,7 @@ import {
 } from './services/LearnerSessionService'
 import {
   createAdminSessionService,
+  type AdminSessionService,
 } from './services/AdminSessionService'
 import {
   requireAdminIdentity,
@@ -117,13 +119,15 @@ export const createTestWorkerApp = (
   input: {
     adminIdentity?: { id: string; email?: string }
     adminAuthConfig?: AdminAuthConfig
+    adminSessionService?: AdminSessionService
     adminToken?: string
     allowedOrigin?: string
     assets?: { fetch(request: Request): Promise<Response> }
     browserMode?: 'application_session' | 'cloudflare_access'
+    now?: () => Date
   } = {},
 ): WorkerApp => {
-  const now = () => new Date('2026-07-13T00:00:00.000Z')
+  const now = input.now ?? (() => new Date('2026-07-13T00:00:00.000Z'))
   const operationLedger = createInMemoryAdminOperationLedger()
   const contentRepository = createInMemoryContentRepository({ ledger: operationLedger })
   const courseRepository = createInMemoryCourseRepository({ ledger: operationLedger })
@@ -132,14 +136,16 @@ export const createTestWorkerApp = (
     ledger: operationLedger,
   })
   const adminSessionRepository = createInMemoryAdminSessionRepository()
-  const adminSessionService = input.adminAuthConfig
-    ? createAdminSessionService({
-        sessionRepository: adminSessionRepository,
-        rateLimitRepository: adminSessionRepository,
-        config: input.adminAuthConfig,
-        now,
-      })
-    : undefined
+  const adminSessionService =
+    input.adminSessionService ??
+    (input.adminAuthConfig
+      ? createAdminSessionService({
+          sessionRepository: adminSessionRepository,
+          rateLimitRepository: adminSessionRepository,
+          config: input.adminAuthConfig,
+          now,
+        })
+      : undefined)
   const adminIdentity = input.adminIdentity
   const accessAuthenticator: AdminAuthenticator | undefined = adminIdentity
     ? {
@@ -295,8 +301,15 @@ const routeRequest = async (
     }
     requireExactWriteOrigin(request, input.adminAuthentication.allowedOrigin)
     const token = readAdminSessionCookie(request.headers.get('cookie'))
-    if (token && input.adminAuthentication.applicationSessionService) {
-      await input.adminAuthentication.applicationSessionService.logout(token)
+    if (token) {
+      const service = input.adminAuthentication.applicationSessionService
+      if (!service) {
+        throw new DomainError(
+          'admin_not_configured',
+          'Administrator authentication is not configured',
+        )
+      }
+      await service.logout(token)
     }
     return apiOk({ loggedOut: true }, 200, {
       'set-cookie': clearAdminSessionCookie(),
@@ -313,9 +326,19 @@ const routeRequest = async (
       }
 
       try {
-        await requireAdminIdentity(request, input.adminAuthentication, {
+        const identity = await requireAdminIdentity(request, input.adminAuthentication, {
           allowServiceToken: false,
         })
+        const expectedBrowserSource =
+          input.adminAuthentication.browserMode === 'application_session'
+            ? 'application_session'
+            : 'cloudflare_access'
+        if (identity.source !== expectedBrowserSource) {
+          throw new DomainError(
+            'admin_identity_invalid',
+            'Admin identity does not match the configured browser mode',
+          )
+        }
       } catch (error) {
         if (
           input.adminAuthentication.browserMode === 'application_session' &&
@@ -586,15 +609,45 @@ const requirePathSegment = (path: string[], index: number): string => {
   return segment
 }
 
-const toAdminSession = (identity: AdminIdentity) => ({
-  id: identity.subject,
-  source: identity.source,
-  displayName:
-    identity.displayName ??
-    identity.email ??
-    (identity.source === 'service_token' ? '运维服务' : identity.subject),
-  ...(identity.email ? { email: identity.email } : {}),
-})
+const toAdminSession = (identity: AdminIdentity) => {
+  const fallbackDisplayName =
+    identity.source === 'service_token'
+      ? '运维服务'
+      : identity.source === 'cloudflare_access'
+        ? 'Cloudflare Access 管理员'
+        : '管理员'
+  const accessEmail =
+    identity.source === 'cloudflare_access' &&
+    identity.email &&
+    adminSessionSchema.shape.email.safeParse(identity.email).success
+      ? identity.email
+      : undefined
+  const displayNameCandidates =
+    identity.source === 'application_session'
+      ? [identity.displayName, fallbackDisplayName]
+      : identity.source === 'cloudflare_access'
+        ? [accessEmail, identity.subject, fallbackDisplayName]
+        : [fallbackDisplayName]
+  let displayName = fallbackDisplayName
+
+  for (const candidate of displayNameCandidates) {
+    if (!candidate) continue
+    const parsed = adminSessionSchema.shape.displayName.safeParse(
+      Array.from(candidate.trim()).slice(0, 64).join(''),
+    )
+    if (parsed.success) {
+      displayName = parsed.data
+      break
+    }
+  }
+
+  const base = adminSessionSchema.parse({
+    id: identity.subject.trim() || `${identity.source}-administrator`,
+    source: identity.source,
+    displayName,
+  })
+  return accessEmail ? adminSessionSchema.parse({ ...base, email: accessEmail }) : base
+}
 
 const toCourseView = (course: {
   id: string

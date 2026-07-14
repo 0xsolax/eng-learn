@@ -4,11 +4,11 @@ import { useRoute, useRouter } from 'vue-router'
 import type { AdminSessionDto } from '@shared/api/adminAuthSchemas'
 import { createAdminApi } from '@/api/adminApi'
 import {
-  isAdminSessionFailureCode,
+  getAdminSessionFailureCode,
+  isAdminSessionAccessError,
   subscribeAdminAuthorizationFailure,
   type AdminSessionFailureCode,
 } from '@/api/adminAuthorizationBoundary'
-import { ApiFailureError, InvalidApiResponseError } from '@/api/errors'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
 import { resolveSafeAdminReturnTo } from '@/features/admin-auth/adminRoutePolicy'
@@ -38,15 +38,12 @@ const SERVICE_TOKEN_BROWSER_REJECTED = new Error(
   'Service-token identities cannot mount the browser admin shell',
 )
 
-const isRejectedAdminIdentity = (error: unknown): boolean =>
-  (error instanceof ApiFailureError && isAdminSessionFailureCode(error.code)) ||
-  (error instanceof InvalidApiResponseError &&
-    (error.status === 401 || error.status === 403))
-
-const sessionFailureReason = (error: ApiFailureError): 'expired' | 'invalid' | undefined =>
-  error.code === 'admin_session_expired'
+const sessionFailureReason = (
+  code: AdminSessionFailureCode | undefined,
+): 'expired' | 'invalid' | undefined =>
+  code === 'admin_session_expired'
     ? 'expired'
-    : error.code === 'admin_session_revoked' || error.code === 'admin_identity_invalid'
+    : code === 'admin_session_revoked' || code === 'admin_identity_invalid'
       ? 'invalid'
       : undefined
 
@@ -91,10 +88,8 @@ const refreshSession = async (): Promise<AdminSessionDto> => {
     session.value = null
     if (error === SERVICE_TOKEN_BROWSER_REJECTED) {
       state.value = 'checking'
-    } else if (isRejectedAdminIdentity(error)) {
-      await redirectToLogin(
-        error instanceof ApiFailureError ? sessionFailureReason(error) : undefined,
-      )
+    } else if (isAdminSessionAccessError(error)) {
+      await redirectToLogin(sessionFailureReason(getAdminSessionFailureCode(error)))
     } else {
       state.value = 'error'
     }

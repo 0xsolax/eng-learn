@@ -4,6 +4,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiFailureError, ApiNetworkError } from '@/api/errors'
 import CoursesPage from '@/pages/admin/CoursesPage.vue'
 
+const createTemporaryAccessCode = (): string => {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+  return Array.from(
+    crypto.getRandomValues(new Uint8Array(10)),
+    (byte) => alphabet[byte % alphabet.length],
+  ).join('')
+}
+const CREATED_ACCESS_CODE = createTemporaryAccessCode()
+const ROTATED_ACCESS_CODE = createTemporaryAccessCode()
+
 const publishedVersion = {
   sourceId: 'source-1',
   sourceName: 'Starter words',
@@ -47,7 +57,7 @@ describe('CoursesPage', () => {
       listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
       createCourse: vi.fn().mockResolvedValue({
         ...courseEntry,
-        learner: { ...courseEntry.learner, accessCode: 'ABCDEFGH23' },
+        learner: { ...courseEntry.learner, accessCode: CREATED_ACCESS_CODE },
       }),
       rotateAccessCode: vi.fn(),
     }
@@ -69,10 +79,11 @@ describe('CoursesPage', () => {
     })
     expect(command.operationToken).toMatch(/^[0-9a-f]{64}$/)
     const dialog = wrapper.get('[data-one-time-code]')
-    expect(dialog.text()).toContain('ABCDEFGH23')
+    expect(dialog.text()).toContain(CREATED_ACCESS_CODE)
     expect(dialog.text()).toContain('仅本次显示')
     expect(dialog.attributes('role')).toBe('dialog')
     expect(dialog.attributes('aria-modal')).toBe('true')
+    expect(wrapper.get('[data-one-time-code-backdrop]').attributes('aria-hidden')).toBe('true')
     expect(document.activeElement).toBe(dialog.element)
     expect(wrapper.get('table').text()).toContain('小林')
 
@@ -88,15 +99,16 @@ describe('CoursesPage', () => {
 
     await copyButton.trigger('click')
     await flushPromises()
-    expect(writeText).toHaveBeenCalledWith('ABCDEFGH23')
+    expect(writeText).toHaveBeenCalledWith(CREATED_ACCESS_CODE)
     expect(wrapper.get('[data-copy-feedback]').attributes('role')).toBe('status')
     expect(wrapper.get('[data-copy-feedback]').text()).toContain('复制成功')
 
     await dismissButton.trigger('click')
-    expect(wrapper.text()).not.toContain('ABCDEFGH23')
+    expect(wrapper.text()).not.toContain(CREATED_ACCESS_CODE)
+    expect(wrapper.find('[data-one-time-code-backdrop]').exists()).toBe(false)
     expect(document.activeElement).toBe(wrapper.get('[data-toggle-create]').element)
     await wrapper.get('[data-toggle-create]').trigger('click')
-    expect(wrapper.text()).not.toContain('ABCDEFGH23')
+    expect(wrapper.text()).not.toContain(CREATED_ACCESS_CODE)
 
     wrapper.unmount()
     clearClipboard()
@@ -130,7 +142,7 @@ describe('CoursesPage', () => {
       listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
       createCourse: vi.fn(),
       rotateAccessCode: vi.fn().mockResolvedValue({
-        accessCode: 'JKLMNPQR45',
+        accessCode: ROTATED_ACCESS_CODE,
         credentialVersion: 2,
         revokedSessionCount: 2,
       }),
@@ -165,7 +177,7 @@ describe('CoursesPage', () => {
       expectedCredentialVersion: 1,
     })
     expect(rotateCommand.operationToken).toMatch(/^[0-9a-f]{64}$/)
-    expect(wrapper.get('[data-one-time-code]').text()).toContain('JKLMNPQR45')
+    expect(wrapper.get('[data-one-time-code]').text()).toContain(ROTATED_ACCESS_CODE)
     expect(wrapper.get('[data-one-time-code]').text()).toContain('2 个旧会话已失效')
     expect(document.activeElement).toBe(wrapper.get('[data-one-time-code]').element)
 
@@ -186,7 +198,7 @@ describe('CoursesPage', () => {
       listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
       createCourse: vi.fn().mockResolvedValue({
         ...courseEntry,
-        learner: { ...courseEntry.learner, accessCode: 'ABCDEFGH23' },
+        learner: { ...courseEntry.learner, accessCode: CREATED_ACCESS_CODE },
       }),
       rotateAccessCode: vi.fn(),
     }
@@ -200,7 +212,7 @@ describe('CoursesPage', () => {
     await flushPromises()
     expect(wrapper.get('[data-copy-feedback]').attributes('role')).toBe('alert')
     expect(wrapper.get('[data-copy-feedback]').text()).toContain('复制失败')
-    expect(wrapper.get('[data-one-time-code]').text()).toContain('ABCDEFGH23')
+    expect(wrapper.get('[data-one-time-code]').text()).toContain(CREATED_ACCESS_CODE)
     clearClipboard()
   })
 
@@ -248,7 +260,7 @@ describe('CoursesPage', () => {
       listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
       createCourse: vi.fn(),
       rotateAccessCode: vi.fn().mockResolvedValue({
-        accessCode: 'JKLMNPQR45',
+        accessCode: ROTATED_ACCESS_CODE,
         credentialVersion: 2,
         revokedSessionCount: 0,
       }),
@@ -260,6 +272,10 @@ describe('CoursesPage', () => {
     expect(wrapper.find('[data-toggle-create]').exists()).toBe(false)
     expect(wrapper.find('form[data-course-form]').exists()).toBe(false)
     expect(wrapper.find('[data-rotate-code]').exists()).toBe(false)
+    expect(wrapper.get('[data-scroll-region="courses"]').attributes()).toMatchObject({
+      tabindex: '0',
+      'aria-label': '课程列表表格',
+    })
 
     setViewportWidth(480)
     await nextTick()
@@ -295,7 +311,7 @@ describe('CoursesPage', () => {
   it('reuses the exact in-memory create token and payload after an unknown result', async () => {
     const committed = {
       ...courseEntry,
-      learner: { ...courseEntry.learner, accessCode: 'ABCDEFGH23' },
+      learner: { ...courseEntry.learner, accessCode: CREATED_ACCESS_CODE },
     }
     const api = {
       listCourses: vi
@@ -339,7 +355,7 @@ describe('CoursesPage', () => {
 
     expect(api.createCourse).toHaveBeenCalledTimes(2)
     expect((api.createCourse.mock.calls as unknown[][])[1]?.[0]).toEqual(firstCommand)
-    expect(wrapper.get('[data-one-time-code]').text()).toContain('ABCDEFGH23')
+    expect(wrapper.get('[data-one-time-code]').text()).toContain(CREATED_ACCESS_CODE)
     expect(wrapper.find('[data-unknown-result]').exists()).toBe(false)
   })
 
@@ -366,7 +382,7 @@ describe('CoursesPage', () => {
 
   it('reuses the exact rotation token and expected version after an unknown result', async () => {
     const committed = {
-      accessCode: 'JKLMNPQR45',
+      accessCode: ROTATED_ACCESS_CODE,
       credentialVersion: 2,
       revokedSessionCount: 1,
     }
@@ -405,7 +421,7 @@ describe('CoursesPage', () => {
     await flushPromises()
 
     expect((api.rotateAccessCode.mock.calls as unknown[][])[1]).toEqual(firstCall)
-    expect(wrapper.get('[data-one-time-code]').text()).toContain('JKLMNPQR45')
+    expect(wrapper.get('[data-one-time-code]').text()).toContain(ROTATED_ACCESS_CODE)
   })
 })
 

@@ -1,13 +1,15 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { nextTick, ref } from 'vue'
 import { createMemoryHistory, createRouter, RouterView } from 'vue-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { createAdminApi } from '@/api/adminApi'
 import { ApiFailureError, ApiNetworkError } from '@/api/errors'
+import AdminLayout from '@/app/layouts/AdminLayout.vue'
 import {
   adminPageContextKey,
   type AdminPageContextPort,
 } from '@/features/admin-auth/adminPageContext'
+import { adminSessionContextKey } from '@/features/admin-auth/adminSessionContext'
 import ExerciseItemPage from '@/pages/admin/ExerciseItemPage.vue'
 
 type ExerciseItemApi = Pick<
@@ -212,11 +214,22 @@ describe('ExerciseItemPage', () => {
       history: createMemoryHistory(),
       routes: [
         {
-          path: '/exercise',
-          component: ExerciseItemPage,
-          props: { api, versionId: 'version-1', itemId: 'item-1' },
+          path: '/admin',
+          component: AdminLayout,
+          children: [
+            {
+              path: 'exercise',
+              name: 'admin-exercise-item',
+              component: ExerciseItemPage,
+              props: { api, versionId: 'version-1', itemId: 'item-1' },
+            },
+            {
+              path: 'next',
+              name: 'admin-courses',
+              component: { template: '<p>next page</p>' },
+            },
+          ],
         },
-        { path: '/next', component: { template: '<p>next page</p>' } },
       ],
     })
     const addEventListener = vi.spyOn(window, 'addEventListener')
@@ -227,13 +240,24 @@ describe('ExerciseItemPage', () => {
       value: confirm,
     })
 
-    await router.push('/exercise')
+    await router.push('/admin/exercise')
     await router.isReady()
     const wrapper = mount(RouterView, {
       attachTo: document.body,
       global: {
         plugins: [router],
-        provide: { [adminPageContextKey]: createPageContext() },
+        provide: {
+          [adminSessionContextKey as symbol]: {
+            session: ref({
+              id: 'admin-1',
+              source: 'application_session',
+              displayName: 'Solazhu',
+            }),
+            refreshSession: vi.fn(),
+            logout: vi.fn(),
+            clearPrivateState: vi.fn(),
+          },
+        },
       },
     })
     await flushPromises()
@@ -249,14 +273,16 @@ describe('ExerciseItemPage', () => {
     window.dispatchEvent(unload)
     expect(unload.defaultPrevented).toBe(true)
 
-    await router.push('/next')
+    await router.push('/admin/next')
     expect(confirm).toHaveBeenCalledWith('当前练习有未保存修改，确定离开吗？')
-    expect(router.currentRoute.value.path).toBe('/exercise')
+    expect(router.currentRoute.value.path).toBe('/admin/exercise')
     expect(document.activeElement).toBe(input.element)
 
+    confirm.mockClear()
     confirm.mockReturnValue(true)
-    await router.push('/next')
-    expect(router.currentRoute.value.path).toBe('/next')
+    await router.push('/admin/next')
+    expect(confirm).toHaveBeenCalledTimes(1)
+    expect(router.currentRoute.value.path).toBe('/admin/next')
     expect(removeEventListener.mock.calls.some(([type]) => type === 'beforeunload')).toBe(true)
 
     wrapper.unmount()
@@ -326,6 +352,75 @@ describe('ExerciseItemPage', () => {
     expect(api.getSourceVersion).toHaveBeenCalledTimes(2)
     expect(wrapper.get('[role="status"]').text()).toContain('已发布版本只读')
     expect(wrapper.get('[role="alert"]').text()).toContain('服务端已将该版本设为只读')
+  })
+
+  it('reloads authoritative content instead of blindly retrying a concurrent edit conflict', async () => {
+    const authoritativeItem = {
+      ...multipleChoiceItem,
+      prompt: {
+        ...multipleChoiceItem.prompt,
+        meaning: '服务端刚刚更新的词义',
+      },
+    }
+    const api = {
+      getSourceVersion: vi.fn().mockResolvedValue(draftVersion),
+      getExerciseItem: vi
+        .fn()
+        .mockResolvedValueOnce(multipleChoiceItem)
+        .mockResolvedValueOnce(authoritativeItem),
+      editExerciseItem: vi.fn().mockRejectedValue(
+        new ApiFailureError(409, {
+          code: 'conflict',
+          message: 'Exercise item changed concurrently',
+        }),
+      ),
+      approveExerciseItem: vi.fn(),
+      disableExerciseItem: vi.fn(),
+    }
+    const wrapper = mountPage(api)
+    await flushPromises()
+
+    await wrapper.get('input[name="meaning"]').setValue('本地尚未保存的词义')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(api.getSourceVersion).toHaveBeenCalledTimes(2)
+    expect(api.getExerciseItem).toHaveBeenCalledTimes(2)
+    expect(wrapper.get<HTMLInputElement>('input[name="meaning"]').element.value).toBe(
+      '服务端刚刚更新的词义',
+    )
+    expect(wrapper.get('[role="alert"]').text()).toContain('检测到其他编辑已更新内容')
+  })
+
+  it('preserves unsaved fields and blocks approve or disable until they are saved', async () => {
+    const api = {
+      getSourceVersion: vi.fn().mockResolvedValue(draftVersion),
+      getExerciseItem: vi.fn().mockResolvedValue(multipleChoiceItem),
+      editExerciseItem: vi.fn(),
+      approveExerciseItem: vi.fn(),
+      disableExerciseItem: vi.fn(),
+    }
+    const wrapper = mountPage(api)
+    await flushPromises()
+
+    const input = wrapper.get<HTMLInputElement>('input[name="meaning"]')
+    await input.setValue('本地尚未保存的词义')
+    const approveButton = wrapper.get<HTMLButtonElement>('[data-approve]')
+    const disableButton = wrapper
+      .findAll<HTMLButtonElement>('button')
+      .find((button) => button.text() === '禁用项目')
+    if (!disableButton) throw new Error('Expected the disable action')
+
+    expect(approveButton.element.disabled).toBe(true)
+    expect(disableButton.element.disabled).toBe(true)
+    expect(wrapper.get('[data-review-dirty-hint]').text()).toContain('请先保存')
+    await approveButton.trigger('click')
+    await disableButton.trigger('click')
+
+    expect(api.approveExerciseItem).not.toHaveBeenCalled()
+    expect(api.disableExerciseItem).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-disable-confirmation]').exists()).toBe(false)
+    expect(input.element.value).toBe('本地尚未保存的词义')
   })
 
   it('recovers an approved item when the approve response is lost after commit', async () => {

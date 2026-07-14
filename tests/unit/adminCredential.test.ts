@@ -73,4 +73,16 @@ describe('admin credential configuration', () => {
     expect(second.salt).not.toBe(first.salt)
     expect(second.rateLimitKey).not.toBe(first.rateLimitKey)
   })
+
+  it('rejects non-visible and bidirectional-control display-name code points', async () => {
+    for (const displayName of ['Visible\u200BName', 'Visible\u202EName']) {
+      await expect(
+        createAdminAuthConfig({
+          username: 'admin',
+          displayName,
+          password: 'correct horse battery staple',
+        }),
+      ).rejects.toThrow()
+    }
+  })
 })

@@ -1,6 +1,18 @@
 import { z } from 'zod'
 
 const ADMIN_USERNAME_PATTERN = /^[A-Za-z0-9._+@-]+$/
+const NON_VISIBLE_CHARACTER_PATTERN = /[\p{C}\p{Zl}\p{Zp}]/u
+
+const adminDisplayNameSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .refine((value) => !NON_VISIBLE_CHARACTER_PATTERN.test(value), {
+    message: 'Display name must contain only visible characters',
+  })
+  .refine((value) => Array.from(value).length <= 64, {
+    message: 'Display name must contain at most 64 Unicode code points',
+  })
 
 export const adminLoginRequestSchema = z
   .object({
@@ -35,7 +47,7 @@ export const adminSessionSchema = z
   .object({
     id: z.string().trim().min(1),
     source: adminSessionSourceSchema,
-    displayName: z.string().trim().min(1).max(64),
+    displayName: adminDisplayNameSchema,
     email: z.email().optional(),
   })
   .strict()

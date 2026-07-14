@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { matchedRouteKey, onBeforeRouteLeave } from 'vue-router'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type {
   AdminExerciseItemDto,
   SourceVersionDetailDto,
@@ -81,7 +80,12 @@ const save = async (content: ExerciseItemContent): Promise<void> => {
 }
 
 const approve = async (): Promise<void> => {
-  if (readonly.value || item.value?.status !== 'draft' || actionState.value !== 'idle') return
+  if (
+    readonly.value ||
+    isDirty.value ||
+    item.value?.status !== 'draft' ||
+    actionState.value !== 'idle'
+  ) return
   actionState.value = 'approving'
   actionError.value = ''
   actionSuccess.value = ''
@@ -103,7 +107,12 @@ const approve = async (): Promise<void> => {
 }
 
 const disable = async (): Promise<void> => {
-  if (readonly.value || item.value?.status === 'disabled' || actionState.value !== 'idle') return
+  if (
+    readonly.value ||
+    isDirty.value ||
+    item.value?.status === 'disabled' ||
+    actionState.value !== 'idle'
+  ) return
   actionState.value = 'disabling'
   actionError.value = ''
   actionSuccess.value = ''
@@ -128,6 +137,18 @@ const disable = async (): Promise<void> => {
 const handleWriteError = async (error: unknown, fallback: string): Promise<void> => {
   if (error instanceof ApiFailureError && error.code === 'source_version_immutable') {
     actionError.value = '服务端已将该版本设为只读，页面已重新读取权威状态。'
+
+    try {
+      await refreshResources()
+      isDirty.value = false
+    } catch {
+      pageState.value = 'error'
+    }
+    return
+  }
+
+  if (error instanceof ApiFailureError && error.code === 'conflict') {
+    actionError.value = '检测到其他编辑已更新内容，页面已重新读取服务端最新版本。'
 
     try {
       await refreshResources()
@@ -223,6 +244,7 @@ const statusLabel = (status: AdminExerciseItemDto['status']): string =>
   ({ draft: '草稿', approved: '已批准', disabled: '已禁用' })[status]
 
 const openDisableConfirmation = async (event: MouseEvent): Promise<void> => {
+  if (isDirty.value) return
   disableTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   showDisableConfirmation.value = true
   await nextTick()
@@ -261,11 +283,6 @@ watch(
   },
   { flush: 'sync' },
 )
-
-const matchedRoute = inject(matchedRouteKey, null)
-if (matchedRoute) {
-  onBeforeRouteLeave(confirmLeave)
-}
 
 const syncViewport = (): void => {
   isMobileReadonly.value = window.innerWidth < 480
@@ -428,6 +445,13 @@ onBeforeUnmount(() => {
             </div>
           </dl>
 
+          <p
+            v-if="isDirty"
+            data-review-dirty-hint
+          >
+            请先保存当前修改，再批准或禁用项目。
+          </p>
+
           <div
             v-if="!readonly && !isMobileReadonly"
             class="review-actions__buttons"
@@ -436,7 +460,7 @@ onBeforeUnmount(() => {
               v-if="item.status === 'draft'"
               data-approve
               :loading="actionState === 'approving'"
-              :disabled="actionState !== 'idle'"
+              :disabled="actionState !== 'idle' || isDirty"
               @click="approve"
             >
               批准项目
@@ -444,7 +468,7 @@ onBeforeUnmount(() => {
             <ui-button
               v-if="item.status !== 'disabled'"
               variant="secondary"
-              :disabled="actionState !== 'idle'"
+              :disabled="actionState !== 'idle' || isDirty"
               @click="openDisableConfirmation"
             >
               禁用项目
@@ -475,6 +499,7 @@ onBeforeUnmount(() => {
               </ui-button>
               <ui-button
                 :loading="actionState === 'disabling'"
+                :disabled="isDirty"
                 @click="disable"
               >
                 确认禁用

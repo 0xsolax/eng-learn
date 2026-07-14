@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createAdminApi } from '@/api/adminApi'
+import { subscribeAdminAuthorizationFailure } from '@/api/adminAuthorizationBoundary'
 import { InvalidApiResponseError } from '@/api/errors'
 import { createHttpClient, type FetchImplementation } from '@/api/httpClient'
 
@@ -31,6 +32,61 @@ const exerciseItem = {
 } as const
 
 describe('admin API client', () => {
+  it('does not broadcast a session code carried by a non-authentication HTTP status', async () => {
+    const listener = vi.fn()
+    const unsubscribe = subscribeAdminAuthorizationFailure(listener)
+    const fetchImpl = vi.fn<FetchImplementation>().mockResolvedValue(
+      Response.json(
+        {
+          ok: false,
+          error: {
+            code: 'admin_session_required',
+            message: 'Session dependency unavailable',
+          },
+        },
+        { status: 503 },
+      ),
+    )
+    const api = createAdminApi(createHttpClient(fetchImpl))
+
+    await expect(api.listSourceVersions()).rejects.toMatchObject({ status: 503 })
+    expect(listener).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it('never broadcasts login or logout failures through the mounted-workspace boundary', async () => {
+    const listener = vi.fn()
+    const unsubscribe = subscribeAdminAuthorizationFailure(listener)
+    const fetchImpl = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            ok: false,
+            error: { code: 'admin_session_required', message: 'Session required' },
+          },
+          { status: 401 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        Response.json(
+          {
+            ok: false,
+            error: { code: 'admin_session_expired', message: 'Session expired' },
+          },
+          { status: 401 },
+        ),
+      )
+    const api = createAdminApi(createHttpClient(fetchImpl))
+
+    await expect(
+      api.loginAdmin({ username: 'admin', password: 'fixture-password' }),
+    ).rejects.toMatchObject({ status: 401 })
+    await expect(api.logoutAdmin()).rejects.toMatchObject({ status: 401 })
+    expect(listener).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
   it('logs in and out through same-origin credential requests', async () => {
     const session = {
       id: 'credential-1',

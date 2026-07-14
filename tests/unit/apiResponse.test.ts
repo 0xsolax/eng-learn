@@ -90,6 +90,21 @@ describe('API error responses', () => {
     })
   })
 
+  it('maps authentication storage failures to a stable no-store 503', async () => {
+    const response = toApiErrorResponse(
+      new DomainError(
+        'dependency_failure',
+        'Administrator authentication storage is unavailable',
+      ),
+    )
+
+    expect(response.status).toBe(503)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'dependency_failure' },
+    })
+  })
+
   it('never exposes unknown error messages or invalid declared details', async () => {
     const databaseResponse = toApiErrorResponse(
       new Error('D1_ERROR: UNIQUE constraint failed: learner_sessions.token_hash'),

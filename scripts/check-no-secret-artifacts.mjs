@@ -14,6 +14,8 @@ const sensitiveAssignments = [
   /["']?x-admin-token["']?\s*[:=]\s*["'`]?[^\s"'`]{8,}/i,
   /["']?cf-access-jwt-assertion["']?\s*[:=]\s*["'`]?eyJ[^\s"'`]{8,}/i,
   /["']?access(?:_|-)?code["']?\s*[:=]\s*["'`]?[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{10}(?=["'`\s,}]|$)/i,
+  /(?:^|[\r\n])[ \t-]*code[ \t]*:[ \t]*["'`]?[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{10}(?=["'`\s]|$)/,
+  /<code\b[^>]*>\s*[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{10}\s*<\/code>/i,
   /["']?operation(?:_|-)?token["']?\s*[:=]\s*["'`]?[0-9a-f]{64}(?=["'`\s,}]|$)/i,
   /__Host-eng_learn_session=[0-9a-f]{64}/i,
   /__Host-eng_learn_admin_session=[0-9a-f]{64}(?=[;"'`\s,}]|$)/i,

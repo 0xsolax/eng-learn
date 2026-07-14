@@ -122,4 +122,55 @@ describe('D1 admin session repository', () => {
       }),
     ).resolves.toEqual({ status: 'reserved', attemptNumber: 1 })
   })
+
+  it('opportunistically removes only expired sessions and stale rate limits', async () => {
+    const { database, repository } = createFixture()
+    const insertSession = database.prepare(
+      'INSERT INTO admin_sessions (id, token_hash, credential_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)',
+    )
+    insertSession.run(
+      'expired-session',
+      'd'.repeat(64),
+      'credential-1',
+      '2026-07-13T00:00:00.000Z',
+      '2026-07-14T00:00:00.000Z',
+    )
+    insertSession.run(
+      'active-session',
+      'e'.repeat(64),
+      'credential-1',
+      '2026-07-14T00:00:00.000Z',
+      '2026-07-14T08:00:00.000Z',
+    )
+    const insertRateLimit = database.prepare(
+      'INSERT INTO admin_login_rate_limits (key_hash, window_started_at, failure_count, blocked_until, updated_at) VALUES (?, ?, ?, ?, ?)',
+    )
+    insertRateLimit.run(
+      'f'.repeat(64),
+      '2026-07-13T23:30:00.000Z',
+      5,
+      '2026-07-13T23:45:00.000Z',
+      '2026-07-13T23:30:00.000Z',
+    )
+    insertRateLimit.run(
+      '1'.repeat(64),
+      '2026-07-14T00:05:00.000Z',
+      1,
+      null,
+      '2026-07-14T00:05:00.000Z',
+    )
+
+    await repository.cleanupExpired({
+      sessionsExpiredBefore: '2026-07-14T00:15:00.000Z',
+      rateLimitsUpdatedBefore: '2026-07-14T00:00:00.000Z',
+      rateLimitsUnblockedBefore: '2026-07-14T00:15:00.000Z',
+    })
+
+    expect(
+      database.prepare('SELECT id FROM admin_sessions ORDER BY id').all(),
+    ).toEqual([{ id: 'active-session' }])
+    expect(
+      database.prepare('SELECT key_hash FROM admin_login_rate_limits ORDER BY key_hash').all(),
+    ).toEqual([{ key_hash: '1'.repeat(64) }])
+  })
 })

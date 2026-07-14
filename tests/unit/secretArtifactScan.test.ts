@@ -144,6 +144,22 @@ describe('secret artifact scanner', () => {
     expect(output).not.toContain(accessAssertion)
   })
 
+  it('rejects a bare learning code in Playwright error context without echoing it', async () => {
+    const root = await createArtifactRoot()
+    const learningCode = 'BCDEFGHJ34'
+    await writeFile(
+      join(root, 'error-context.md'),
+      `- dialog "一次性学习码"\n  - code: ${learningCode}\n`,
+    )
+
+    const result = runScanner(root)
+    const output = `${result.stdout}${result.stderr}`
+
+    expect(result.status).toBe(1)
+    expect(output).toContain('sensitive-assignment')
+    expect(output).not.toContain(learningCode)
+  })
+
   it('rejects unquoted dotenv, log headers, and learning codes without printing values', async () => {
     const root = await createArtifactRoot()
     const values = {

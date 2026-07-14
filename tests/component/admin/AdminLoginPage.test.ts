@@ -203,6 +203,7 @@ describe('AdminLoginPage', () => {
 
     expect(wrapper.get('[role="alert"]').text()).toContain('无法连接服务器')
     expect(wrapper.find('form').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('button').element)
 
     await wrapper.get('button').trigger('click')
     await flushPromises()
@@ -290,6 +291,62 @@ describe('AdminLoginPage', () => {
     expect(wrapper.get<HTMLInputElement>('input[name="password"]').element.value).toBe('')
     expect(wrapper.get<HTMLButtonElement>('button[type="submit"]').element.disabled).toBe(false)
   })
+
+  it.each([
+    [
+      'network failure',
+      new ApiNetworkError(new Error('session check offline')),
+      '无法连接服务器',
+    ],
+    [
+      'service failure',
+      new ApiFailureError(503, {
+        code: 'dependency_failure',
+        message: 'Session service unavailable',
+      }),
+      '登录服务暂不可用',
+    ],
+    [
+      'non-authentication failure carrying a session code',
+      new ApiFailureError(503, {
+        code: 'admin_session_required',
+        message: 'Session dependency unavailable',
+      }),
+      '登录服务暂不可用',
+    ],
+  ])(
+    'keeps the form unmounted after an unknown login result and a %s during session recovery',
+    async (_label, recoveryError, expectedMessage) => {
+      const api: AdminLoginApi = {
+        getAdminSession: vi
+          .fn()
+          .mockRejectedValueOnce(sessionRequired())
+          .mockRejectedValueOnce(recoveryError)
+          .mockRejectedValueOnce(sessionRequired()),
+        loginAdmin: vi.fn().mockRejectedValue(new ApiNetworkError(new Error('offline'))),
+      }
+      const { wrapper } = await mountLogin('/admin/login', api)
+      await flushPromises()
+
+      await wrapper.get('input[name="username"]').setValue('admin@example.com')
+      await wrapper.get('input[name="password"]').setValue('not-a-real-password')
+      await wrapper.get('form').trigger('submit')
+      await flushPromises()
+
+      expect(wrapper.get('[role="alert"]').text()).toContain(expectedMessage)
+      expect(wrapper.find('form').exists()).toBe(false)
+      expect(wrapper.get('button').text()).toContain('重新检查')
+
+      await wrapper.get('button').trigger('click')
+      await flushPromises()
+
+      expect(api.getAdminSession).toHaveBeenCalledTimes(3)
+      expect(wrapper.get<HTMLInputElement>('input[name="username"]').element.value).toBe(
+        'admin@example.com',
+      )
+      expect(wrapper.get<HTMLInputElement>('input[name="password"]').element.value).toBe('')
+    },
+  )
 
   it('establishes a session and replaces the login route with the default workspace', async () => {
     const api: AdminLoginApi = {

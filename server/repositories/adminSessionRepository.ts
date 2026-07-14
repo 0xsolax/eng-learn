@@ -11,6 +11,11 @@ export type AdminSessionRepository = {
   create(session: AdminSessionRecord): Promise<AdminSessionRecord>
   getByTokenHash(tokenHash: string): Promise<AdminSessionRecord | undefined>
   revokeById(sessionId: string, revokedAt: string): Promise<boolean>
+  cleanupExpired(input: {
+    sessionsExpiredBefore: string
+    rateLimitsUpdatedBefore: string
+    rateLimitsUnblockedBefore: string
+  }): Promise<void>
 }
 
 export type AdminLoginReservation =

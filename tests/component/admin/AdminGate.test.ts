@@ -183,6 +183,27 @@ describe('AdminGate', () => {
     expect(wrapper.get('[data-admin-workspace]').text()).toBe('私有业务数据')
   })
 
+  it('does not treat a 503 carrying a session code as confirmed identity rejection', async () => {
+    const api: AdminGateApi = {
+      getAdminSession: vi.fn().mockRejectedValue(
+        new ApiFailureError(503, {
+          code: 'admin_session_required',
+          message: 'Session dependency unavailable',
+        }),
+      ),
+      logoutAdmin: vi.fn(),
+    }
+    const { router, wrapper } = await mountGate(
+      api,
+      '<div data-admin-workspace>私有业务数据</div>',
+    )
+    await flushPromises()
+
+    expect(router.currentRoute.value.path).toBe('/admin/courses')
+    expect(wrapper.text()).toContain('无法验证管理员身份')
+    expect(wrapper.find('[data-admin-workspace]').exists()).toBe(false)
+  })
+
   it('unmounts stale private state only for a stable session-failure code', async () => {
     let unmounted = false
     const PrivateWorkspace = defineComponent({

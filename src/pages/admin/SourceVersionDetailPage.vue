@@ -654,158 +654,160 @@ onBeforeUnmount(() => {
           </template>
         </section>
 
-        <section
-          v-if="!detail.readyToPublish && detail.status === 'draft'"
-          data-blockers
-          class="blockers"
-          aria-labelledby="blockers-title"
-        >
-          <header class="section-heading">
-            <div>
-              <h2 id="blockers-title">
-                发布阻断项
-              </h2>
-              <p>以下项目来自服务端覆盖检查，补齐或批准后重新读取。</p>
-            </div>
-            <span>{{ detail.missingItems.length }} 项</span>
-          </header>
-          <ul>
-            <li
-              v-for="(item, index) in blockerRows"
-              :key="`${item.word}-${item.stage}-${item.taskType}-${String(index)}`"
-              data-blocker-item
-            >
-              <div class="blocker-facts">
-                <strong lang="en">{{ item.word }} · {{ item.stage }}</strong>
-                <span>题型 {{ taskTypeLabel(item.taskType) }}</span>
-                <span>原因 {{ reasonLabel(item.reason) }}</span>
-              </div>
-              <router-link
-                v-if="item.itemId"
-                class="row-link"
-                :to="`/admin/source-versions/${encodeURIComponent(detail.versionId)}/exercises/${encodeURIComponent(item.itemId)}`"
-              >
-                打开练习
-              </router-link>
-              <span v-else>暂无可处理项目</span>
-            </li>
-          </ul>
-        </section>
-
-        <section
-          data-coverage-matrix
-          class="coverage"
-          aria-labelledby="coverage-title"
-        >
-          <header class="section-heading">
-            <div>
-              <h2 id="coverage-title">
-                覆盖率矩阵
-              </h2>
-              <p>每个状态同时使用文字和边界表达；不由前端推断发布资格。</p>
-            </div>
-            <label class="gap-filter">
-              <input
-                v-model="showOnlyGaps"
-                data-gap-filter
-                type="checkbox"
-              >
-              只看缺口
-            </label>
-          </header>
-
-          <div
-            class="table-scroll matrix-scroll"
-            data-scroll-region="coverage-matrix"
-            tabindex="0"
-            aria-label="单词与 S0 至 S5 覆盖率矩阵"
+        <div class="coverage-layout">
+          <section
+            v-if="!detail.readyToPublish && detail.status === 'draft'"
+            data-blockers
+            class="blockers"
+            aria-labelledby="blockers-title"
           >
-            <table data-coverage-table>
-              <thead>
-                <tr>
-                  <th scope="col">
-                    单词
-                  </th>
-                  <th
-                    v-for="stage in MATRIX_STAGES"
-                    :key="stage"
-                    data-matrix-stage
-                    scope="col"
-                  >
-                    {{ stage }}
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="row in visibleMatrixRows"
-                  :key="row.wordId"
-                  data-matrix-row
+            <header class="section-heading">
+              <div>
+                <h2 id="blockers-title">
+                  发布阻断项
+                </h2>
+                <p>以下项目来自服务端覆盖检查，补齐或批准后重新读取。</p>
+              </div>
+              <span>{{ detail.missingItems.length }} 项</span>
+            </header>
+            <ul>
+              <li
+                v-for="(item, index) in blockerRows"
+                :key="`${item.word}-${item.stage}-${item.taskType}-${String(index)}`"
+                data-blocker-item
+              >
+                <div class="blocker-facts">
+                  <strong lang="en">{{ item.word }} · {{ item.stage }}</strong>
+                  <span>题型 {{ taskTypeLabel(item.taskType) }}</span>
+                  <span>原因 {{ reasonLabel(item.reason) }}</span>
+                </div>
+                <router-link
+                  v-if="item.itemId"
+                  class="row-link"
+                  :to="`/admin/source-versions/${encodeURIComponent(detail.versionId)}/exercises/${encodeURIComponent(item.itemId)}`"
                 >
-                  <th
-                    scope="row"
-                    lang="en"
-                  >
-                    {{ row.word }}
-                  </th>
-                  <td
-                    v-for="stage in MATRIX_STAGES"
-                    :key="stage"
-                    :data-stage="stage"
-                  >
-                    <div
-                      v-if="row.cellsByStage[stage].length > 0"
-                      class="matrix-cell"
-                    >
-                      <template
-                        v-for="cell in row.cellsByStage[stage]"
-                        :key="`${cell.taskType}-${cell.itemId ?? 'missing'}`"
-                      >
-                        <router-link
-                          v-if="cell.itemId"
-                          class="matrix-entry matrix-entry--link"
-                          :data-status="cell.status"
-                          :aria-label="`${row.word} ${stage} ${taskTypeLabel(cell.taskType)} ${itemStatusLabel(cell.status)}，打开练习`"
-                          :to="`/admin/source-versions/${encodeURIComponent(detail.versionId)}/exercises/${encodeURIComponent(cell.itemId)}`"
-                        >
-                          <span
-                            class="cell-status"
-                            :data-status="cell.status"
-                          >{{ itemStatusLabel(cell.status) }}</span>
-                          <small>{{ taskTypeLabel(cell.taskType) }}</small>
-                        </router-link>
-                        <span
-                          v-else
-                          class="matrix-entry"
-                          :data-status="cell.status"
-                          :aria-label="`${row.word} ${stage} ${taskTypeLabel(cell.taskType)} ${itemStatusLabel(cell.status)}`"
-                        >
-                          <span
-                            class="cell-status"
-                            :data-status="cell.status"
-                          >{{ itemStatusLabel(cell.status) }}</span>
-                          <small>{{ taskTypeLabel(cell.taskType) }}</small>
-                        </span>
-                      </template>
-                    </div>
-                    <span
-                      v-else
-                      class="matrix-empty"
-                    >无数据</span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <p
-              v-if="showOnlyGaps && visibleMatrixRows.length === 0"
-              data-gap-empty
-              class="matrix-filter-empty"
-              role="status"
+                  打开练习
+                </router-link>
+                <span v-else>暂无可处理项目</span>
+              </li>
+            </ul>
+          </section>
+
+          <section
+            data-coverage-matrix
+            class="coverage"
+            aria-labelledby="coverage-title"
+          >
+            <header class="section-heading">
+              <div>
+                <h2 id="coverage-title">
+                  覆盖率矩阵
+                </h2>
+                <p>每个状态同时使用文字和边界表达；不由前端推断发布资格。</p>
+              </div>
+              <label class="gap-filter">
+                <input
+                  v-model="showOnlyGaps"
+                  data-gap-filter
+                  type="checkbox"
+                >
+                只看缺口
+              </label>
+            </header>
+
+            <div
+              class="table-scroll matrix-scroll"
+              data-scroll-region="coverage-matrix"
+              tabindex="0"
+              aria-label="单词与 S0 至 S5 覆盖率矩阵"
             >
-              当前条件下没有缺口。
-            </p>
-          </div>
-        </section>
+              <table data-coverage-table>
+                <thead>
+                  <tr>
+                    <th scope="col">
+                      单词
+                    </th>
+                    <th
+                      v-for="stage in MATRIX_STAGES"
+                      :key="stage"
+                      data-matrix-stage
+                      scope="col"
+                    >
+                      {{ stage }}
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="row in visibleMatrixRows"
+                    :key="row.wordId"
+                    data-matrix-row
+                  >
+                    <th
+                      scope="row"
+                      lang="en"
+                    >
+                      {{ row.word }}
+                    </th>
+                    <td
+                      v-for="stage in MATRIX_STAGES"
+                      :key="stage"
+                      :data-stage="stage"
+                    >
+                      <div
+                        v-if="row.cellsByStage[stage].length > 0"
+                        class="matrix-cell"
+                      >
+                        <template
+                          v-for="cell in row.cellsByStage[stage]"
+                          :key="`${cell.taskType}-${cell.itemId ?? 'missing'}`"
+                        >
+                          <router-link
+                            v-if="cell.itemId"
+                            class="matrix-entry matrix-entry--link"
+                            :data-status="cell.status"
+                            :aria-label="`${row.word} ${stage} ${taskTypeLabel(cell.taskType)} ${itemStatusLabel(cell.status)}，打开练习`"
+                            :to="`/admin/source-versions/${encodeURIComponent(detail.versionId)}/exercises/${encodeURIComponent(cell.itemId)}`"
+                          >
+                            <span
+                              class="cell-status"
+                              :data-status="cell.status"
+                            >{{ itemStatusLabel(cell.status) }}</span>
+                            <small>{{ taskTypeLabel(cell.taskType) }}</small>
+                          </router-link>
+                          <span
+                            v-else
+                            class="matrix-entry"
+                            :data-status="cell.status"
+                            :aria-label="`${row.word} ${stage} ${taskTypeLabel(cell.taskType)} ${itemStatusLabel(cell.status)}`"
+                          >
+                            <span
+                              class="cell-status"
+                              :data-status="cell.status"
+                            >{{ itemStatusLabel(cell.status) }}</span>
+                            <small>{{ taskTypeLabel(cell.taskType) }}</small>
+                          </span>
+                        </template>
+                      </div>
+                      <span
+                        v-else
+                        class="matrix-empty"
+                      >无数据</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              <p
+                v-if="showOnlyGaps && visibleMatrixRows.length === 0"
+                data-gap-empty
+                class="matrix-filter-empty"
+                role="status"
+              >
+                当前条件下没有缺口。
+              </p>
+            </div>
+          </section>
+        </div>
 
         <section
           v-if="canMutate && draftItems.length > 0"
@@ -880,6 +882,12 @@ onBeforeUnmount(() => {
 }
 
 .version-workspace {
+  min-width: 0;
+  gap: var(--space-6);
+}
+
+.coverage-layout {
+  display: grid;
   min-width: 0;
   gap: var(--space-6);
 }
@@ -1259,6 +1267,35 @@ tbody tr:last-child > * {
     position: sticky;
     z-index: 4;
     top: calc(72px + var(--space-2));
+  }
+}
+
+@media (min-width: 1280px) {
+  .coverage-layout:has(.blockers) {
+    grid-template-columns: 276px minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .coverage-layout > .coverage {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .coverage-layout > .blockers {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .coverage-layout > .blockers .section-heading,
+  .coverage-layout > .blockers li,
+  .coverage-layout > .blockers .blocker-facts {
+    align-items: stretch;
+    display: grid;
+  }
+
+  .coverage-layout > .blockers .blocker-facts {
+    grid-template-columns: 1fr;
+    gap: var(--space-1);
   }
 }
 

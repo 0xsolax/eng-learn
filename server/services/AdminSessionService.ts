@@ -42,17 +42,27 @@ export const createAdminSessionService = (input: {
     async login(command) {
       const now = input.now()
       const nowIso = now.toISOString()
+      const resetBefore = new Date(now.getTime() - RATE_LIMIT_WINDOW_MS).toISOString()
+      await input.sessionRepository
+        .cleanupExpired({
+          sessionsExpiredBefore: nowIso,
+          rateLimitsUpdatedBefore: resetBefore,
+          rateLimitsUnblockedBefore: nowIso,
+        })
+        .catch(() => undefined)
       const keyHash = await createClientRateLimitHash(
         input.config.rateLimitKey,
         command.clientIdentifier,
       )
-      const reservation = await input.rateLimitRepository.reserveAttempt({
-        keyHash,
-        now: nowIso,
-        resetBefore: new Date(now.getTime() - RATE_LIMIT_WINDOW_MS).toISOString(),
-        blockedUntil: new Date(now.getTime() + RATE_LIMIT_WINDOW_MS).toISOString(),
-        maximumAttempts: MAXIMUM_LOGIN_ATTEMPTS,
-      })
+      const reservation = await requireAuthenticationStore(() =>
+        input.rateLimitRepository.reserveAttempt({
+          keyHash,
+          now: nowIso,
+          resetBefore,
+          blockedUntil: new Date(now.getTime() + RATE_LIMIT_WINDOW_MS).toISOString(),
+          maximumAttempts: MAXIMUM_LOGIN_ATTEMPTS,
+        }),
+      )
 
       if (reservation.status === 'blocked') {
         throw createRateLimitError(now, reservation.blockedUntil)
@@ -73,18 +83,20 @@ export const createAdminSessionService = (input: {
         )
       }
 
-      await input.rateLimitRepository.clear(keyHash)
+      await requireAuthenticationStore(() => input.rateLimitRepository.clear(keyHash))
       const token = generateToken()
       if (!RAW_TOKEN_PATTERN.test(token)) {
         throw new Error('Admin session token generator returned an invalid token')
       }
-      await input.sessionRepository.create({
-        id: crypto.randomUUID(),
-        tokenHash: await hashToken(token),
-        credentialId: input.config.credentialId,
-        createdAt: nowIso,
-        expiresAt: new Date(now.getTime() + SESSION_TTL_MS).toISOString(),
-      })
+      await requireAuthenticationStore(async () =>
+        input.sessionRepository.create({
+          id: crypto.randomUUID(),
+          tokenHash: await hashToken(token),
+          credentialId: input.config.credentialId,
+          createdAt: nowIso,
+          expiresAt: new Date(now.getTime() + SESSION_TTL_MS).toISOString(),
+        }),
+      )
       return {
         token,
         session: toSessionDto(input.config),
@@ -93,7 +105,9 @@ export const createAdminSessionService = (input: {
 
     async resolve(token) {
       if (!RAW_TOKEN_PATTERN.test(token)) return { status: 'invalid' }
-      const session = await input.sessionRepository.getByTokenHash(await hashToken(token))
+      const session = await requireAuthenticationStore(async () =>
+        input.sessionRepository.getByTokenHash(await hashToken(token)),
+      )
       if (!session) return { status: 'invalid' }
       if (session.revokedAt) return { status: 'revoked' }
       if (session.credentialId !== input.config.credentialId) return { status: 'revoked' }
@@ -105,9 +119,13 @@ export const createAdminSessionService = (input: {
 
     async logout(token) {
       if (!RAW_TOKEN_PATTERN.test(token)) return false
-      const session = await input.sessionRepository.getByTokenHash(await hashToken(token))
+      const session = await requireAuthenticationStore(async () =>
+        input.sessionRepository.getByTokenHash(await hashToken(token)),
+      )
       if (!session) return false
-      return input.sessionRepository.revokeById(session.id, input.now().toISOString())
+      return requireAuthenticationStore(() =>
+        input.sessionRepository.revokeById(session.id, input.now().toISOString()),
+      )
     },
   }
 }
@@ -155,6 +173,17 @@ const createRateLimitError = (now: Date, blockedUntil: string): DomainError => {
     'Administrator login is temporarily rate limited',
     { retryAfterSeconds: Math.ceil(remainingMilliseconds / 1_000) },
   )
+}
+
+const requireAuthenticationStore = async <T>(operation: () => Promise<T>): Promise<T> => {
+  try {
+    return await operation()
+  } catch {
+    throw new DomainError(
+      'dependency_failure',
+      'Administrator authentication storage is unavailable',
+    )
+  }
 }
 
 const decodeBase64Url = (value: string): Uint8Array => {

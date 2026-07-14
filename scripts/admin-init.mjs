@@ -12,6 +12,9 @@ const pbkdf2Async = promisify(pbkdf2)
 const ITERATIONS = 600_000
 const ALGORITHM = 'PBKDF2-HMAC-SHA256'
 const USERNAME_PATTERN = /^[A-Za-z0-9._+@-]+$/
+const NON_VISIBLE_CHARACTER_PATTERN = /[\p{C}\p{Zl}\p{Zp}]/u
+const LOCAL_ADMIN_APP_ORIGIN = 'https://127.0.0.1:8787'
+const LOCAL_ADMIN_BROWSER_AUTH_MODE = 'application_session'
 
 export const createSerializedAdminConfig = async (input) => {
   const username = validateUsername(input.username)
@@ -53,20 +56,53 @@ export const replaceAdminAuthConfig = (current, encoded) => {
     )
   }
 
-  const newline = current.includes('\r\n') ? '\r\n' : '\n'
-  const separator = current.length > 0 && !current.endsWith('\n') ? newline : ''
-  return `${current}${separator}ADMIN_AUTH_CONFIG=${encoded}${newline}`
+  return appendConfigLine(current, `ADMIN_AUTH_CONFIG=${encoded}`)
 }
 
-export const writeLocalAdminConfig = async (path, encoded) => {
+const appendConfigLine = (current, line) => {
+  const newline = current.includes('\r\n') ? '\r\n' : '\n'
+  if (current.length === 0) return `${line}${newline}`
+
+  const hasFinalNewline = current.endsWith('\n')
+  return `${current}${hasFinalNewline ? '' : newline}${line}${hasFinalNewline ? newline : ''}`
+}
+
+const readUniqueConfigValue = (current, key) => {
+  const linePattern = new RegExp(`^[ \\t]*${key}[ \\t]*=([^\\r\\n]*)(\\r?)$`, 'gm')
+  const matches = [...current.matchAll(linePattern)]
+  if (matches.length > 1) throw new Error(`Multiple ${key} definitions found`)
+  return matches.length === 1 ? matches[0][1].trim() : undefined
+}
+
+export const ensureLocalAdminRuntimeConfig = (current) => {
+  let next = current
+  for (const [key, expected] of [
+    ['APP_ORIGIN', LOCAL_ADMIN_APP_ORIGIN],
+    ['ADMIN_BROWSER_AUTH_MODE', LOCAL_ADMIN_BROWSER_AUTH_MODE],
+  ]) {
+    const existing = readUniqueConfigValue(next, key)
+    if (existing === undefined) {
+      next = appendConfigLine(next, `${key}=${expected}`)
+      continue
+    }
+    if (existing !== expected) {
+      throw new Error(`${key} must be ${expected} for pnpm dev:admin:local`)
+    }
+  }
+  return next
+}
+
+const readLocalConfig = async (path) => {
   let current = ''
   try {
     current = await readFile(path, 'utf8')
   } catch (error) {
     if (!error || typeof error !== 'object' || error.code !== 'ENOENT') throw error
   }
+  return current
+}
 
-  const next = replaceAdminAuthConfig(current, encoded)
+const writeLocalConfig = async (path, next) => {
   const temporaryPath = join(
     dirname(path),
     `.${basename(path)}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`,
@@ -82,6 +118,17 @@ export const writeLocalAdminConfig = async (path, encoded) => {
   }
 }
 
+export const writeLocalAdminRuntimeConfig = async (path) => {
+  const current = await readLocalConfig(path)
+  await writeLocalConfig(path, ensureLocalAdminRuntimeConfig(current))
+}
+
+export const writeLocalAdminConfig = async (path, encoded) => {
+  const current = await readLocalConfig(path)
+  const runtimeReady = ensureLocalAdminRuntimeConfig(current)
+  await writeLocalConfig(path, replaceAdminAuthConfig(runtimeReady, encoded))
+}
+
 const validateUsername = (candidate) => {
   const username = candidate.trim().toLocaleLowerCase('en-US')
   if (username.length < 3 || username.length > 64 || !USERNAME_PATTERN.test(username)) {
@@ -92,7 +139,11 @@ const validateUsername = (candidate) => {
 
 const validateDisplayName = (candidate) => {
   const displayName = candidate.trim()
-  if (Array.from(displayName).length < 1 || Array.from(displayName).length > 64) {
+  if (
+    Array.from(displayName).length < 1 ||
+    Array.from(displayName).length > 64 ||
+    NON_VISIBLE_CHARACTER_PATTERN.test(displayName)
+  ) {
     throw new Error('Admin display name must contain 1 to 64 characters')
   }
   return displayName
@@ -147,10 +198,10 @@ const createPrompter = () => {
   }
 }
 
-const putRemoteSecret = async (encoded) =>
+export const putRemoteSecret = async (encoded, command = 'pnpm') =>
   new Promise((resolvePromise, reject) => {
     const child = spawn(
-      'pnpm',
+      command,
       ['exec', 'wrangler', 'secret', 'put', 'ADMIN_AUTH_CONFIG'],
       { stdio: ['pipe', 'inherit', 'inherit'] },
     )
@@ -164,8 +215,16 @@ const putRemoteSecret = async (encoded) =>
 
 const run = async () => {
   const mode = process.argv[2]
+  if (mode === 'prepare-local') {
+    await writeLocalAdminRuntimeConfig(resolve('.dev.vars'))
+    process.stdout.write('Local administrator runtime configuration prepared\n')
+    return
+  }
   if (mode !== 'local' && mode !== 'remote') {
-    throw new Error('Usage: node scripts/admin-init.mjs <local|remote>')
+    throw new Error('Usage: node scripts/admin-init.mjs <prepare-local|local|remote>')
+  }
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new Error('Administrator initialization requires an interactive terminal')
   }
 
   const prompt = createPrompter()

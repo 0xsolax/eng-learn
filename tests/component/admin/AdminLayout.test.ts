@@ -67,6 +67,7 @@ const mountLayout = async ({
     clearPrivateState: vi.fn(),
   }
   const wrapper = mount(AdminLayout, {
+    attachTo: document.body,
     global: {
       plugins: [router],
       provide: {
@@ -80,6 +81,14 @@ const mountLayout = async ({
 }
 
 describe('AdminLayout', () => {
+  it('moves programmatic focus to the current page heading when the workspace mounts', async () => {
+    const { wrapper } = await mountLayout()
+    const heading = wrapper.get('h1')
+
+    expect(heading.attributes('tabindex')).toBe('-1')
+    expect(document.activeElement).toBe(heading.element)
+  })
+
   it.each([
     [1280, 'sidebar'],
     [1024, 'topbar'],

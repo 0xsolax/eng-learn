@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
 import process from 'node:process'
 import { resolve } from 'node:path'
@@ -8,6 +9,13 @@ import {
   createAdminAuthConfig,
   verifyAdminCredential,
 } from '../server/security/adminCredential.ts'
+
+if (typeof crypto.subtle.timingSafeEqual !== 'function') {
+  Object.defineProperty(crypto.subtle, 'timingSafeEqual', {
+    configurable: true,
+    value: timingSafeEqual,
+  })
+}
 
 export const ADMIN_BENCHMARK_SAMPLE_COUNT = 100
 const LOCAL_P95_LIMIT_MS = 1_000

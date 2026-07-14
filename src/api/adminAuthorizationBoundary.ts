@@ -1,3 +1,5 @@
+import { ApiFailureError, InvalidApiResponseError } from './errors'
+
 export const ADMIN_SESSION_FAILURE_CODES = [
   'admin_session_required',
   'admin_session_expired',
@@ -11,6 +13,20 @@ export const isAdminSessionFailureCode = (
   code: string,
 ): code is AdminSessionFailureCode =>
   (ADMIN_SESSION_FAILURE_CODES as readonly string[]).includes(code)
+
+export const getAdminSessionFailureCode = (
+  error: unknown,
+): AdminSessionFailureCode | undefined =>
+  error instanceof ApiFailureError &&
+  (error.status === 401 || error.status === 403) &&
+  isAdminSessionFailureCode(error.code)
+    ? error.code
+    : undefined
+
+export const isAdminSessionAccessError = (error: unknown): boolean =>
+  getAdminSessionFailureCode(error) !== undefined ||
+  (error instanceof InvalidApiResponseError &&
+    (error.status === 401 || error.status === 403))
 
 type AdminAuthorizationFailureListener = (code: AdminSessionFailureCode) => void
 

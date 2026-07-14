@@ -321,6 +321,7 @@ function emptyFields(): EditorFields {
   <form
     v-else
     class="exercise-form"
+    :data-task-type="item.taskType"
     @submit.prevent="submit"
   >
     <div class="identity-grid">
@@ -463,7 +464,7 @@ function emptyFields(): EditorFields {
         <textarea
           v-model="fields.pieces"
           name="pieces"
-          rows="6"
+          rows="4"
           :aria-invalid="fieldErrors.pieces ? 'true' : undefined"
           :aria-describedby="fieldErrors.pieces ? 'pieces-error' : undefined"
           :disabled="readonly || saving"
@@ -480,7 +481,7 @@ function emptyFields(): EditorFields {
         <textarea
           v-model="fields.pieceIds"
           name="piece-ids"
-          rows="6"
+          rows="4"
           :aria-invalid="fieldErrors.pieceIds ? 'true' : undefined"
           :aria-describedby="fieldErrors.pieceIds ? 'piece-ids-error' : undefined"
           :disabled="readonly || saving"
@@ -705,6 +706,19 @@ function emptyFields(): EditorFields {
 @media (max-width: 767px) {
   .exercise-form {
     padding: var(--space-4);
+  }
+}
+
+@media (min-width: 768px) {
+  .exercise-form[data-task-type='sentence_build'] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .exercise-form[data-task-type='sentence_build'] > .identity-grid,
+  .exercise-form[data-task-type='sentence_build'] > .native-field:last-of-type,
+  .exercise-form[data-task-type='sentence_build'] > .form-error,
+  .exercise-form[data-task-type='sentence_build'] > .ui-button {
+    grid-column: 1 / -1;
   }
 }
 </style>

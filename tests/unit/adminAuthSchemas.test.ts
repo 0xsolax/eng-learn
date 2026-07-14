@@ -43,6 +43,37 @@ describe('admin authentication contracts', () => {
     })
   })
 
+  it('measures display names in Unicode code points', () => {
+    expect(
+      adminSessionSchema.parse({
+        id: 'admin-credential-1',
+        source: 'application_session',
+        displayName: '😀'.repeat(64),
+      }).displayName,
+    ).toBe('😀'.repeat(64))
+    expect(
+      adminSessionSchema.safeParse({
+        id: 'admin-credential-1',
+        source: 'application_session',
+        displayName: '😀'.repeat(65),
+      }).success,
+    ).toBe(false)
+    expect(
+      adminSessionSchema.safeParse({
+        id: 'admin-credential-1',
+        source: 'application_session',
+        displayName: 'Visible\tName',
+      }).success,
+    ).toBe(false)
+    expect(
+      adminSessionSchema.safeParse({
+        id: 'admin-credential-1',
+        source: 'application_session',
+        displayName: 'Visible\u200BName',
+      }).success,
+    ).toBe(false)
+  })
+
   it('requires a retry delay on the stable login cooldown error', () => {
     expect(
       apiErrorSchema.parse({
