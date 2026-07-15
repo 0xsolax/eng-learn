@@ -73,6 +73,30 @@ describe('SourceVersionsPage', () => {
     expect(wrapper.get('[data-toggle-import]').text()).toContain('收起导入')
   })
 
+  it('offers the exact header-only CSV template from the import workspace', async () => {
+    const api = {
+      listSourceVersions: vi.fn().mockResolvedValue([]),
+      importSourceVersion: vi.fn(),
+    }
+    const wrapper = mount(SourceVersionsPage, {
+      props: { api },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    })
+    await flushPromises()
+
+    const download = wrapper.get('[data-download-csv-template]')
+    const href = download.attributes('href')
+
+    if (href === undefined) throw new Error('Expected the CSV template download URL')
+
+    expect(download.text()).toContain('下载 CSV 模板')
+    expect(download.attributes('download')).toBe('eng-learn-word-import-template.csv')
+    expect(href.startsWith('data:text/csv;charset=utf-8,')).toBe(true)
+    expect(decodeURIComponent(href.slice(href.indexOf(',') + 1))).toBe(
+      '\uFEFFword,meaning,exampleSentence,partOfSpeech\r\n',
+    )
+  })
+
   it('keeps a completed import result while the workspace is collapsed and reopened', async () => {
     const api = {
       listSourceVersions: vi

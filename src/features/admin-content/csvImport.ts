@@ -10,6 +10,11 @@ const CSV_HEADERS = ['word', 'meaning', 'exampleSentence', 'partOfSpeech'] as co
 const MAX_CSV_BYTES = 256 * 1024
 const MAX_DATA_ROWS = 500
 
+export const ADMIN_CSV_TEMPLATE_FILENAME = 'eng-learn-word-import-template.csv'
+export const ADMIN_CSV_TEMPLATE_CONTENT = `\uFEFF${CSV_HEADERS.join(',')}\r\n`
+export const ADMIN_CSV_TEMPLATE_URL =
+  `data:text/csv;charset=utf-8,${encodeURIComponent(ADMIN_CSV_TEMPLATE_CONTENT)}`
+
 export type CsvImportWord = z.output<typeof importWordRequestSchema>
 
 export type CsvImportIssue = {

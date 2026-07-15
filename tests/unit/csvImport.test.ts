@@ -1,10 +1,37 @@
 import { describe, expect, it, vi } from 'vitest'
-import { parseAdminCsv } from '@/features/admin-content/csvImport'
+import {
+  ADMIN_CSV_TEMPLATE_CONTENT,
+  ADMIN_CSV_TEMPLATE_FILENAME,
+  parseAdminCsv,
+} from '@/features/admin-content/csvImport'
 
 const csvFile = (contents: string): File =>
   new File([new TextEncoder().encode(contents)], 'words.csv', { type: 'text/csv' })
 
 describe('admin CSV import', () => {
+  it('provides a header-only Excel-compatible template that remains valid when filled in', async () => {
+    expect(ADMIN_CSV_TEMPLATE_FILENAME).toBe('eng-learn-word-import-template.csv')
+    expect(ADMIN_CSV_TEMPLATE_CONTENT).toBe(
+      '\uFEFFword,meaning,exampleSentence,partOfSpeech\r\n',
+    )
+
+    await expect(
+      parseAdminCsv(
+        csvFile(`${ADMIN_CSV_TEMPLATE_CONTENT}apple,苹果,I eat an apple.,noun\r\n`),
+      ),
+    ).resolves.toEqual({
+      ok: true,
+      words: [
+        {
+          word: 'apple',
+          meaning: '苹果',
+          exampleSentence: 'I eat an apple.',
+          partOfSpeech: 'noun',
+        },
+      ],
+    })
+  })
+
   it('decodes an optional UTF-8 BOM and RFC4180 quoted fields into structured words', async () => {
     const file = csvFile(
       '\uFEFFword,meaning,exampleSentence,partOfSpeech\r\n' +

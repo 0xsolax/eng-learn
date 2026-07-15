@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { SourceVersionSummaryDto } from '@shared/api/contentSchemas'
 import { generateAdminOperationToken } from '@shared/security/adminOperationToken'
-import { Upload } from '@lucide/vue'
+import { Download as DownloadIcon, Upload } from '@lucide/vue'
 import { createAdminApi } from '@/api/adminApi'
 import {
   ApiFailureError,
@@ -12,7 +12,12 @@ import {
 import UiButton from '@/components/ui/UiButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
 import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
-import { parseAdminCsv, type CsvImportResult } from '@/features/admin-content/csvImport'
+import {
+  ADMIN_CSV_TEMPLATE_FILENAME,
+  ADMIN_CSV_TEMPLATE_URL,
+  parseAdminCsv,
+  type CsvImportResult,
+} from '@/features/admin-content/csvImport'
 
 type SourceVersionsApi = Pick<
   ReturnType<typeof createAdminApi>,
@@ -441,6 +446,18 @@ onBeforeUnmount(() => {
           </h2>
           <p>UTF-8 CSV，表头必须为 word、meaning、exampleSentence、partOfSpeech。</p>
         </div>
+        <a
+          data-download-csv-template
+          class="template-download"
+          :href="ADMIN_CSV_TEMPLATE_URL"
+          :download="ADMIN_CSV_TEMPLATE_FILENAME"
+        >
+          <download-icon
+            :size="16"
+            aria-hidden="true"
+          />
+          下载 CSV 模板
+        </a>
       </header>
 
       <form
@@ -690,6 +707,21 @@ onBeforeUnmount(() => {
 
 .section-heading h2 {
   font-size: 18px;
+}
+
+.template-download {
+  display: inline-flex;
+  min-height: 40px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-brand-strong);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.template-download:hover {
+  text-decoration: underline;
 }
 
 .import-form {
