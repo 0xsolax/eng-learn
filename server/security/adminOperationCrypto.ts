@@ -11,6 +11,8 @@ const HASH_PREFIX = 'sha256:'
 const OPERATION_HASH_DOMAIN = 'eng-learn:admin-operation-token:v1'
 const ACCESS_CODE_DOMAIN = 'eng-learn:admin-operation-access-code:v1'
 const REQUEST_FINGERPRINT_DOMAIN = 'eng-learn:admin-operation-request:v1'
+const SOURCE_VERSION_IMPORT_FINGERPRINT_DOMAIN =
+  'eng-learn:admin-operation-source-version-import:v2'
 
 export const ADMIN_ACCESS_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
@@ -43,6 +45,20 @@ export type AdminOperationRequest =
       expectedCredentialVersion: number
     }
 
+export type SourceVersionImportOperationRequest = {
+  mode: 'new_source' | 'next_version'
+  targetId: string
+  sourceName?: string
+  words: Array<{
+    word: string
+    meaning: string
+    examplePhrase: string
+    exampleSentence: string
+    exampleSentenceExtended: string
+    partOfSpeech?: string
+  }>
+}
+
 export const hashAdminOperationToken = async (
   token: RawAdminOperationToken,
 ): Promise<AdminOperationHash> =>
@@ -56,6 +72,27 @@ export const fingerprintAdminOperationRequest = async (
 
   return (await hashText(
     `${REQUEST_FINGERPRINT_DOMAIN}\0${input.kind}\0${targetId}\0${payload}`,
+  )) as AdminRequestFingerprint
+}
+
+export const fingerprintSourceVersionImportRequest = async (
+  input: SourceVersionImportOperationRequest,
+): Promise<AdminRequestFingerprint> => {
+  const payload = [
+    lengthPrefixed(input.mode),
+    lengthPrefixed(input.sourceName ?? ''),
+    ...input.words.flatMap((word) => [
+      lengthPrefixed(word.word),
+      lengthPrefixed(word.meaning),
+      lengthPrefixed(word.examplePhrase),
+      lengthPrefixed(word.exampleSentence),
+      lengthPrefixed(word.exampleSentenceExtended),
+      lengthPrefixed(word.partOfSpeech ?? ''),
+    ]),
+  ].join('\0')
+
+  return (await hashText(
+    `${SOURCE_VERSION_IMPORT_FINGERPRINT_DOMAIN}\0${input.targetId}\0${payload}`,
   )) as AdminRequestFingerprint
 }
 

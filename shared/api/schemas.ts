@@ -71,9 +71,11 @@ const simpleApiErrorSchema = z
       'conflict',
       'credential_conflict',
       'idempotency_conflict',
+      'import_reconcile_required',
       'operation_superseded',
       'queue_invariant_violation',
       'dependency_failure',
+      'schema_not_ready',
       'internal_error',
       'origin_forbidden',
       'payload_too_large',
@@ -169,6 +171,7 @@ export const importSourceVersionCommandSchema = z.discriminatedUnion('mode', [
   z
     .object({
       mode: z.literal('next_version'),
+      operationToken: z.string().regex(/^[0-9a-f]{64}$/),
       sourceId: z.string().trim().min(1).max(128),
       words: z.array(importWordRequestSchema).min(1).max(500),
     })

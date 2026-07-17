@@ -105,6 +105,20 @@ describe('API error responses', () => {
     })
   })
 
+  it.each(['schema_not_ready', 'import_reconcile_required'] as const)(
+    'maps %s to an explicit retriable 503 response',
+    async (code) => {
+      const response = toApiErrorResponse(new DomainError(code, 'Import is not ready'))
+
+      expect(response.status).toBe(503)
+      expect(response.headers.get('cache-control')).toBe('no-store')
+      await expect(response.json()).resolves.toEqual({
+        ok: false,
+        error: { code, message: 'Import is not ready' },
+      })
+    },
+  )
+
   it('never exposes unknown error messages or invalid declared details', async () => {
     const databaseResponse = toApiErrorResponse(
       new Error('D1_ERROR: UNIQUE constraint failed: learner_sessions.token_hash'),

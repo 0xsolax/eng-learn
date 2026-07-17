@@ -6,6 +6,7 @@ const SOURCE_TOKEN = 'a'.repeat(64)
 const COURSE_TOKEN = 'b'.repeat(64)
 const ROTATE_TOKEN_A = 'c'.repeat(64)
 const ROTATE_TOKEN_B = 'd'.repeat(64)
+const NEXT_VERSION_TOKEN = 'e'.repeat(64)
 
 describe('admin operation API', () => {
   it('shares one ledger across operation kinds and replays a lost new-source response', async () => {
@@ -44,6 +45,55 @@ describe('admin operation API', () => {
     )
 
     await expectFailure(conflict, 409, 'idempotency_conflict')
+  })
+
+  it('replays a next-version import through the public API without a duplicate draft', async () => {
+    const app = createTestWorkerApp({ adminIdentity: { id: 'admin-1' } })
+    const publishedVersionId = await createPublishedVersion(app)
+    const [published] = await getSuccess<Array<{ sourceId: string }>>(
+      app,
+      '/api/admin/source-versions',
+    )
+
+    if (!published) throw new Error('Expected one published source version')
+
+    const command = {
+      mode: 'next_version',
+      operationToken: NEXT_VERSION_TOKEN,
+      sourceId: published.sourceId,
+      words: createWords(),
+    }
+    const first = await postSuccess<ImportedVersion>(
+      app,
+      '/api/admin/source-versions/import',
+      command,
+    )
+    const replay = await postSuccess<ImportedVersion>(
+      app,
+      '/api/admin/source-versions/import',
+      command,
+    )
+
+    expect(replay).toEqual(first)
+    expect(first.versionId).not.toBe(publishedVersionId)
+    await expect(
+      getSuccess<ImportedVersion[]>(app, '/api/admin/source-versions'),
+    ).resolves.toHaveLength(2)
+
+    const changedContext = await app.fetch(
+      adminRequest('/api/admin/source-versions/import', {
+        method: 'POST',
+        body: {
+          ...command,
+          words: command.words.map((word, index) =>
+            index === 0
+              ? { ...word, examplePhrase: 'A fresh apple' }
+              : word,
+          ),
+        },
+      }),
+    )
+    await expectFailure(changedContext, 409, 'idempotency_conflict')
   })
 
   it('replays create and rotate, exposes credential version, and rejects stale recovery', async () => {

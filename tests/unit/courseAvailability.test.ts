@@ -12,6 +12,7 @@ import { createCourseQueryService } from '../../server/services/CourseQueryServi
 import { createCourseRuntime } from '../../server/services/CourseRuntime'
 import { createLearnerSessionService } from '../../server/services/LearnerSessionService'
 import type { CourseStatus } from '../../shared/domain/course'
+import { generateAdminOperationToken } from '../../shared/security/adminOperationToken'
 
 const NOW = new Date('2026-07-13T00:00:00.000Z')
 
@@ -802,7 +803,7 @@ const createAvailabilityFixture = async () => {
     },
   }
   const builder = createContentBuilder({ repository: contentRepository, now: () => NOW })
-  const imported = await builder.importWords({
+  const imported = await builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
     sourceName: 'Course availability source',
     words: Array.from({ length: 5 }, (_, index) => ({
       word: `word-${String(index + 1)}`,

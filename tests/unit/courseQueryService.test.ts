@@ -4,6 +4,7 @@ import { createInMemoryCourseRepository } from '../../server/repositories/inMemo
 import { createContentBuilder } from '../../server/services/ContentBuilder'
 import { createCourseQueryService } from '../../server/services/CourseQueryService'
 import { createCourseRuntime } from '../../server/services/CourseRuntime'
+import { generateAdminOperationToken } from '../../shared/security/adminOperationToken'
 
 const NOW = new Date('2026-07-13T00:00:00.000Z')
 
@@ -172,7 +173,7 @@ describe('course query service', () => {
       courseId: created.course.id,
     }
     const firstRead = await fixture.queries.getLessonReport(principal, lesson.session.id)
-    const nextVersion = await fixture.builder.importNextVersion({
+    const nextVersion = await fixture.builder.importNextVersionIdempotently({ operationToken: generateAdminOperationToken(),
       sourceId: fixture.sourceId,
       words: Array.from({ length: 10 }, (_, index) => ({
         word: `replacement-${String(index + 1)}`,
@@ -354,7 +355,7 @@ const createFixture = async (wordCount = 10) => {
   const contentRepository = createInMemoryContentRepository()
   const courseRepository = createInMemoryCourseRepository()
   const builder = createContentBuilder({ repository: contentRepository, now: () => NOW })
-  const imported = await builder.importWords({
+  const imported = await builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
     sourceName: 'Query source',
     words: Array.from({ length: wordCount }, (_, index) => ({
       word: `word-${String(index + 1)}`,

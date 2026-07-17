@@ -27,12 +27,17 @@ import type {
   WordGroupRecord,
   WordRecord,
 } from '../repositories/contentRepository'
-import { DomainError } from '../errors/DomainError'
+import { DomainError, isDomainError } from '../errors/DomainError'
 import type {
+  AdminOperationRecord,
   AdminOperationLedgerReader,
-  CreateSourceAdminOperation,
+  SourceVersionImportAdminOperation,
 } from '../repositories/adminOperationLedger'
-import { findExactAdminOperation, prepareAdminOperation } from './adminOperation'
+import {
+  findExactAdminOperation,
+  prepareSourceVersionImportOperation,
+  type PreparedAdminOperation,
+} from './adminOperation'
 
 const GROUP_SIZE = 5
 
@@ -41,6 +46,26 @@ type StageTaskDefinition = {
   taskType: TaskType
   requiresExampleSentence: boolean
 }
+
+type ExpectedImportedSource = {
+  sourceId?: string
+  sourceName?: string
+  words: ImportWordInput[]
+}
+
+type SourceVersionImportInput =
+  | {
+      mode: 'new_source'
+      operationToken: string
+      sourceName: string
+      words: ImportWordInput[]
+    }
+  | {
+      mode: 'next_version'
+      operationToken: string
+      sourceId: string
+      words: ImportWordInput[]
+    }
 
 const LEGACY_STAGE_TASKS: StageTaskDefinition[] = [
   { stage: 'S0', taskType: 'recognize_meaning', requiresExampleSentence: false },
@@ -66,16 +91,13 @@ const getStageTasks = (contentModel: ContentModel): StageTaskDefinition[] =>
     : LEGACY_STAGE_TASKS
 
 export type ContentBuilder = {
-  importWords(input: {
-    sourceName: string
-    words: ImportWordInput[]
-  }): Promise<ImportedSourceVersion>
   importNewSourceIdempotently(input: {
     operationToken: string
     sourceName: string
     words: ImportWordInput[]
   }): Promise<ImportedSourceVersion>
-  importNextVersion(input: {
+  importNextVersionIdempotently(input: {
+    operationToken: string
     sourceId: string
     words: ImportWordInput[]
   }): Promise<ImportedSourceVersion>
@@ -102,9 +124,43 @@ export type CreateContentBuilderInput = {
 export const createContentBuilder = ({
   repository,
   now,
-  operationLedger,
+  operationLedger = repository.adminOperationLedger,
 }: CreateContentBuilderInput): ContentBuilder => {
   const timestamp = () => now().toISOString()
+
+  const reconcileSourceVersionImport = async (
+    prepared: PreparedAdminOperation,
+    expected: { kind: AdminOperationRecord['kind']; targetId: string },
+  ): Promise<AdminOperationRecord | undefined> => {
+    try {
+      return await findExactAdminOperation(operationLedger, prepared, expected)
+    } catch (error) {
+      if (isDomainError(error) && error.code === 'idempotency_conflict') {
+        throw error
+      }
+
+      throw new DomainError(
+        'import_reconcile_required',
+        'Source import result requires reconciliation',
+      )
+    }
+  }
+
+  const replaySourceVersionImport = async (
+    operation: SourceVersionImportAdminOperation,
+    expected: ExpectedImportedSource,
+  ): Promise<ImportedSourceVersion> => {
+    try {
+      return await replayImportedSource(repository, operation, expected)
+    } catch (error) {
+      if (isDomainError(error)) throw error
+
+      throw new DomainError(
+        'import_reconcile_required',
+        'Source import result requires reconciliation',
+      )
+    }
+  }
 
   const createImportedVersion = async (input: {
     source: SourceRecord
@@ -112,7 +168,7 @@ export const createContentBuilder = ({
     words: ImportWordInput[]
     createSource: boolean
     versionId?: string
-    adminOperation?: CreateSourceAdminOperation
+    adminOperation?: SourceVersionImportAdminOperation
   }): Promise<ImportedSourceVersion> => {
     const createdAt = timestamp()
     const importedWords = normalizeImportedWords(input.words)
@@ -221,117 +277,131 @@ export const createContentBuilder = ({
     )
   }
 
-  return {
-    async importWords(input) {
-      const createdAt = timestamp()
-      const source: SourceRecord = {
-        id: crypto.randomUUID(),
-        name: input.sourceName,
-        createdAt,
+  const importSourceVersionIdempotently = async (
+    input: SourceVersionImportInput,
+  ): Promise<ImportedSourceVersion> => {
+    const normalizedWords = normalizeImportedWords(input.words)
+    const targetId = input.mode === 'new_source' ? 'new-source' : input.sourceId
+    const prepared = await prepareSourceVersionImportOperation(
+      input.operationToken,
+      input.mode === 'new_source'
+        ? {
+            mode: input.mode,
+            targetId,
+            sourceName: input.sourceName,
+            words: normalizedWords,
+          }
+        : {
+            mode: input.mode,
+            targetId,
+            words: normalizedWords,
+          },
+      input.mode === 'new_source'
+        ? {
+            kind: 'create_source',
+            sourceName: input.sourceName,
+            words: normalizedWords,
+          }
+        : undefined,
+    )
+    const expected = { kind: 'create_source' as const, targetId }
+    const expectedImportedSource: ExpectedImportedSource = {
+      ...(input.mode === 'new_source'
+        ? { sourceName: input.sourceName }
+        : { sourceId: input.sourceId }),
+      words: normalizedWords,
+    }
+    const existing = await reconcileSourceVersionImport(prepared, expected)
+
+    if (existing) {
+      if (existing.kind !== 'create_source') {
+        throw new Error('Matched source-version import operation has an invalid kind')
       }
 
-      return createImportedVersion({
-        source,
-        versionNo: 1,
-        words: input.words,
-        createSource: true,
-      })
-    },
+      return replaySourceVersionImport(existing, expectedImportedSource)
+    }
 
-    async importNewSourceIdempotently(input) {
-      if (!operationLedger) {
-        throw new Error('Admin operation ledger is required')
-      }
-
-      const normalizedWords = normalizeImportedWords(input.words)
-      const request = {
-        kind: 'create_source' as const,
-        sourceName: input.sourceName,
-        words: normalizedWords,
-      }
-      const prepared = await prepareAdminOperation(input.operationToken, request)
-      const expected = { kind: 'create_source' as const, targetId: 'new-source' }
-      const existing = await findExactAdminOperation(operationLedger, prepared, expected)
-
-      if (existing) {
-        if (existing.kind !== 'create_source') {
-          throw new Error('Matched create-source operation has an invalid kind')
-        }
-
-        return replayImportedSource(repository, existing)
-      }
-
-      const createdAt = timestamp()
-      const source: SourceRecord = {
-        id: crypto.randomUUID(),
-        name: input.sourceName,
-        createdAt,
-      }
-      const versionId = crypto.randomUUID()
-      const adminOperation: CreateSourceAdminOperation = {
-        operationHash: prepared.operationHash,
-        kind: 'create_source',
-        targetId: 'new-source',
-        requestFingerprint: prepared.requestFingerprint,
-        outcomeSourceId: source.id,
-        outcomeSourceVersionId: versionId,
-        createdAt,
-      }
-
-      try {
-        return await createImportedVersion({
-          source,
-          versionNo: 1,
-          words: normalizedWords,
-          createSource: true,
-          versionId,
-          adminOperation,
-        })
-      } catch (error) {
-        const raced = await findExactAdminOperation(operationLedger, prepared, expected)
-
-        if (raced?.kind === 'create_source') {
-          return replayImportedSource(repository, raced)
-        }
-
+    try {
+      await repository.assertImportSchemaReady()
+    } catch (error) {
+      if (isDomainError(error) && error.code === 'schema_not_ready') {
         throw error
       }
-    },
 
-    async importNextVersion(input) {
-      const source = await repository.getSource(input.sourceId)
+      throw new DomainError(
+        'import_reconcile_required',
+        'Source import schema readiness requires reconciliation',
+      )
+    }
 
-      if (!source) {
-        throw new DomainError('not_found', `Source ${input.sourceId} is missing`)
+    const createdAt = timestamp()
+    const source =
+      input.mode === 'new_source'
+        ? {
+            id: crypto.randomUUID(),
+            name: input.sourceName,
+            createdAt,
+          }
+        : await requireSource(repository, input.sourceId)
+    const versions =
+      input.mode === 'new_source'
+        ? []
+        : await repository.listSourceVersionsBySource(input.sourceId)
+
+    if (versions.some((version) => version.status === 'draft')) {
+      throw new DomainError('source_draft_exists', 'Source already has a draft version')
+    }
+
+    const versionNo = versions.reduce(
+      (highest, version) => Math.max(highest, version.versionNo),
+      0,
+    ) + 1
+    const versionId = crypto.randomUUID()
+    const adminOperation: SourceVersionImportAdminOperation = {
+      operationHash: prepared.operationHash,
+      kind: 'create_source',
+      targetId,
+      requestFingerprint: prepared.requestFingerprint,
+      outcomeSourceId: source.id,
+      outcomeSourceVersionId: versionId,
+      createdAt,
+    }
+
+    try {
+      return await createImportedVersion({
+        source,
+        versionNo,
+        words: normalizedWords,
+        createSource: input.mode === 'new_source',
+        versionId,
+        adminOperation,
+      })
+    } catch (error) {
+      const raced = await reconcileSourceVersionImport(prepared, expected)
+
+      if (raced?.kind === 'create_source') {
+        return replaySourceVersionImport(raced, expectedImportedSource)
       }
 
-      const versions = await repository.listSourceVersionsBySource(input.sourceId)
-
-      if (versions.some((version) => version.status === 'draft')) {
-        throw new DomainError('source_draft_exists', 'Source already has a draft version')
-      }
-
-      const versionNo = versions.reduce(
-        (highest, version) => Math.max(highest, version.versionNo),
-        0,
-      ) + 1
-
-      try {
-        return await createImportedVersion({
-          source,
-          versionNo,
-          words: input.words,
-          createSource: false,
-        })
-      } catch (error) {
+      if (input.mode === 'next_version') {
         const currentVersions = await repository.listSourceVersionsBySource(input.sourceId)
 
         if (currentVersions.some((version) => version.status === 'draft')) {
           throw new DomainError('source_draft_exists', 'Source already has a draft version')
         }
-
-        throw error
       }
+
+      throw error
+    }
+  }
+
+  return {
+    async importNewSourceIdempotently(input) {
+      return importSourceVersionIdempotently({ mode: 'new_source', ...input })
+    },
+
+    async importNextVersionIdempotently(input) {
+      return importSourceVersionIdempotently({ mode: 'next_version', ...input })
     },
 
     async buildExerciseItems(sourceVersionId) {
@@ -1125,7 +1195,8 @@ const normalizeSentenceText = canonicalizeLearningText
 
 const replayImportedSource = async (
   repository: ContentRepository,
-  operation: CreateSourceAdminOperation,
+  operation: SourceVersionImportAdminOperation,
+  expected: ExpectedImportedSource,
 ): Promise<ImportedSourceVersion> => {
   const snapshot = await repository.getSourceVersion(operation.outcomeSourceVersionId)
 
@@ -1135,8 +1206,36 @@ const replayImportedSource = async (
     snapshot.version.sourceId !== operation.outcomeSourceId
   ) {
     throw new DomainError(
-      'dependency_failure',
-      'Committed source import outcome is unavailable',
+      'import_reconcile_required',
+      'Committed source import outcome requires reconciliation',
+    )
+  }
+
+  const wordsMatch =
+    snapshot.words.length === expected.words.length &&
+    snapshot.words.every((word, index) => {
+      const expectedWord = expected.words[index]
+
+      return (
+        expectedWord !== undefined &&
+        word.orderIndex === index + 1 &&
+        word.word === expectedWord.word &&
+        word.meaning === expectedWord.meaning &&
+        word.examplePhrase === expectedWord.examplePhrase &&
+        word.exampleSentence === expectedWord.exampleSentence &&
+        word.exampleSentenceExtended === expectedWord.exampleSentenceExtended &&
+        (word.partOfSpeech ?? '') === (expectedWord.partOfSpeech ?? '')
+      )
+    })
+
+  if (
+    (expected.sourceId && snapshot.source.id !== expected.sourceId) ||
+    (expected.sourceName && snapshot.source.name !== expected.sourceName) ||
+    !wordsMatch
+  ) {
+    throw new DomainError(
+      'idempotency_conflict',
+      'Admin operation token was already used for a different request',
     )
   }
 
@@ -1144,10 +1243,23 @@ const replayImportedSource = async (
     sourceId: snapshot.source.id,
     versionId: snapshot.version.id,
     versionNo: snapshot.version.versionNo,
-    status: snapshot.version.status,
+    status: 'draft',
     wordCount: snapshot.words.length,
     groupCount: snapshot.groups.length,
   }
+}
+
+const requireSource = async (
+  repository: ContentRepository,
+  sourceId: string,
+): Promise<SourceRecord> => {
+  const source = await repository.getSource(sourceId)
+
+  if (!source) {
+    throw new DomainError('not_found', `Source ${sourceId} is missing`)
+  }
+
+  return source
 }
 
 const requireSourceVersion = async (

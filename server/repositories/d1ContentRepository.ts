@@ -16,7 +16,10 @@ import type {
   WordRecord,
 } from './contentRepository'
 import { parsePersistedExerciseItemContent } from './persistedExerciseContent'
-import { createD1AdminOperationInsert } from './adminOperationLedger'
+import {
+  createD1AdminOperationInsert,
+  createD1AdminOperationLedger,
+} from './adminOperationLedger'
 import { DomainError } from '../errors/DomainError'
 
 type SourceRow = {
@@ -87,8 +90,39 @@ type SourceVersionSummaryRow = {
 }
 
 export const D1_BULK_JSON_MAX_BYTES = 512 * 1024
+const importSchemaReadyDatabases = new WeakSet()
 
 export const createD1ContentRepository = (db: D1Database): ContentRepository => ({
+  adminOperationLedger: createD1AdminOperationLedger(db),
+
+  async assertImportSchemaReady() {
+    if (importSchemaReadyDatabases.has(db)) return
+
+    try {
+      await db
+        .prepare(
+          `SELECT versions.content_model, words.example_phrase, words.example_sentence_extended
+          FROM source_versions AS versions
+          LEFT JOIN words ON words.source_version_id = versions.id
+          LIMIT 0`,
+        )
+        .all()
+      importSchemaReadyDatabases.add(db)
+    } catch (error) {
+      if (isSchemaMismatchError(error)) {
+        throw new DomainError(
+          'schema_not_ready',
+          'Content database schema is not ready for imports',
+        )
+      }
+
+      throw new DomainError(
+        'dependency_failure',
+        'Content database is unavailable',
+      )
+    }
+  },
+
   async createSourceVersion(input: CreateSourceVersionInput) {
     const existingDraft = await db
       .prepare('SELECT id FROM source_versions WHERE source_id = ? AND status = ? LIMIT 1')
@@ -459,6 +493,20 @@ export const createD1ContentRepository = (db: D1Database): ContentRepository => 
     return mapSourceVersion(row)
   },
 })
+
+const isSchemaMismatchError = (error: unknown): boolean => {
+  const messages: string[] = []
+  let current: unknown = error
+
+  while (current instanceof Error) {
+    messages.push(current.message)
+    current = current.cause
+  }
+
+  return messages.some((message) =>
+    /no such (?:column|table)|has no column named/i.test(message),
+  )
+}
 
 type JsonChunk = {
   json: string

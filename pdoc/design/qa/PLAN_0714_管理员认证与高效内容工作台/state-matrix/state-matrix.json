@@ -288,14 +288,15 @@
     },
     {
       "page": "sources",
-      "state": "结果未知",
-      "slug": "sources-result-unknown",
-      "path": "pdoc/design/qa/PLAN_0714_管理员认证与高效内容工作台/state-matrix/sources-result-unknown.png",
+      "state": "自动确认中",
+      "slug": "sources-result-confirming",
+      "path": "pdoc/design/qa/PLAN_0714_管理员认证与高效内容工作台/state-matrix/sources-result-confirming.png",
       "viewport": {
         "width": 1280,
         "height": 800
       },
       "consoleErrors": [
+        "Failed to load resource: the server responded with a status of 503 (Service Unavailable)",
         "Failed to load resource: the server responded with a status of 503 (Service Unavailable)"
       ],
       "pageErrors": [],

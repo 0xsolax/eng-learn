@@ -6,7 +6,10 @@ import type {
   TaskType,
   WordStage,
 } from '../../shared/domain/content'
-import type { CreateSourceAdminOperation } from './adminOperationLedger'
+import type {
+  AdminOperationLedgerReader,
+  SourceVersionImportAdminOperation,
+} from './adminOperationLedger'
 
 export type SourceRecord = {
   id: string
@@ -80,10 +83,12 @@ export type CreateSourceVersionInput = {
   version: SourceVersionRecord
   words: WordRecord[]
   groups: WordGroupRecord[]
-  adminOperation?: CreateSourceAdminOperation
+  adminOperation?: SourceVersionImportAdminOperation
 }
 
 export type ContentRepository = {
+  adminOperationLedger: AdminOperationLedgerReader
+  assertImportSchemaReady(): Promise<void>
   createSourceVersion(input: CreateSourceVersionInput): Promise<SourceVersionSnapshot>
   getSource(sourceId: string): Promise<SourceRecord | undefined>
   listSourceVersions(): Promise<SourceVersionSummary[]>

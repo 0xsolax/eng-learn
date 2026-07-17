@@ -101,6 +101,10 @@ export const createInMemoryContentRepository = (
   }
 
   return {
+    adminOperationLedger: ledger,
+
+    async assertImportSchemaReady() {},
+
     async createSourceVersion(input: CreateSourceVersionInput) {
       const create = async (): Promise<SourceVersionSnapshot> => {
         if (

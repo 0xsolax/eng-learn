@@ -3,6 +3,7 @@ import {
   ADMIN_ACCESS_CODE_ALPHABET,
   deriveAdminOperationAccessCode,
   fingerprintAdminOperationRequest,
+  fingerprintSourceVersionImportRequest,
   hashAdminOperationToken,
 } from '../../server/security/adminOperationCrypto'
 import {
@@ -53,6 +54,50 @@ describe('admin operation crypto', () => {
     ).resolves.toBe(
       'sha256:836670382fe57c4ad8490da327f508f3f2a9bf78529790a0e00d41d2b4a48f8e',
     )
+  })
+
+  it('fingerprints the import mode, target, order, and every learning-context field', async () => {
+    const request = {
+      mode: 'new_source' as const,
+      targetId: 'new-source',
+      sourceName: 'Starter',
+      words: [
+        {
+          word: 'apple',
+          meaning: '苹果',
+          examplePhrase: 'An apple',
+          exampleSentence: 'I eat an apple.',
+          exampleSentenceExtended: 'I eat an apple every day.',
+          partOfSpeech: 'noun',
+        },
+        {
+          word: 'pear',
+          meaning: '梨',
+          examplePhrase: 'A pear',
+          exampleSentence: 'I eat a pear.',
+          exampleSentenceExtended: 'I eat a pear every day.',
+          partOfSpeech: 'noun',
+        },
+      ],
+    }
+    const candidates = [
+      request,
+      { ...request, mode: 'next_version' as const },
+      { ...request, targetId: 'source-1' },
+      { ...request, sourceName: 'Changed' },
+      { ...request, words: [...request.words].reverse() },
+      ...Object.keys(request.words[0] ?? {}).map((field) => ({
+        ...request,
+        words: request.words.map((word, index) =>
+          index === 0 ? { ...word, [field]: `${word[field as keyof typeof word]} changed` } : word,
+        ),
+      })),
+    ]
+    const fingerprints = await Promise.all(
+      candidates.map((candidate) => fingerprintSourceVersionImportRequest(candidate)),
+    )
+
+    expect(new Set(fingerprints).size).toBe(candidates.length)
   })
 
   it('derives an unbiased code from a 32-character alphabet and separates operation kinds', async () => {

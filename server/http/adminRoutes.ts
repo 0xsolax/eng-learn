@@ -41,7 +41,8 @@ export const routeAdminContentRequest = async (
             sourceName: input.sourceName,
             words: toImportWords(input.words),
           })
-        : await contentBuilder.importNextVersion({
+        : await contentBuilder.importNextVersionIdempotently({
+            operationToken: input.operationToken,
             sourceId: input.sourceId,
             words: toImportWords(input.words),
           }),

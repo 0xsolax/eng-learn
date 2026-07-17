@@ -32,6 +32,15 @@ const expectedSentinel = process.env.STACK_DB_SENTINEL
 const adminUsername = process.env.STACK_ADMIN_USERNAME
 const adminPassword = process.env.STACK_ADMIN_PASSWORD
 
+const createImportWords = (prefix: string, count: number) =>
+  Array.from({ length: count }, (_, index) => ({
+    word: `${prefix}-word-${String(index + 1)}`,
+    meaning: `${prefix}-meaning-${String(index + 1)}`,
+    examplePhrase: `${prefix}-word-${String(index + 1)}`,
+    exampleSentence: `I use ${prefix}-word-${String(index + 1)}.`,
+    exampleSentenceExtended: `I use ${prefix}-word-${String(index + 1)} here every day.`,
+  }))
+
 if (!expectedSentinel || !adminUsername || !adminPassword) {
   throw new Error('STACK_DB_SENTINEL and administrator credentials are required')
 }
@@ -90,13 +99,7 @@ test('enforces response-loss replay, token boundaries, and one-winner rotation i
     mode: 'new_source' as const,
     operationToken: generateAdminOperationToken(),
     sourceName,
-    words: Array.from({ length: 5 }, (_, index) => ({
-      word: `lost-word-${String(index + 1)}`,
-      meaning: `lost-meaning-${String(index + 1)}`,
-      examplePhrase: `lost-word-${String(index + 1)}`,
-      exampleSentence: `I use lost-word-${String(index + 1)}.`,
-      exampleSentenceExtended: `I use lost-word-${String(index + 1)} here every day.`,
-    })),
+    words: createImportWords('lost', 20),
   }
 
   await request.post('/api/admin/source-versions/import', {
@@ -110,6 +113,7 @@ test('enforces response-loss replay, token boundaries, and one-winner rotation i
     }),
     importedSourceVersionSchema,
   )
+  expect(imported).toMatchObject({ wordCount: 20, groupCount: 4 })
   const versions = await success(
     await request.get('/api/admin/source-versions'),
     z.array(
@@ -152,6 +156,37 @@ test('enforces response-loss replay, token boundaries, and one-winner rotation i
     }),
     publishedSourceVersionSchema,
   )
+
+  const nextVersionCommand = {
+    mode: 'next_version' as const,
+    operationToken: generateAdminOperationToken(),
+    sourceId: imported.sourceId,
+    words: importCommand.words.map((word) => ({
+      ...word,
+      exampleSentenceExtended: `${word.exampleSentenceExtended} Again.`,
+    })),
+  }
+  await request.post('/api/admin/source-versions/import', {
+    headers: originHeaders,
+    data: nextVersionCommand,
+  })
+  const nextVersion = await success(
+    await request.post('/api/admin/source-versions/import', {
+      headers: originHeaders,
+      data: nextVersionCommand,
+    }),
+    importedSourceVersionSchema,
+  )
+  const replayedVersions = await success(
+    await request.get('/api/admin/source-versions'),
+    z.array(z.looseObject({ sourceId: z.string(), versionId: z.string() })),
+  )
+
+  expect(nextVersion.versionNo).toBe(2)
+  expect(nextVersion).toMatchObject({ wordCount: 20, groupCount: 4 })
+  expect(
+    replayedVersions.filter((version) => version.sourceId === imported.sourceId),
+  ).toHaveLength(2)
 
   const crossKindConflict = await request.post('/api/admin/courses', {
     headers: originHeaders,
@@ -245,6 +280,33 @@ test('enforces response-loss replay, token boundaries, and one-winner rotation i
   expect(await failureCode(revokedSession)).toBe('learner_session_revoked')
 })
 
+test('imports a real-size 118-word source into 24 groups', async ({ request, baseURL }) => {
+  if (!baseURL) throw new Error('Expected stack base URL')
+  await authenticateAdminRequest(request, baseURL)
+  const sourceName = `118 words ${generateAdminOperationToken().slice(0, 8)}`
+  const imported = await success(
+    await request.post('/api/admin/source-versions/import', {
+      headers: { origin: new URL(baseURL).origin },
+      data: {
+        mode: 'new_source',
+        operationToken: generateAdminOperationToken(),
+        sourceName,
+        words: createImportWords('bulk', 118),
+      },
+    }),
+    importedSourceVersionSchema,
+  )
+
+  expect(imported).toMatchObject({ versionNo: 1, wordCount: 118, groupCount: 24 })
+  const versions = await success(
+    await request.get('/api/admin/source-versions'),
+    z.array(z.looseObject({ sourceName: z.string(), versionId: z.string() })),
+  )
+  expect(versions.filter((version) => version.sourceName === sourceName)).toEqual([
+    expect.objectContaining({ versionId: imported.versionId }),
+  ])
+})
+
 test('production Vue browser closes admin lifecycle and a capped all-wrong learner S0', async ({
   page,
   baseURL,
@@ -272,8 +334,26 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
     buffer: Buffer.from(csv),
   })
   await expect(page.locator('[data-csv-preview]')).toContainText('预览通过 · 5 个词')
-  await page.getByRole('button', { name: '创建草稿版本' }).click()
+  const importCommands: unknown[] = []
+  let importAttempt = 0
+  await page.route('**/api/admin/source-versions/import', async (route) => {
+    importAttempt += 1
+    importCommands.push(route.request().postDataJSON())
+
+    if (importAttempt === 1) {
+      const committed = await route.fetch()
+      expect(committed.status()).toBe(200)
+      await route.abort('failed')
+      return
+    }
+
+    await route.continue()
+  })
+  await page.getByRole('button', { name: '导入并创建草稿' }).click()
   await expect(page.getByText('词表导入完成', { exact: true })).toBeVisible()
+  expect(importCommands).toHaveLength(2)
+  expect(importCommands[1]).toEqual(importCommands[0])
+  await page.unroute('**/api/admin/source-versions/import')
 
   const sourceRow = page.getByRole('row').filter({ hasText: sourceName })
   await expect(sourceRow).toContainText('草稿')

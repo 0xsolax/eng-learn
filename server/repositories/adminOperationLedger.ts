@@ -10,7 +10,7 @@ type AdminOperationBase = {
   createdAt: string
 }
 
-export type CreateSourceAdminOperation = AdminOperationBase & {
+export type SourceVersionImportAdminOperation = AdminOperationBase & {
   kind: 'create_source'
   outcomeSourceId: string
   outcomeSourceVersionId: string
@@ -31,7 +31,7 @@ export type RotateAccessCodeAdminOperation = AdminOperationBase & {
 }
 
 export type AdminOperationRecord =
-  | CreateSourceAdminOperation
+  | SourceVersionImportAdminOperation
   | CreateCourseAdminOperation
   | RotateAccessCodeAdminOperation
 

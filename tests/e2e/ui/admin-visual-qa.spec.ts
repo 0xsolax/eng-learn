@@ -337,7 +337,7 @@ type VisualScenario =
   | 'source-import-expanded'
   | 'source-preview-success'
   | 'source-field-error'
-  | 'source-result-unknown'
+  | 'source-result-confirming'
   | 'version-unbuilt'
   | 'version-blocked'
   | 'version-ready'
@@ -471,12 +471,12 @@ const installStateMatrixFixture = async (
     }
 
     if (
-      scenario === 'source-result-unknown' &&
+      scenario === 'source-result-confirming' &&
       key === 'POST /api/admin/source-versions/import'
     ) {
       await fail(503, {
-        code: 'dependency_failure',
-        message: 'Import response is unknown',
+        code: 'import_reconcile_required',
+        message: 'Import outcome requires reconciliation',
       })
       return
     }
@@ -1090,9 +1090,9 @@ const stateCases: VisualStateCase[] = [
   },
   {
     page: 'sources',
-    state: '结果未知',
-    slug: 'sources-result-unknown',
-    scenario: 'source-result-unknown',
+    state: '自动确认中',
+    slug: 'sources-result-confirming',
+    scenario: 'source-result-confirming',
     route: sourceRoute,
     viewport: workspaceViewport,
     ready: (page) => page.locator('[data-version-table]'),
@@ -1100,10 +1100,10 @@ const stateCases: VisualStateCase[] = [
       await openSourceImport(page)
       await page.getByLabel('词库名称').fill('小学英语三年级上册')
       await setSourceCsv(page, validCsv)
-      await page.getByRole('button', { name: '创建草稿版本' }).click()
-      await expect(page.locator('[data-unknown-result]')).toBeVisible()
+      await page.getByRole('button', { name: '导入并创建草稿' }).click()
+      await expect(page.locator('[data-import-confirming]')).toBeVisible()
     },
-    visualTarget: (page) => page.locator('[data-unknown-result]'),
+    visualTarget: (page) => page.locator('[data-import-confirming]'),
   },
   {
     page: 'version',

@@ -3,12 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { SourceVersionSummaryDto } from '@shared/api/contentSchemas'
 import { generateAdminOperationToken } from '@shared/security/adminOperationToken'
 import { Download as DownloadIcon, Upload } from '@lucide/vue'
-import { createAdminApi } from '@/api/adminApi'
-import {
-  ApiFailureError,
-  ApiNetworkError,
-  InvalidApiResponseError,
-} from '@/api/errors'
+import { createAdminApi, type ImportSourceVersionCommand } from '@/api/adminApi'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiInput from '@/components/ui/UiInput.vue'
 import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
@@ -18,6 +13,7 @@ import {
   parseAdminCsv,
   type CsvImportResult,
 } from '@/features/admin-content/csvImport'
+import { useSourceVersionImport } from '@/features/admin-content/useSourceVersionImport'
 
 type SourceVersionsApi = Pick<
   ReturnType<typeof createAdminApi>,
@@ -25,8 +21,7 @@ type SourceVersionsApi = Pick<
 >
 type ImportMode = 'new_source' | 'next_version'
 type ListState = 'loading' | 'ready' | 'error'
-type ImportCommand = Parameters<SourceVersionsApi['importSourceVersion']>[0]
-type NewSourceCommand = Extract<ImportCommand, { mode: 'new_source' }>
+type ImportCommand = ImportSourceVersionCommand
 
 const props = withDefaults(
   defineProps<{
@@ -48,11 +43,6 @@ const sourceName = ref('')
 const sourceId = ref(props.initialSourceId)
 const preview = ref<CsvImportResult | null>(null)
 const previewing = ref(false)
-const importing = ref(false)
-const importError = ref('')
-const importSuccess = ref('')
-const pendingNewSource = ref<NewSourceCommand | null>(null)
-const unknownResultMode = ref<ImportMode | null>(null)
 const importExpanded = ref(
   props.initialMode === 'next_version' || props.initialSourceId.length > 0,
 )
@@ -73,15 +63,6 @@ const sources = computed(() => {
 
   return [...uniqueSources.values()]
 })
-
-const canImport = computed(
-  () =>
-    preview.value?.ok === true &&
-    !importing.value &&
-    !isCompactReadOnly.value &&
-    unknownResultMode.value === null &&
-    (mode.value === 'new_source' ? sourceName.value.trim().length > 0 : sourceId.value.length > 0),
-)
 
 const loadVersions = async (): Promise<void> => {
   listState.value = 'loading'
@@ -104,11 +85,44 @@ const loadVersions = async (): Promise<void> => {
   }
 }
 
+const {
+  importError,
+  importState,
+  importSuccess,
+  isImportBusy,
+  resetImportResult,
+  submitImportCommand,
+} = useSourceVersionImport({
+  importSourceVersion: (command) => api.importSourceVersion(command),
+  onImported: loadVersions,
+  onInvalidRestore: () => {
+    importExpanded.value = true
+  },
+  onRestore: (command) => {
+    importExpanded.value = true
+    mode.value = command.mode
+    preview.value = { ok: true, words: command.words }
+
+    if (command.mode === 'new_source') {
+      sourceName.value = command.sourceName
+    } else {
+      sourceId.value = command.sourceId
+    }
+  },
+})
+
+const canImport = computed(
+  () =>
+    preview.value?.ok === true &&
+    !isImportBusy.value &&
+    !isCompactReadOnly.value &&
+    (mode.value === 'new_source' ? sourceName.value.trim().length > 0 : sourceId.value.length > 0),
+)
+
 const handleFile = async (event: Event): Promise<void> => {
   const sequence = ++fileSelectionSequence
   const file = (event.target as HTMLInputElement).files?.[0]
-  importError.value = ''
-  importSuccess.value = ''
+  resetImportResult()
   preview.value = null
 
   if (!file) {
@@ -138,67 +152,18 @@ const submitImport = async (): Promise<void> => {
         }
       : {
           mode: 'next_version',
+          operationToken: generateAdminOperationToken(),
           sourceId: sourceId.value,
           words: preview.value.words,
         }
 
-  if (command.mode === 'new_source') pendingNewSource.value = command
-
-  await executeImport(command)
-}
-
-const executeImport = async (command: ImportCommand): Promise<void> => {
-
-  importing.value = true
-  importError.value = ''
-  importSuccess.value = ''
-  unknownResultMode.value = null
-
-  try {
-    const imported = await api.importSourceVersion(command)
-
-    importSuccess.value = `服务端已创建 v${String(imported.versionNo)}，确认 ${String(imported.wordCount)} 个词、${String(imported.groupCount)} 个分组。`
-    pendingNewSource.value = null
-    await loadVersions()
-  } catch (error) {
-    if (isUnknownResult(error)) {
-      unknownResultMode.value = command.mode
-      return
-    }
-
-    pendingNewSource.value = null
-    importError.value = getImportError(error)
-  } finally {
-    importing.value = false
-  }
-}
-
-const retryUnknownImport = async (): Promise<void> => {
-  if (
-    unknownResultMode.value !== 'new_source' ||
-    !pendingNewSource.value ||
-    importing.value
-  ) {
-    return
-  }
-
-  await executeImport(pendingNewSource.value)
-}
-
-const reloadUnknownImport = async (): Promise<void> => {
-  await loadVersions()
-
-  if (listState.value === 'ready') {
-    unknownResultMode.value = null
-    pendingNewSource.value = null
-  }
+  await submitImportCommand(command)
 }
 
 const setMode = (nextMode: ImportMode): void => {
-  if (unknownResultMode.value !== null) return
+  if (isImportBusy.value) return
   mode.value = nextMode
-  importError.value = ''
-  importSuccess.value = ''
+  resetImportResult()
 
   if (nextMode === 'next_version' && !sourceId.value) {
     sourceId.value = sources.value[0]?.id ?? ''
@@ -208,8 +173,7 @@ const setMode = (nextMode: ImportMode): void => {
 const toggleImport = (): void => {
   if (
     isCompactReadOnly.value ||
-    importing.value ||
-    unknownResultMode.value !== null
+    isImportBusy.value
   ) {
     return
   }
@@ -225,24 +189,6 @@ const formatAdminTime = (value: string): string =>
     /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}).*$/,
     '$1 $2',
   )
-
-const getImportError = (error: unknown): string => {
-  if (error instanceof ApiFailureError && error.code === 'source_draft_exists') {
-    return '该词库已有草稿版本，请先继续处理或丢弃现有草稿。'
-  }
-
-  if (error instanceof ApiFailureError && error.code === 'validation_error') {
-    return '服务端未接受这份词表，请按字段错误修正后重试。'
-  }
-
-  return '导入未完成，请重新读取服务端状态或修正输入后再操作。'
-}
-
-const isUnknownResult = (error: unknown): boolean =>
-  error instanceof ApiNetworkError ||
-  error instanceof InvalidApiResponseError ||
-  (error instanceof ApiFailureError &&
-    (error.code === 'dependency_failure' || error.code === 'internal_error'))
 
 const statusLabel = (status: SourceVersionSummaryDto['status']): string =>
   ({ draft: '草稿', published: '已发布', archived: '已丢弃' })[status]
@@ -270,7 +216,7 @@ onBeforeUnmount(() => {
         data-toggle-import
         :aria-expanded="importExpanded"
         aria-controls="source-import-workspace"
-        :disabled="importing || unknownResultMode !== null"
+        :disabled="isImportBusy"
         @click="toggleImport"
       >
         <upload
@@ -476,7 +422,7 @@ onBeforeUnmount(() => {
               name="import-mode"
               value="new_source"
               :checked="mode === 'new_source'"
-              :disabled="importing || unknownResultMode !== null"
+              :disabled="isImportBusy"
               @change="setMode('new_source')"
             >
             新词库
@@ -487,7 +433,7 @@ onBeforeUnmount(() => {
               name="import-mode"
               value="next_version"
               :checked="mode === 'next_version'"
-              :disabled="sources.length === 0 || importing || unknownResultMode !== null"
+              :disabled="sources.length === 0 || isImportBusy"
               @change="setMode('next_version')"
             >
             同词库下一版本
@@ -501,7 +447,7 @@ onBeforeUnmount(() => {
           maxlength="120"
           label="词库名称"
           hint="名称用于区分课程内容，不作为版本号。"
-          :disabled="importing || unknownResultMode !== null"
+          :disabled="isImportBusy"
         />
 
         <label
@@ -512,7 +458,7 @@ onBeforeUnmount(() => {
           <select
             v-model="sourceId"
             name="source-id"
-            :disabled="importing || unknownResultMode !== null"
+            :disabled="isImportBusy"
           >
             <option
               v-for="source in sources"
@@ -530,7 +476,7 @@ onBeforeUnmount(() => {
             type="file"
             name="source-file"
             accept=".csv,text/csv"
-            :disabled="importing || unknownResultMode !== null"
+            :disabled="isImportBusy"
             @change="handleFile"
           >
         </label>
@@ -588,33 +534,12 @@ onBeforeUnmount(() => {
         </ui-status-message>
 
         <ui-status-message
-          v-if="unknownResultMode"
-          data-unknown-result
-          tone="error"
-          title="词表导入结果未知"
+          v-if="importState === 'confirming'"
+          data-import-confirming
+          tone="info"
+          title="正在自动确认导入结果"
         >
-          <template v-if="unknownResultMode === 'new_source'">
-            <p>结果未知：草稿可能已经创建。请安全重试同一次导入，不要新建另一项操作。</p>
-            <ui-button
-              data-retry-unknown
-              variant="secondary"
-              :loading="importing"
-              @click="retryUnknownImport"
-            >
-              安全重试同一次导入
-            </ui-button>
-          </template>
-          <template v-else>
-            <p>结果未知：下一版本可能已经创建。请重新读取服务端状态后再决定，不要直接重复提交。</p>
-            <ui-button
-              data-reload-authority
-              variant="secondary"
-              :loading="listState === 'loading'"
-              @click="reloadUnknownImport"
-            >
-              重新读取服务端状态
-            </ui-button>
-          </template>
+          无需再次点击；页面会使用同一次导入命令继续确认，连接恢复后自动完成。
         </ui-status-message>
 
         <ui-status-message
@@ -629,10 +554,10 @@ onBeforeUnmount(() => {
           <ui-button
             type="submit"
             :disabled="!canImport"
-            :loading="importing"
-            loading-label="正在导入"
+            :loading="isImportBusy"
+            :loading-label="importState === 'confirming' ? '正在确认' : '正在导入'"
           >
-            创建草稿版本
+            导入并创建草稿
           </ui-button>
         </div>
       </form>

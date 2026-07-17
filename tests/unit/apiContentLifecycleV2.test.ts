@@ -105,7 +105,12 @@ describe('worker admin content lifecycle contract', () => {
     const duplicateDraft = await app.fetch(
       request('/api/admin/source-versions/import', {
         method: 'POST',
-        body: { mode: 'next_version', sourceId: first.sourceId, words: words(3) },
+        body: {
+          mode: 'next_version',
+          operationToken: generateAdminOperationToken(),
+          sourceId: first.sourceId,
+          words: words(3),
+        },
       }),
     )
     expect(duplicateDraft.status).toBe(409)
@@ -148,7 +153,7 @@ describe('worker admin content lifecycle contract', () => {
       exampleSentenceExtended: 'I ate an apple after lunch.',
     }
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'S5 owning-word boundary source',
       words: sourceWords,
     })
@@ -292,10 +297,7 @@ const importVersion = (
     .fetch(
       request('/api/admin/source-versions/import', {
         method: 'POST',
-        body:
-          body.mode === 'new_source'
-            ? { ...body, operationToken: generateAdminOperationToken() }
-            : body,
+        body: { ...body, operationToken: generateAdminOperationToken() },
       }),
     )
     .then((response) => success(response, importedSourceVersionSchema))

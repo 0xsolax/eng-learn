@@ -315,7 +315,7 @@ test('@admin keeps a dense segmented workspace across admin viewports', async ({
   await expect(sourceHeading).toBeFocused()
   await expect(page.getByRole('navigation', { name: '管理端主导航' })).toBeVisible()
   await expect(page.getByRole('heading', { level: 3, name: '还没有词库版本' })).toBeVisible()
-  const createDraftButton = page.getByRole('button', { name: '创建草稿版本' })
+  const createDraftButton = page.getByRole('button', { name: '导入并创建草稿' })
   const currentViewportWidth = page.viewportSize()?.width ?? 0
   if (currentViewportWidth < 480) {
     await expect(createDraftButton).toHaveCount(0)
@@ -508,7 +508,7 @@ test('@admin completes the content workbench with keyboard-only critical actions
   })
   await expect(page.locator('[data-csv-preview]')).toContainText('预览通过 · 1 个词')
 
-  const importButton = page.getByRole('button', { name: '创建草稿版本' })
+  const importButton = page.getByRole('button', { name: '导入并创建草稿' })
   await moveFocusWithKeyboard(page, importButton)
   await page.keyboard.press('Enter')
   await expect(page.getByText(/服务端已创建 v1/u)).toBeVisible()

@@ -9,6 +9,7 @@ import {
   sourceVersionSummarySchema,
   publishedSourceVersionSchema,
 } from '../../shared/api/contentSchemas'
+import { importSourceVersionCommandSchema } from '../../shared/api/schemas'
 
 describe('content API schemas', () => {
   it('validates source version list and detail DTOs without invented fields', () => {
@@ -119,5 +120,30 @@ describe('content API schemas', () => {
       approvedCount: 30,
     })
     expect(() => batchApprovalResultSchema.parse({ approvedCount: 0 })).toThrow()
+  })
+
+  it('requires one operation token for both source import modes', () => {
+    const nextVersion = {
+      mode: 'next_version',
+      operationToken: 'a'.repeat(64),
+      sourceId: 'source-1',
+      words: [
+        {
+          word: 'apple',
+          meaning: '苹果',
+          examplePhrase: 'An apple',
+          exampleSentence: 'I eat an apple.',
+          exampleSentenceExtended: 'I eat an apple every day.',
+        },
+      ],
+    }
+
+    expect(importSourceVersionCommandSchema.parse(nextVersion)).toEqual(nextVersion)
+    expect(() =>
+      importSourceVersionCommandSchema.parse({
+        ...nextVersion,
+        operationToken: undefined,
+      }),
+    ).toThrow()
   })
 })

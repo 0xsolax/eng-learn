@@ -15,6 +15,7 @@ const COURSE_TOKEN = '2'.repeat(64)
 const ROTATE_TOKEN_A = '3'.repeat(64)
 const ROTATE_TOKEN_B = '4'.repeat(64)
 const ROTATE_TOKEN_C = '5'.repeat(64)
+const NEXT_VERSION_TOKEN = '6'.repeat(64)
 const migrationPaths = [
   '../../migrations/0001_initial.sql',
   '../../migrations/0002_add_review_task_integrity.sql',
@@ -28,6 +29,62 @@ const migrationPaths = [
 ]
 
 describe('D1 admin operation transactions', () => {
+  it('rejects imports with a stable error before writing when the content schema is outdated', async () => {
+    const database = new DatabaseSync(':memory:')
+    database.exec('PRAGMA foreign_keys = ON')
+    for (const path of migrationPaths.filter(
+      (candidate) => !candidate.includes('0011_add_progressive_context_model'),
+    )) {
+      database.exec(readFileSync(new URL(path, import.meta.url), 'utf8'))
+    }
+    const { db } = createSqliteD1(database)
+    const ledger = createD1AdminOperationLedger(db)
+    const contentBuilder = createContentBuilder({
+      repository: createD1ContentRepository(db),
+      operationLedger: ledger,
+      now: () => NOW,
+    })
+
+    await expect(
+      contentBuilder.importNewSourceIdempotently({
+        operationToken: SOURCE_TOKEN,
+        sourceName: 'Imported',
+        words: createWords(),
+      }),
+    ).rejects.toMatchObject({ code: 'schema_not_ready' })
+    expect(count(database, 'word_sources')).toBe(0)
+    expect(count(database, 'admin_operations')).toBe(0)
+
+    database.close()
+  })
+
+  it('rolls back and safely replays a next-version import batch', async () => {
+    const fixture = createFixture()
+    const command = {
+      operationToken: NEXT_VERSION_TOKEN,
+      sourceId: 'source-published',
+      words: createWords(),
+    }
+
+    fixture.control.failNextBatchAt(2)
+    await expect(
+      fixture.contentBuilder.importNextVersionIdempotently(command),
+    ).rejects.toThrow('Injected D1 batch failure')
+    expect(count(fixture.database, 'source_versions', "source_id = 'source-published'"))
+      .toBe(1)
+    expect(count(fixture.database, 'admin_operations')).toBe(0)
+
+    const imported = await fixture.contentBuilder.importNextVersionIdempotently(command)
+    await expect(
+      fixture.contentBuilder.importNextVersionIdempotently(command),
+    ).resolves.toEqual(imported)
+    expect(count(fixture.database, 'source_versions', "source_id = 'source-published'"))
+      .toBe(2)
+    expect(count(fixture.database, 'admin_operations')).toBe(1)
+
+    fixture.database.close()
+  })
+
   it('rolls back and then safely replays create-source, create-course, and rotation batches', async () => {
     const fixture = createFixture()
 
@@ -351,7 +408,12 @@ const createWords = () => [
 
 const count = (
   database: DatabaseSync,
-  table: 'word_sources' | 'learners' | 'courses' | 'admin_operations',
+  table:
+    | 'word_sources'
+    | 'source_versions'
+    | 'learners'
+    | 'courses'
+    | 'admin_operations',
   condition?: string,
 ): number =>
   (

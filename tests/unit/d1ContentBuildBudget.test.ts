@@ -6,6 +6,7 @@ import { createD1ContentRepository } from '../../server/repositories/d1ContentRe
 import { createContentBuilder } from '../../server/services/ContentBuilder'
 import { sourceVersionListSchema } from '../../shared/api/contentSchemas'
 import type { ImportWordInput } from '../../shared/domain/content'
+import { generateAdminOperationToken } from '../../shared/security/adminOperationToken'
 import { parseAdminCsv } from '../../src/features/admin-content/csvImport'
 
 const NOW = '2026-07-13T00:00:00.000Z'
@@ -270,7 +271,7 @@ describe('D1 content build query budget', () => {
 
     if (!word) throw new Error('Expected one progressive word')
 
-    const imported = await builder.importWords({
+    const imported = await builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Progressive D1 source',
       words: [word],
     })
@@ -300,18 +301,18 @@ describe('D1 content build query budget', () => {
 
     adapter.beginInvocation(D1_FREE_QUERY_LIMIT)
     await expect(
-      builder.importWords({ sourceName: 'CSV boundary source', words: parsed.words }),
+      builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(), sourceName: 'CSV boundary source', words: parsed.words }),
     ).resolves.toMatchObject({ wordCount: 500, groupCount: 100 })
 
     expectD1FreeInvocation(adapter.metrics())
-    expect(adapter.metrics().queryCount).toBe(10)
+    expect(adapter.metrics().queryCount).toBe(13)
 
     database.close()
   })
 
   it('imports a next version whose structured request is near 2 MiB within the Free budget', async () => {
     const { database, adapter, builder } = createBuilderFixture()
-    const firstDraft = await builder.importWords({
+    const firstDraft = await builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Large next-version source',
       words: createWords(5),
     })
@@ -330,11 +331,11 @@ describe('D1 content build query budget', () => {
 
     adapter.beginInvocation(D1_FREE_QUERY_LIMIT)
     await expect(
-      builder.importNextVersion({ sourceId: firstDraft.sourceId, words }),
+      builder.importNextVersionIdempotently({ operationToken: generateAdminOperationToken(), sourceId: firstDraft.sourceId, words }),
     ).resolves.toMatchObject({ versionNo: 2, wordCount: 500, groupCount: 100 })
 
     expectD1FreeInvocation(adapter.metrics())
-    expect(adapter.metrics().queryCount).toBe(14)
+    expect(adapter.metrics().queryCount).toBe(16)
 
     database.close()
   })
@@ -356,7 +357,7 @@ describe('D1 content build query budget', () => {
     'builds all six stages for $wordCount words within one D1 invocation budget',
     async ({ wordCount, queryLimit, expectedBatchQueryCount, expectedQueryCount }) => {
       const { database, adapter, builder } = createBuilderFixture()
-      const draft = await builder.importWords({
+      const draft = await builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
         sourceName: `Budget source ${String(wordCount)}`,
         words: createWords(wordCount),
       })
@@ -379,7 +380,7 @@ describe('D1 content build query budget', () => {
     'builds and approves a near-2-MiB 500-word version within separate Free invocations',
     async () => {
       const { database, adapter, builder } = createBuilderFixture()
-      const draft = await builder.importWords({
+      const draft = await builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
         sourceName: 'Large build source',
         words: createNearTwoMiBWords(),
       })
@@ -413,7 +414,7 @@ describe('D1 content build query budget', () => {
 
   it('preserves a manually approved item when a D1-backed build is repeated', async () => {
     const { database, builder } = createBuilderFixture()
-    const draft = await builder.importWords({
+    const draft = await builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Stable D1 rebuild',
       words: createWords(5),
     })
@@ -457,7 +458,7 @@ describe('D1 content build query budget', () => {
 
   it('rolls back every generated row and remains recoverable when a batch statement fails', async () => {
     const { database, adapter, repository, builder } = createBuilderFixture()
-    const draft = await builder.importWords({
+    const draft = await builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Recoverable D1 build',
       words: createWords(20),
     })
@@ -489,7 +490,7 @@ describe('D1 content build query budget', () => {
     adapter.beginInvocation()
     adapter.failNextBatch(2)
     await expect(
-      builder.importWords({ sourceName: 'Atomic import source', words: createWords(20) }),
+      builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(), sourceName: 'Atomic import source', words: createWords(20) }),
     ).rejects.toThrow('Injected D1 batch failure')
 
     expect(database.prepare('SELECT COUNT(*) AS count FROM word_sources').get()).toEqual({
@@ -502,7 +503,7 @@ describe('D1 content build query budget', () => {
       count: 0,
     })
     await expect(
-      builder.importWords({ sourceName: 'Atomic import source', words: createWords(20) }),
+      builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(), sourceName: 'Atomic import source', words: createWords(20) }),
     ).resolves.toMatchObject({ wordCount: 20, groupCount: 4 })
 
     database.close()
@@ -510,7 +511,7 @@ describe('D1 content build query budget', () => {
 
   it('rolls back a partially executed approval and remains recoverable', async () => {
     const { database, adapter, repository, builder } = createBuilderFixture()
-    const draft = await builder.importWords({
+    const draft = await builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Atomic approval source',
       words: createWords(20),
     })
@@ -535,7 +536,7 @@ describe('D1 content build query budget', () => {
   it('allows only one CAS winner when two builders start from the same revision', async () => {
     const { database, repository: storedRepository, builder: setupBuilder } =
       createBuilderFixture()
-    const draft = await setupBuilder.importWords({
+    const draft = await setupBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Concurrent D1 build',
       words: createWords(20),
     })

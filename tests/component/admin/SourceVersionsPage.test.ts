@@ -1,11 +1,15 @@
 import { flushPromises, mount } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   ApiFailureError,
   ApiNetworkError,
   InvalidApiResponseError,
 } from '@/api/errors'
 import SourceVersionsPage from '@/pages/admin/SourceVersionsPage.vue'
+import {
+  PENDING_SOURCE_VERSION_IMPORT_KEY,
+  persistPendingSourceVersionImport,
+} from '@/features/admin-content/importRecovery'
 
 const publishedVersion = {
   sourceId: 'source-1',
@@ -37,6 +41,10 @@ const setCsvFile = async (wrapper: ReturnType<typeof mount>, contents: string): 
 }
 
 describe('SourceVersionsPage', () => {
+  beforeEach(() => {
+    window.sessionStorage.clear()
+  })
+
   it('keeps an existing-version table first, collapses import by default, and exposes real timestamps', async () => {
     const api = {
       listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
@@ -76,6 +84,7 @@ describe('SourceVersionsPage', () => {
 
     expect(wrapper.find('form[data-import-form]').exists()).toBe(true)
     expect(wrapper.get('[data-toggle-import]').text()).toContain('收起导入')
+    expect(wrapper.get('button[type="submit"]').text()).toContain('导入并创建草稿')
   })
 
   it('offers the exact header-only CSV template from the import workspace', async () => {
@@ -211,6 +220,7 @@ describe('SourceVersionsPage', () => {
 
     expect(wrapper.get('[data-csv-preview]').text()).toContain('1 个词')
     expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
+    expect(api.importSourceVersion).not.toHaveBeenCalled()
 
     await wrapper.get('form[data-import-form]').trigger('submit')
     await flushPromises()
@@ -263,7 +273,10 @@ describe('SourceVersionsPage', () => {
     await wrapper.get('form[data-import-form]').trigger('submit')
     await flushPromises()
 
-    expect(api.importSourceVersion).toHaveBeenCalledWith({
+    const command = requireRecord(
+      (api.importSourceVersion.mock.calls as unknown[][])[0]?.[0],
+    )
+    expect(command).toMatchObject({
       mode: 'next_version',
       sourceId: 'source-1',
       words: [
@@ -277,6 +290,7 @@ describe('SourceVersionsPage', () => {
         },
       ],
     })
+    expect(command.operationToken).toMatch(/^[0-9a-f]{64}$/)
   })
 
   it('keeps a validated preview available when an import conflicts', async () => {
@@ -329,7 +343,8 @@ describe('SourceVersionsPage', () => {
     expect(api.listSourceVersions).toHaveBeenCalledTimes(2)
   })
 
-  it('safely retries a lost new-source response with the exact token and payload', async () => {
+  it('automatically confirms a lost new-source response with the exact token and payload', async () => {
+    vi.useFakeTimers()
     const committed = {
       sourceId: 'source-2',
       versionId: 'version-2',
@@ -359,7 +374,7 @@ describe('SourceVersionsPage', () => {
         })
         .mockRejectedValueOnce(
           new ApiFailureError(503, {
-            code: 'dependency_failure',
+            code: 'import_reconcile_required',
             message: 'Committed, but outcome read failed',
           }),
         )
@@ -369,60 +384,304 @@ describe('SourceVersionsPage', () => {
       props: { api },
       global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
     })
-    await flushPromises()
-    await wrapper.get('input[name="source-name"]').setValue('Starter words')
-    await setCsvFile(
-      wrapper,
-      APPLE_CSV,
-    )
-    await wrapper.get('form[data-import-form]').trigger('submit')
-    await flushPromises()
 
-    expect(wrapper.get('[data-unknown-result]').text()).toContain('结果未知')
-    expect(wrapper.text()).not.toContain('可直接重试')
-    const firstCommand = requireRecord(
-      (api.importSourceVersion.mock.calls as unknown[][])[0]?.[0],
-    )
-    expect(firstCommand.operationToken).toMatch(/^[0-9a-f]{64}$/)
+    try {
+      await flushPromises()
+      await wrapper.get('input[name="source-name"]').setValue('Starter words')
+      await setCsvFile(wrapper, APPLE_CSV)
+      await wrapper.get('form[data-import-form]').trigger('submit')
+      await flushPromises()
 
-    await wrapper.get('[data-retry-unknown]').trigger('click')
-    await flushPromises()
+      expect(wrapper.get('[data-import-confirming]').text()).toContain('自动确认')
+      expect(wrapper.find('[data-unknown-result]').exists()).toBe(false)
+      expect(wrapper.find('[data-retry-unknown]').exists()).toBe(false)
+      expect(wrapper.get('input[name="source-name"]').attributes('disabled')).toBeDefined()
+      const firstCommand = requireRecord(
+        (api.importSourceVersion.mock.calls as unknown[][])[0]?.[0],
+      )
+      expect(firstCommand.operationToken).toMatch(/^[0-9a-f]{64}$/)
 
-    expect((api.importSourceVersion.mock.calls as unknown[][])[1]?.[0]).toEqual(
-      firstCommand,
-    )
-    expect(wrapper.get('[data-unknown-result]').text()).toContain('结果未知')
+      await vi.runOnlyPendingTimersAsync()
+      await flushPromises()
+      expect((api.importSourceVersion.mock.calls as unknown[][])[1]?.[0]).toEqual(
+        firstCommand,
+      )
+      expect(wrapper.get('[data-import-confirming]').text()).toContain('自动确认')
 
-    await wrapper.get('[data-retry-unknown]').trigger('click')
-    await flushPromises()
-
-    expect((api.importSourceVersion.mock.calls as unknown[][])[2]?.[0]).toEqual(
-      firstCommand,
-    )
-    expect(wrapper.get('[role="status"]').text()).toContain('服务端已创建 v1')
+      await vi.runOnlyPendingTimersAsync()
+      await flushPromises()
+      expect((api.importSourceVersion.mock.calls as unknown[][])[2]?.[0]).toEqual(
+        firstCommand,
+      )
+      expect(wrapper.get('[role="status"]').text()).toContain('服务端已创建 v1')
+      expect(window.sessionStorage.getItem(PENDING_SOURCE_VERSION_IMPORT_KEY)).toBeNull()
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
   })
 
-  it('does not offer a blind retry when a next-version result is unknown', async () => {
+  it('automatically confirms a lost next-version response with the same command', async () => {
+    vi.useFakeTimers()
+    const committed = {
+      sourceId: 'source-1',
+      versionId: 'version-2',
+      versionNo: 2,
+      status: 'draft' as const,
+      wordCount: 1,
+      groupCount: 1,
+    }
     const api = {
       listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
       importSourceVersion: vi
         .fn()
-        .mockRejectedValue(new ApiNetworkError(new Error('response lost'))),
+        .mockRejectedValueOnce(new ApiNetworkError(new Error('response lost')))
+        .mockResolvedValueOnce(committed),
     }
     const wrapper = mount(SourceVersionsPage, {
       props: { api, initialMode: 'next_version', initialSourceId: 'source-1' },
       global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
     })
+
+    try {
+      await flushPromises()
+      await setCsvFile(wrapper, PEAR_CSV)
+      await wrapper.get('form[data-import-form]').trigger('submit')
+      await flushPromises()
+      const firstCommand = requireRecord(
+        (api.importSourceVersion.mock.calls as unknown[][])[0]?.[0],
+      )
+
+      expect(firstCommand.operationToken).toMatch(/^[0-9a-f]{64}$/)
+      expect(wrapper.get('[data-import-confirming]').text()).toContain('自动确认')
+      await vi.runOnlyPendingTimersAsync()
+      await flushPromises()
+
+      expect((api.importSourceVersion.mock.calls as unknown[][])[1]?.[0]).toEqual(
+        firstCommand,
+      )
+      expect(wrapper.get('[role="status"]').text()).toContain('服务端已创建 v2')
+    } finally {
+      wrapper.unmount()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the import action locked until the confirmed result refresh finishes', async () => {
+    const refreshedVersions = deferred<typeof publishedVersion[]>()
+    const api = {
+      listSourceVersions: vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockReturnValueOnce(refreshedVersions.promise),
+      importSourceVersion: vi.fn().mockResolvedValue({
+        sourceId: 'source-2',
+        versionId: 'version-2',
+        versionNo: 1,
+        status: 'draft' as const,
+        wordCount: 1,
+        groupCount: 1,
+      }),
+    }
+    const wrapper = mount(SourceVersionsPage, {
+      props: { api },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    })
     await flushPromises()
-    await setCsvFile(
-      wrapper,
-      PEAR_CSV,
-    )
+    await wrapper.get('input[name="source-name"]').setValue('Starter words')
+    await setCsvFile(wrapper, APPLE_CSV)
     await wrapper.get('form[data-import-form]').trigger('submit')
     await flushPromises()
 
-    expect(wrapper.get('[data-unknown-result]').text()).toContain('重新读取服务端状态')
-    expect(wrapper.find('[data-retry-unknown]').exists()).toBe(false)
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeDefined()
+    await wrapper.get('form[data-import-form]').trigger('submit')
+    expect(api.importSourceVersion).toHaveBeenCalledTimes(1)
+
+    refreshedVersions.resolve([publishedVersion])
+    await flushPromises()
+
+    expect(wrapper.get('[role="status"]').text()).toContain('服务端已创建 v1')
+    expect(wrapper.get('button[type="submit"]').attributes('disabled')).toBeUndefined()
+  })
+
+  it('does not restart confirmation timers after the page is unmounted', async () => {
+    vi.useFakeTimers()
+    const importRequest = deferred<never>()
+    const api = {
+      listSourceVersions: vi.fn().mockResolvedValue([]),
+      importSourceVersion: vi.fn().mockReturnValue(importRequest.promise),
+    }
+    const wrapper = mount(SourceVersionsPage, {
+      props: { api },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    })
+
+    try {
+      await flushPromises()
+      await wrapper.get('input[name="source-name"]').setValue('Starter words')
+      await setCsvFile(wrapper, APPLE_CSV)
+      await wrapper.get('form[data-import-form]').trigger('submit')
+      await flushPromises()
+      wrapper.unmount()
+
+      importRequest.reject(new ApiNetworkError(new Error('response lost')))
+      await flushPromises()
+      await vi.runOnlyPendingTimersAsync()
+
+      expect(api.importSourceVersion).toHaveBeenCalledTimes(1)
+      expect(window.sessionStorage.getItem(PENDING_SOURCE_VERSION_IMPORT_KEY)).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it.each([
+    ['schema_not_ready', '数据库尚未完成升级'],
+    ['internal_error', '服务端未能完成本次导入'],
+  ] as const)(
+    'treats %s as a definite failure without an unknown-result state',
+    async (code, expectedMessage) => {
+      const api = {
+        listSourceVersions: vi.fn().mockResolvedValue([]),
+        importSourceVersion: vi.fn().mockRejectedValue(
+          new ApiFailureError(code === 'schema_not_ready' ? 503 : 500, {
+            code,
+            message: 'Import failed',
+          }),
+        ),
+      }
+      const wrapper = mount(SourceVersionsPage, {
+        props: { api },
+        global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+      })
+      await flushPromises()
+      await wrapper.get('input[name="source-name"]').setValue('Starter words')
+      await setCsvFile(wrapper, APPLE_CSV)
+      await wrapper.get('form[data-import-form]').trigger('submit')
+      await flushPromises()
+
+      expect(wrapper.get('[role="alert"]').text()).toContain(expectedMessage)
+      expect(wrapper.find('[data-import-confirming]').exists()).toBe(false)
+      expect(wrapper.text()).not.toContain('结果未知')
+      expect(window.sessionStorage.getItem(PENDING_SOURCE_VERSION_IMPORT_KEY)).toBeNull()
+    },
+  )
+
+  it('restores and automatically confirms a pending command after a same-tab refresh', async () => {
+    const command = {
+      mode: 'next_version' as const,
+      operationToken: '7'.repeat(64),
+      sourceId: 'source-1',
+      words: [
+        {
+          word: 'pear',
+          meaning: '梨',
+          examplePhrase: 'A pear',
+          exampleSentence: 'I eat a pear',
+          exampleSentenceExtended: 'I eat a pear every day',
+          partOfSpeech: 'noun',
+        },
+      ],
+    }
+    persistPendingSourceVersionImport(command)
+    const api = {
+      listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
+      importSourceVersion: vi.fn().mockResolvedValue({
+        sourceId: 'source-1',
+        versionId: 'version-2',
+        versionNo: 2,
+        status: 'draft' as const,
+        wordCount: 1,
+        groupCount: 1,
+      }),
+    }
+    const wrapper = mount(SourceVersionsPage, {
+      props: { api },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    })
+    await flushPromises()
+
+    expect(api.importSourceVersion).toHaveBeenCalledWith(command)
+    expect(wrapper.get('[role="status"]').text()).toContain('服务端已创建 v2')
+    expect(window.sessionStorage.getItem(PENDING_SOURCE_VERSION_IMPORT_KEY)).toBeNull()
+  })
+
+  it('clears malformed recovery data without sending an import request', async () => {
+    window.sessionStorage.setItem(
+      PENDING_SOURCE_VERSION_IMPORT_KEY,
+      JSON.stringify({ mode: 'new_source', operationToken: 'unsafe' }),
+    )
+    const api = {
+      listSourceVersions: vi.fn().mockResolvedValue([]),
+      importSourceVersion: vi.fn(),
+    }
+    const wrapper = mount(SourceVersionsPage, {
+      props: { api },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    })
+    await flushPromises()
+
+    expect(api.importSourceVersion).not.toHaveBeenCalled()
+    expect(window.sessionStorage.getItem(PENDING_SOURCE_VERSION_IMPORT_KEY)).toBeNull()
+    expect(wrapper.get('[role="alert"]').text()).toContain('恢复数据无效')
+  })
+
+  it('pauses automatic confirmation while offline and resumes on the online event', async () => {
+    vi.useFakeTimers()
+    const originalOnline = Object.getOwnPropertyDescriptor(window.navigator, 'onLine')
+    Object.defineProperty(window.navigator, 'onLine', {
+      configurable: true,
+      value: false,
+    })
+    const api = {
+      listSourceVersions: vi.fn().mockResolvedValue([]),
+      importSourceVersion: vi
+        .fn()
+        .mockRejectedValueOnce(new ApiNetworkError(new Error('offline')))
+        .mockResolvedValueOnce({
+          sourceId: 'source-1',
+          versionId: 'version-1',
+          versionNo: 1,
+          status: 'draft' as const,
+          wordCount: 1,
+          groupCount: 1,
+        }),
+    }
+    const wrapper = mount(SourceVersionsPage, {
+      props: { api },
+      global: { stubs: { RouterLink: { template: '<a><slot /></a>' } } },
+    })
+
+    try {
+      await flushPromises()
+      await wrapper.get('input[name="source-name"]').setValue('Starter words')
+      await setCsvFile(wrapper, APPLE_CSV)
+      await wrapper.get('form[data-import-form]').trigger('submit')
+      await flushPromises()
+      await vi.runOnlyPendingTimersAsync()
+
+      expect(api.importSourceVersion).toHaveBeenCalledTimes(1)
+      expect(wrapper.get('[data-import-confirming]').text()).toContain('连接恢复后自动完成')
+
+      Object.defineProperty(window.navigator, 'onLine', {
+        configurable: true,
+        value: true,
+      })
+      window.dispatchEvent(new Event('online'))
+      await vi.runOnlyPendingTimersAsync()
+      await flushPromises()
+
+      expect(api.importSourceVersion).toHaveBeenCalledTimes(2)
+      expect(wrapper.get('[role="status"]').text()).toContain('服务端已创建 v1')
+    } finally {
+      wrapper.unmount()
+      if (originalOnline) {
+        Object.defineProperty(window.navigator, 'onLine', originalOnline)
+      } else {
+        Reflect.deleteProperty(window.navigator, 'onLine')
+      }
+      vi.useRealTimers()
+    }
   })
 
   it('keeps only the newest CSV parse when an older file finishes last', async () => {
@@ -496,11 +755,13 @@ describe('SourceVersionsPage', () => {
 
 const deferred = <T,>() => {
   let resolve: (value: T) => void = () => undefined
-  const promise = new Promise<T>((done) => {
+  let reject: (reason?: unknown) => void = () => undefined
+  const promise = new Promise<T>((done, fail) => {
     resolve = done
+    reject = fail
   })
 
-  return { promise, resolve }
+  return { promise, reject, resolve }
 }
 
 const createDeferredCsvFile = (name: string, contents: Promise<ArrayBuffer>): File => {

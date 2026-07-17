@@ -4,6 +4,7 @@ import { createContentBuilder } from '../../server/services/ContentBuilder'
 import { exerciseItemContentSchema } from '../../shared/api/taskSchemas'
 import type { ImportWordInput } from '../../shared/domain/content'
 import type { ContentRepository } from '../../server/repositories/contentRepository'
+import { generateAdminOperationToken } from '../../shared/security/adminOperationToken'
 
 const createWords = (count: number): ImportWordInput[] =>
   Array.from({ length: count }, (_, index) => {
@@ -35,14 +36,14 @@ describe('admin content building workflow', () => {
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const firstDraft = await contentBuilder.importWords({
+    const firstDraft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Versioned source',
       words: createWords(5),
     })
 
     expect(firstDraft.versionNo).toBe(1)
     await expect(
-      contentBuilder.importNextVersion({
+      contentBuilder.importNextVersionIdempotently({ operationToken: generateAdminOperationToken(),
         sourceId: firstDraft.sourceId,
         words: createWords(6),
       }),
@@ -52,7 +53,7 @@ describe('admin content building workflow', () => {
     await approveAllDraftItems(contentBuilder, firstDraft.versionId)
     await contentBuilder.publishVersion(firstDraft.versionId)
 
-    const secondDraft = await contentBuilder.importNextVersion({
+    const secondDraft = await contentBuilder.importNextVersionIdempotently({ operationToken: generateAdminOperationToken(),
       sourceId: firstDraft.sourceId,
       words: createWords(6),
     })
@@ -65,7 +66,7 @@ describe('admin content building workflow', () => {
       groupCount: 2,
     })
     await expect(
-      contentBuilder.importNextVersion({
+      contentBuilder.importNextVersionIdempotently({ operationToken: generateAdminOperationToken(),
         sourceId: firstDraft.sourceId,
         words: createWords(7),
       }),
@@ -77,7 +78,7 @@ describe('admin content building workflow', () => {
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const firstDraft = await contentBuilder.importWords({
+    const firstDraft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Concurrent version source',
       words: createWords(5),
     })
@@ -87,11 +88,11 @@ describe('admin content building workflow', () => {
     await contentBuilder.publishVersion(firstDraft.versionId)
 
     const results = await Promise.allSettled([
-      contentBuilder.importNextVersion({
+      contentBuilder.importNextVersionIdempotently({ operationToken: generateAdminOperationToken(),
         sourceId: firstDraft.sourceId,
         words: createWords(6),
       }),
-      contentBuilder.importNextVersion({
+      contentBuilder.importNextVersionIdempotently({ operationToken: generateAdminOperationToken(),
         sourceId: firstDraft.sourceId,
         words: createWords(7),
       }),
@@ -118,7 +119,7 @@ describe('admin content building workflow', () => {
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const firstDraft = await contentBuilder.importWords({
+    const firstDraft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Recoverable source',
       words: createWords(2),
     })
@@ -129,7 +130,7 @@ describe('admin content building workflow', () => {
       status: 'archived',
     })
 
-    const replacement = await contentBuilder.importNextVersion({
+    const replacement = await contentBuilder.importNextVersionIdempotently({ operationToken: generateAdminOperationToken(),
       sourceId: firstDraft.sourceId,
       words: createWords(5),
     })
@@ -160,7 +161,7 @@ describe('admin content building workflow', () => {
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Test source',
       words: createWords(20),
     })
@@ -206,7 +207,7 @@ describe('admin content building workflow', () => {
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Schema-valid source',
       words: createWords(5),
     })
@@ -341,7 +342,7 @@ describe('admin content building workflow', () => {
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Coverage cells source',
       words: createWords(5),
     })
@@ -384,7 +385,7 @@ describe('admin content building workflow', () => {
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Twenty two source',
       words: createWords(22),
     })
@@ -400,7 +401,7 @@ describe('admin content building workflow', () => {
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Readable source',
       words: createWords(5),
     })
@@ -441,7 +442,7 @@ describe('admin content building workflow', () => {
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Review source',
       words: createWords(5),
     })
@@ -493,7 +494,7 @@ describe('admin content building workflow', () => {
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Validated edit source',
       words: createWords(5),
     })
@@ -536,7 +537,7 @@ describe('admin content building workflow', () => {
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Bound exercise source',
       words: createWords(5),
     })
@@ -609,7 +610,7 @@ describe('admin content building workflow', () => {
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Stable build source',
       words: createWords(5),
     })
@@ -647,7 +648,7 @@ describe('admin content building workflow', () => {
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Task content source',
       words: createWords(5),
     })
@@ -724,7 +725,7 @@ describe('admin content building workflow', () => {
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Small source',
       words: createWords(2),
     })
@@ -758,7 +759,7 @@ describe('admin content building workflow', () => {
       exampleSentenceExtended: 'I ate an apple after lunch.',
     }
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Answer-revealing meaning source',
       words,
     })
@@ -808,7 +809,7 @@ describe('admin content building workflow', () => {
       exampleSentenceExtended: 'I ate an apple after lunch.',
     }
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'S5 owning-word leak source',
       words,
     })
@@ -844,7 +845,7 @@ describe('admin content building workflow', () => {
       exampleSentenceExtended: 'I ate an apple after lunch.',
     }
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Reviewed answer-revealing meaning source',
       words,
     })
@@ -907,7 +908,7 @@ describe('admin content building workflow', () => {
       repository,
       now: () => new Date('2026-07-17T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Progressive validation source',
       words: createWords(5),
     })
@@ -990,7 +991,7 @@ describe('admin content building workflow', () => {
       exampleSentenceExtended: 'I ate an apple after lunch.',
     }
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'S5 prompt safety source',
       words,
     })
@@ -1053,7 +1054,7 @@ describe('admin content building workflow', () => {
       exampleSentenceExtended: 'He is the hero in this story.',
     }
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Whole-token meaning source',
       words,
     })
@@ -1088,7 +1089,7 @@ describe('admin content building workflow', () => {
       exampleSentenceExtended: 'word-1',
     }
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Unshufflable sentence source',
       words,
     })
@@ -1127,7 +1128,7 @@ describe('admin content building workflow', () => {
       exampleSentenceExtended: 'go go',
     }
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Visibly unshufflable source',
       words,
     })
@@ -1152,7 +1153,7 @@ describe('admin content building workflow', () => {
       repository,
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Exact coverage source',
       words: createWords(5),
     })
@@ -1208,7 +1209,7 @@ describe('admin content building workflow', () => {
       repository,
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Malformed approved source',
       words: createWords(5),
     })
@@ -1273,7 +1274,7 @@ describe('admin content building workflow', () => {
     }
 
     await expect(
-      contentBuilder.importWords({
+      contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
         sourceName: 'Invalid source',
         words: [
           {
@@ -1288,14 +1289,14 @@ describe('admin content building workflow', () => {
     ).rejects.toThrow('Imported word and meaning are required')
 
     await expect(
-      contentBuilder.importWords({
+      contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
         sourceName: 'Duplicate source',
         words: duplicateWords,
       }),
     ).rejects.toThrow('Duplicate imported word')
 
     await expect(
-      contentBuilder.importWords({
+      contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
         sourceName: 'Unicode duplicate source',
         words: [
           {
@@ -1335,7 +1336,7 @@ describe('admin content building workflow', () => {
     }
 
     await expect(
-      contentBuilder.importWords({
+      contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
         sourceName: 'Incomplete source',
         words,
       }),
@@ -1364,7 +1365,7 @@ describe('admin content building workflow', () => {
       exampleSentence: 'This example omits the target token.',
     }
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Mismatched example source',
       words,
     })
@@ -1395,7 +1396,7 @@ describe('admin content building workflow', () => {
       exampleSentenceExtended: 'Scatter the cards; the cat sleeps nearby.',
     }
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Standalone token source',
       words,
     })
@@ -1426,7 +1427,7 @@ describe('admin content building workflow', () => {
       exampleSentenceExtended: 'Apple pie with apple slices tastes good.',
     }
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Repeated target source',
       words,
     })
@@ -1457,7 +1458,7 @@ describe('admin content building workflow', () => {
       exampleSentenceExtended: 'The sign says HE is ready to begin.',
     }
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Case-insensitive token source',
       words,
     })
@@ -1488,7 +1489,7 @@ describe('admin content building workflow', () => {
       exampleSentenceExtended: 'Look at (cat), please, before it leaves.',
     }
 
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Punctuation token source',
       words,
     })
@@ -1509,7 +1510,7 @@ describe('admin content building workflow', () => {
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Published source',
       words: createWords(5),
     })
@@ -1568,7 +1569,7 @@ describe('admin content building workflow', () => {
       repository,
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Concurrent publish source',
       words: createWords(5),
     })
@@ -1602,7 +1603,7 @@ describe('admin content building workflow', () => {
       repository: storedRepository,
       now: () => new Date('2026-07-06T00:00:00.000Z'),
     })
-    const draft = await setupBuilder.importWords({
+    const draft = await setupBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Concurrent edit source',
       words: createWords(5),
     })

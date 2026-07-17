@@ -11,6 +11,7 @@ import { createCourseQueryService } from '../../server/services/CourseQueryServi
 import { createCourseRuntime } from '../../server/services/CourseRuntime'
 import { createLearnerSessionService } from '../../server/services/LearnerSessionService'
 import type { AdminExerciseItemDto } from '../../shared/api/contentSchemas'
+import { generateAdminOperationToken } from '../../shared/security/adminOperationToken'
 
 const ORIGIN = 'https://eng-learn.test'
 
@@ -108,7 +109,7 @@ const createFixture = async (operation: WriteOperation) => {
     repository,
     now: () => new Date('2026-07-13T00:00:00.000Z'),
   })
-  const draft = await builder.importWords({
+  const draft = await builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
     sourceName: `CAS ${operation}`,
     words: Array.from({ length: 5 }, (_, index) => ({
       word: `word-${String(index + 1)}`,

@@ -5,6 +5,7 @@ import { createContentBuilder, type ContentBuilder } from '../../server/services
 import { createCourseRuntime } from '../../server/services/CourseRuntime'
 import { DomainError } from '../../server/errors/DomainError'
 import { exerciseItemContentSchema } from '../../shared/api/taskSchemas'
+import { generateAdminOperationToken } from '../../shared/security/adminOperationToken'
 
 const NOW = new Date('2026-07-13T00:00:00.000Z')
 
@@ -692,7 +693,7 @@ const createFixture = async (
   const contentRepository = createInMemoryContentRepository()
   const courseRepository = createInMemoryCourseRepository()
   const builder = createContentBuilder({ repository: contentRepository, now: () => NOW })
-  const draft = await builder.importWords({
+  const draft = await builder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
     sourceName: 'Queue source',
     words: Array.from({ length: wordCount }, (_, index) => ({
       word: `word-${String(index + 1)}`,

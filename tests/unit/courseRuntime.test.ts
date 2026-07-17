@@ -11,6 +11,7 @@ import type { SourceVersionSnapshot } from '../../server/repositories/contentRep
 import { exerciseItemContentSchema } from '../../shared/api/taskSchemas'
 import type { ImportWordInput } from '../../shared/domain/content'
 import type { StartedLesson } from '../../shared/domain/course'
+import { generateAdminOperationToken } from '../../shared/security/adminOperationToken'
 
 const createWords = (count: number): ImportWordInput[] =>
   Array.from({ length: count }, (_, index) => {
@@ -84,7 +85,7 @@ describe('course runtime workflow', () => {
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Course source',
       words: createWords(10),
     })
@@ -124,7 +125,7 @@ describe('course runtime workflow', () => {
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Lesson source',
       words: createWords(10),
     })
@@ -162,7 +163,7 @@ describe('course runtime workflow', () => {
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Concurrent lesson source',
       words: createWords(5),
     })
@@ -195,7 +196,7 @@ describe('course runtime workflow', () => {
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Answer source',
       words: createWords(5),
     })
@@ -255,7 +256,7 @@ describe('course runtime workflow', () => {
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Wrong answer source',
       words: createWords(5),
     })
@@ -299,7 +300,7 @@ describe('course runtime workflow', () => {
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Wrong word reflux source',
       words: createWords(5),
     })
@@ -389,7 +390,7 @@ describe('course runtime workflow', () => {
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Completion source',
       words: createWords(5),
     })
@@ -444,7 +445,7 @@ describe('course runtime workflow', () => {
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Lesson two source',
       words: createWords(10),
     })
@@ -502,7 +503,7 @@ describe('course runtime workflow', () => {
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Lesson gap source',
       words: createWords(5),
     })
@@ -558,7 +559,7 @@ describe('course runtime workflow', () => {
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
     })
-    const draft = await contentBuilder.importWords({
+    const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Twenty-word lesson gap source',
       words: createWords(20),
     })
@@ -600,7 +601,7 @@ const createQueueModeFixture = async () => {
   const courseRepository = createInMemoryCourseRepository()
   const now = () => new Date('2026-07-14T00:00:00.000Z')
   const contentBuilder = createContentBuilder({ repository: contentRepository, now })
-  const draft = await contentBuilder.importWords({
+  const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
     sourceName: 'Queue policy source',
     words: createWords(5),
   })
