@@ -31,7 +31,16 @@ export type LessonTaskStatus = 'pending' | 'completed' | 'skipped'
 
 export type LessonQueuePolicyVersion = 'v1_5_8_unbounded' | 'v2_3_6_cap3'
 
+export type LessonFlowPolicyVersion =
+  | 'v1_due_then_new_unbounded'
+  | 'v2_rolling_reinforcement_budget24'
+
 export type QueueDisposition = 'scheduled' | 'deferred_cap' | 'deferred_capacity'
+
+export type QueueCapacityReason =
+  | 'short_pool'
+  | 'interval_infeasible'
+  | 'lesson_task_budget'
 
 export type LessonSessionView = {
   id: string

@@ -23,6 +23,10 @@ const migrationPaths = [
   '../../migrations/0007_backfill_legacy_lesson_runtime.sql',
   '../../migrations/0008_add_admin_operation_ledger.sql',
   '../../migrations/0009_add_lesson_queue_policy_v2.sql',
+  '../../migrations/0010_add_admin_sessions.sql',
+  '../../migrations/0011_add_progressive_context_model.sql',
+  '../../migrations/0012_add_exercise_review_feedback.sql',
+  '../../migrations/0013_add_lesson_flow_policy_v2.sql',
 ]
 
 type SqliteD1Statement = {
@@ -448,6 +452,7 @@ const createD1RuntimeLessonFixture = async (
     selectRefluxGap: () => gaps.shift() ?? 5,
     queueWriteMode:
       queuePolicyVersion === 'v2_3_6_cap3' ? 'v2' : 'legacy_v1',
+    flowWriteMode: 'legacy_v1',
   })
 
   fixture.budget.reset()
@@ -455,6 +460,145 @@ const createD1RuntimeLessonFixture = async (
 }
 
 describe('D1 course queue repository', () => {
+  it('persists one rolling S1 reinforcement through split update and insert writes', async () => {
+    const { database, db, repository, budget } = await createRepositoryFixture()
+    database.exec(`
+      INSERT INTO word_sources (id, name, created_at)
+      VALUES ('source-flow', 'Rolling source', '${NOW}');
+      INSERT INTO source_versions (
+        id, source_id, version_no, content_model, status, created_at, published_at
+      ) VALUES (
+        'version-flow', 'source-flow', 1, 'v2_progressive_context',
+        'published', '${NOW}', '${NOW}'
+      );
+      INSERT INTO word_groups (
+        id, source_version_id, group_index, start_order_index, end_order_index, created_at
+      ) VALUES ('group-flow', 'version-flow', 1, 1, 5, '${NOW}');
+      UPDATE courses SET source_version_id = 'version-flow' WHERE id = 'course-1';
+    `)
+    const insertWord = database.prepare(`
+      INSERT INTO words (
+        id, source_version_id, order_index, word, meaning, example_phrase,
+        example_sentence, example_sentence_extended, created_at
+      ) VALUES (?, 'version-flow', ?, ?, ?, ?, ?, ?, ?)
+    `)
+    const insertItem = database.prepare(`
+      INSERT INTO exercise_items (
+        id, source_version_id, word_id, stage, task_type,
+        prompt_json, answer_json, status, created_at
+      ) VALUES (?, 'version-flow', ?, ?, ?, ?, ?, 'approved', ?)
+    `)
+
+    for (let index = 1; index <= 5; index += 1) {
+      const wordId = `flow-word-${String(index)}`
+      const word = `flowword${String(index)}`
+      insertWord.run(
+        wordId,
+        index,
+        word,
+        `meaning-${String(index)}`,
+        word,
+        `I use ${word} here.`,
+        `I can use ${word} here every day.`,
+        NOW,
+      )
+      insertItem.run(
+        `flow-s0-${String(index)}`,
+        wordId,
+        'S0',
+        'recognize_meaning',
+        JSON.stringify({
+          word,
+          meaning: `meaning-${String(index)}`,
+          exampleSentence: `I use ${word} here.`,
+        }),
+        JSON.stringify({ word, expectedResponse: 'known' }),
+        NOW,
+      )
+      insertItem.run(
+        `flow-s1-${String(index)}`,
+        wordId,
+        'S1',
+        'multiple_choice',
+        JSON.stringify({
+          meaning: `meaning-${String(index)}`,
+          options: [word, `distractor-a-${String(index)}`, `distractor-b-${String(index)}`],
+        }),
+        JSON.stringify({ word }),
+        NOW,
+      )
+    }
+
+    const runtime = createCourseRuntime({
+      contentRepository: createD1ContentRepository(db),
+      courseRepository: repository,
+      now: () => new Date(NOW),
+      queueWriteMode: 'v2',
+      flowWriteMode: 'rolling_v2',
+    })
+    budget.reset()
+    const lesson = await runtime.startLesson('course-1')
+
+    for (const task of lesson.tasks.slice(0, 2)) {
+      budget.reset()
+      await runtime.submitAnswer({
+        sessionId: lesson.session.id,
+        taskId: task.id,
+        submission: { taskType: 'recognize_meaning', response: 'known' },
+      })
+    }
+
+    const thirdTask = lesson.tasks[2]
+
+    if (!thirdTask) throw new Error('Expected the third rolling task')
+
+    budget.reset()
+    const [winner, retry] = await Promise.all([
+      runtime.submitAnswer({
+        sessionId: lesson.session.id,
+        taskId: thirdTask.id,
+        submission: { taskType: 'recognize_meaning', response: 'known' },
+      }),
+      runtime.submitAnswer({
+        sessionId: lesson.session.id,
+        taskId: thirdTask.id,
+        submission: { taskType: 'recognize_meaning', response: 'known' },
+      }),
+    ])
+
+    expect(retry.reviewLog.id).toBe(winner.reviewLog.id)
+
+    budget.reset()
+    const snapshot = await repository.getLessonQueueSnapshot({
+      sessionId: lesson.session.id,
+      courseId: 'course-1',
+    })
+    const reinforcement = snapshot?.tasks.find(
+      (task) => task.reinforcementSourceTaskId === lesson.tasks[0]?.id,
+    )
+
+    expect(snapshot?.session.flowPolicyVersion).toBe(
+      'v2_rolling_reinforcement_budget24',
+    )
+    expect(snapshot?.tasks).toHaveLength(6)
+    expect(reinforcement).toMatchObject({
+      stage: 'S1',
+      taskType: 'multiple_choice',
+      role: 'bridge',
+      required: true,
+      orderIndex: 4,
+    })
+    expect(
+      database.prepare(`
+        SELECT COUNT(*) AS count
+        FROM lesson_tasks
+        WHERE reinforcement_source_task_id IS NOT NULL
+      `).get(),
+    ).toEqual({ count: 1 })
+
+    database.close()
+  })
+
   it('persists a v2 session policy and restores it in the authoritative queue snapshot', async () => {
     const { database, budget, repository } = await createRepositoryFixture()
     const task = createTask('task-policy-v2', 1)
@@ -1099,6 +1243,72 @@ describe('D1 course queue repository', () => {
     expect(
       database.prepare('SELECT COUNT(*) AS count FROM review_logs').get(),
     ).toEqual({ count: 1 })
+
+    database.close()
+  })
+
+  it('bulk-updates a reordered 65-task legacy flow within the D1 query budget', async () => {
+    const { database, db, budget, repository } = await createRepositoryFixture()
+    seedAdditionalWords(database, 65)
+    const tasks = Array.from({ length: 65 }, (_, index) =>
+      createTask(`task-reorder-${String(index + 1)}`, index + 1, {
+        wordId: `word-${String(index + 1)}`,
+      }),
+    )
+    const wordStates = Array.from({ length: 65 }, (_, index) =>
+      createWordState({
+        id: `state-reorder-${String(index + 1)}`,
+        wordId: `word-${String(index + 1)}`,
+      }),
+    )
+
+    await repository.createLesson({
+      session: {
+        id: 'lesson-1',
+        courseId: 'course-1',
+        lessonNo: 1,
+        status: 'started',
+        taskCount: tasks.length,
+        completedTaskCount: 0,
+        correctCount: 0,
+        wrongCount: 0,
+        queuePolicyVersion: 'v2_3_6_cap3',
+        startedAt: NOW,
+      },
+      tasks,
+      wordStates,
+    })
+    const runtime = createCourseRuntime({
+      contentRepository: createD1ContentRepository(db),
+      courseRepository: repository,
+      now: () => new Date(NOW),
+      selectRefluxGap: () => 5,
+      queueWriteMode: 'v2',
+      flowWriteMode: 'legacy_v1',
+    })
+
+    budget.reset()
+    await runtime.submitAnswer({
+      sessionId: 'lesson-1',
+      taskId: 'task-reorder-1',
+      submission: { taskType: 'recognize_meaning', response: 'learning' },
+    })
+    expectD1FreeInvocation(budget)
+
+    budget.reset()
+    const snapshot = await repository.getLessonQueueSnapshot({
+      sessionId: 'lesson-1',
+      courseId: 'course-1',
+    })
+
+    expect(snapshot?.tasks).toHaveLength(66)
+    const reflux = snapshot?.tasks.find(
+      (task) => task.refluxSourceTaskId === 'task-reorder-1',
+    )
+
+    expect(reflux).toMatchObject({ role: 'reflux' })
+    expect((reflux?.orderIndex ?? 0) - 2).toBeGreaterThanOrEqual(3)
+    expect((reflux?.orderIndex ?? 0) - 2).toBeLessThanOrEqual(6)
 
     database.close()
   })
@@ -1786,6 +1996,7 @@ describe('D1 course queue repository', () => {
     const report = await createCourseQueryService({
       contentRepository: createD1ContentRepository(db),
       courseRepository: repository,
+      flowWriteMode: 'legacy_v1',
     }).getLessonReport(
       { learnerId: 'learner-1', courseId: 'course-1' },
       'lesson-1',
@@ -1975,6 +2186,7 @@ describe('D1 course queue repository', () => {
         courseRepository: racingRepository,
         now: () => new Date(NOW),
         queueWriteMode: 'legacy_v1',
+        flowWriteMode: 'legacy_v1',
       })
 
       await expect(
@@ -2225,6 +2437,7 @@ describe('D1 course queue repository', () => {
         courseRepository: racingRepository,
         now: () => new Date(NOW),
         queueWriteMode: 'legacy_v1',
+        flowWriteMode: 'legacy_v1',
       })
 
       await expect(
@@ -2328,11 +2541,13 @@ describe('D1 course queue repository', () => {
         createdAt: NOW,
       },
       taskMutations: [completedPrimary, bridge, reflux],
+      newTaskIds: [bridge.id, reflux.id],
       reorderedExistingTaskIds: [],
       taskCount: 3,
       completedTaskCount: 1,
       persistWordState: true,
       expectedQueuePolicyVersion: 'v1_5_8_unbounded' as const,
+      expectedFlowPolicyVersion: 'v1_due_then_new_unbounded' as const,
     }
     const concurrentLoserInput = {
       ...input,

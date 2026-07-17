@@ -4,9 +4,11 @@ import type {
   CreatedCourse,
   CompletedLesson,
   LessonSessionStatus,
+  LessonFlowPolicyVersion,
   LessonQueuePolicyVersion,
   LessonTaskStatus,
   QueueDisposition,
+  QueueCapacityReason,
   ReviewScore,
   StartedLesson,
   SubmittedAnswer,
@@ -23,7 +25,9 @@ import type { AccessCodeHash } from '../security/credentialCrypto'
 
 export type {
   LessonQueuePolicyVersion,
+  LessonFlowPolicyVersion,
   QueueDisposition,
+  QueueCapacityReason,
 } from '../../shared/domain/course'
 
 export type LearnerRecord = {
@@ -52,6 +56,7 @@ export type LessonSessionRecord = {
   correctCount: number
   wrongCount: number
   queuePolicyVersion: LessonQueuePolicyVersion
+  flowPolicyVersion: LessonFlowPolicyVersion
   startedAt: string
   completedAt?: string
 }
@@ -66,6 +71,7 @@ type LessonTaskRecordBase = {
   role: LessonTaskRole
   required: boolean
   refluxSourceTaskId?: string
+  reinforcementSourceTaskId?: string
   draftAnswer?: string
   referenceRevealedAt?: string
   createdAt: string
@@ -107,6 +113,7 @@ export type ReviewLogRecord = {
   correctAnswer: string
   score: ReviewScore
   queueDisposition?: QueueDisposition
+  queueCapacityReason?: QueueCapacityReason
   lessonNo: number
   createdAt: string
 }
@@ -169,16 +176,19 @@ export type RecordAnswerInput = {
   wordState: UserWordStateRecord
   reviewLog: ReviewLogRecord
   taskMutations: LessonTaskRecord[]
+  newTaskIds: string[]
   reorderedExistingTaskIds: string[]
   taskCount: number
   completedTaskCount: number
   persistWordState: boolean
   expectedQueuePolicyVersion: LessonQueuePolicyVersion
+  expectedFlowPolicyVersion: LessonFlowPolicyVersion
 }
 
 export type RecordedAnswerOutcome = {
   submittedAnswer: SubmittedAnswer
   queueDisposition?: QueueDisposition
+  queueCapacityReason?: QueueCapacityReason
 }
 
 export type SaveSentenceOutputPreviewInput = {

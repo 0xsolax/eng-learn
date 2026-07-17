@@ -23,6 +23,7 @@ import type {
   LessonQueueSnapshot,
   LessonSessionRecord,
   LessonTaskRecord,
+  QueueCapacityReason,
   QueueDisposition,
   RecordAnswerInput,
   ReviewLogRecord,
@@ -72,6 +73,7 @@ type LessonSessionRow = {
   correct_count: number
   wrong_count: number
   queue_policy_version: LessonSessionRecord['queuePolicyVersion']
+  flow_policy_version: LessonSessionRecord['flowPolicyVersion']
   started_at: string
   completed_at: string | null
 }
@@ -90,6 +92,7 @@ type LessonTaskRow = {
   role: LessonTaskRecord['role']
   required: number
   reflux_source_task_id: string | null
+  reinforcement_source_task_id: string | null
   draft_answer: string | null
   reference_revealed_at: string | null
   created_at: string
@@ -134,6 +137,7 @@ type ReviewLogRow = {
   correct_answer: string
   score: ReviewLogRecord['score']
   queue_disposition: QueueDisposition | null
+  queue_capacity_reason: QueueCapacityReason | null
   lesson_no: number
   created_at: string
 }
@@ -791,12 +795,15 @@ const toRecordedAnswerOutcome = (
   ...(reviewLog.queueDisposition === undefined
     ? {}
     : { queueDisposition: reviewLog.queueDisposition }),
+  ...(reviewLog.queueCapacityReason === undefined
+    ? {}
+    : { queueCapacityReason: reviewLog.queueCapacityReason }),
 })
 
 const insertLessonSession = (db: D1Database, session: LessonSessionRecord): D1PreparedStatement =>
   db
     .prepare(
-      "INSERT INTO lesson_sessions (id, course_id, lesson_no, status, task_count, completed_task_count, correct_count, wrong_count, queue_policy_version, started_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM courses WHERE id = ? AND status = 'active')",
+      "INSERT INTO lesson_sessions (id, course_id, lesson_no, status, task_count, completed_task_count, correct_count, wrong_count, queue_policy_version, flow_policy_version, started_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM courses WHERE id = ? AND status = 'active')",
     )
     .bind(
       session.id,
@@ -808,6 +815,7 @@ const insertLessonSession = (db: D1Database, session: LessonSessionRecord): D1Pr
       session.correctCount,
       session.wrongCount,
       session.queuePolicyVersion,
+      withLegacyFlowPolicyDefault(session.flowPolicyVersion),
       session.startedAt,
       session.courseId,
     )
@@ -837,10 +845,6 @@ const createBulkLessonTaskStatements = (
           `SELECT ${String(groupIndex)} AS group_index, CAST(metadata.key AS INTEGER) AS row_index, metadata.value AS metadata_json, prompt.value AS prompt_json, answer.value AS answer_json FROM json_each(?) AS metadata INNER JOIN json_each(?) AS prompt ON prompt.key = metadata.key INNER JOIN json_each(?) AS answer ON answer.key = metadata.key`,
       )
       .join(' UNION ALL ')
-    const upsertSql =
-      reviewLogId === undefined
-        ? ''
-        : ' ON CONFLICT(id) DO UPDATE SET order_index = excluded.order_index, status = excluded.status, role = excluded.role, required = excluded.required, reflux_source_task_id = excluded.reflux_source_task_id, draft_answer = excluded.draft_answer, reference_revealed_at = excluded.reference_revealed_at'
     const writeGuardSql =
       reviewLogId !== undefined
         ? ' WHERE EXISTS (SELECT 1 FROM review_logs WHERE id = ?)'
@@ -855,7 +859,7 @@ const createBulkLessonTaskStatements = (
 
     return db
       .prepare(
-        `WITH rows AS (${rowsSql}) INSERT INTO lesson_tasks (id, session_id, course_id, word_id, stage, task_type, prompt_json, answer_json, order_index, status, role, required, reflux_source_task_id, draft_answer, reference_revealed_at, created_at) SELECT json_extract(metadata_json, '$.id'), json_extract(metadata_json, '$.sessionId'), json_extract(metadata_json, '$.courseId'), json_extract(metadata_json, '$.wordId'), json_extract(metadata_json, '$.stage'), json_extract(metadata_json, '$.taskType'), prompt_json, answer_json, json_extract(metadata_json, '$.orderIndex'), json_extract(metadata_json, '$.status'), json_extract(metadata_json, '$.role'), json_extract(metadata_json, '$.required'), json_extract(metadata_json, '$.refluxSourceTaskId'), json_extract(metadata_json, '$.draftAnswer'), json_extract(metadata_json, '$.referenceRevealedAt'), json_extract(metadata_json, '$.createdAt') FROM rows${writeGuardSql} ORDER BY group_index ASC, row_index ASC${upsertSql}`,
+        `WITH rows AS (${rowsSql}) INSERT INTO lesson_tasks (id, session_id, course_id, word_id, stage, task_type, prompt_json, answer_json, order_index, status, role, required, reflux_source_task_id, reinforcement_source_task_id, draft_answer, reference_revealed_at, created_at) SELECT json_extract(metadata_json, '$.id'), json_extract(metadata_json, '$.sessionId'), json_extract(metadata_json, '$.courseId'), json_extract(metadata_json, '$.wordId'), json_extract(metadata_json, '$.stage'), json_extract(metadata_json, '$.taskType'), prompt_json, answer_json, json_extract(metadata_json, '$.orderIndex'), json_extract(metadata_json, '$.status'), json_extract(metadata_json, '$.role'), json_extract(metadata_json, '$.required'), json_extract(metadata_json, '$.refluxSourceTaskId'), json_extract(metadata_json, '$.reinforcementSourceTaskId'), json_extract(metadata_json, '$.draftAnswer'), json_extract(metadata_json, '$.referenceRevealedAt'), json_extract(metadata_json, '$.createdAt') FROM rows${writeGuardSql} ORDER BY group_index ASC, row_index ASC`,
       )
       .bind(
         ...bindings,
@@ -907,6 +911,7 @@ const createTaskJsonGroups = (tasks: LessonTaskRecord[]): TaskJsonGroup[] => {
       role: task.role,
       required: task.required ? 1 : 0,
       refluxSourceTaskId: task.refluxSourceTaskId ?? null,
+      reinforcementSourceTaskId: task.reinforcementSourceTaskId ?? null,
       draftAnswer: task.draftAnswer ?? null,
       referenceRevealedAt: task.referenceRevealedAt ?? null,
       createdAt: task.createdAt,
@@ -1021,14 +1026,49 @@ const updateWordState = (
       ...(reviewLogId === undefined ? [] : [reviewLogId]),
     )
 
+const updateExistingLessonTasks = (
+  db: D1Database,
+  tasks: LessonTaskRecord[],
+  reviewLogId: string,
+): D1PreparedStatement[] => {
+  const payloads = createJsonPayloadGroups(
+    tasks.map((task) => ({
+      id: task.id,
+      sessionId: task.sessionId,
+      courseId: task.courseId,
+      orderIndex: task.orderIndex,
+      status: task.status,
+      role: task.role,
+      required: task.required,
+      refluxSourceTaskId: task.refluxSourceTaskId ?? null,
+      reinforcementSourceTaskId: task.reinforcementSourceTaskId ?? null,
+      draftAnswer: task.draftAnswer ?? null,
+      referenceRevealedAt: task.referenceRevealedAt ?? null,
+    })),
+  )
+
+  return chunkArray(payloads, MAX_SINGLE_PAYLOAD_GROUPS_PER_QUERY).map((groups) => {
+    const rowsSql = groups
+      .map(() => 'SELECT value AS row_json FROM json_each(?)')
+      .join(' UNION ALL ')
+
+    return db
+      .prepare(
+        `WITH rows AS (${rowsSql}) UPDATE lesson_tasks SET order_index = CAST(json_extract(rows.row_json, '$.orderIndex') AS INTEGER), status = json_extract(rows.row_json, '$.status'), role = json_extract(rows.row_json, '$.role'), required = CAST(json_extract(rows.row_json, '$.required') AS INTEGER), reflux_source_task_id = json_extract(rows.row_json, '$.refluxSourceTaskId'), reinforcement_source_task_id = json_extract(rows.row_json, '$.reinforcementSourceTaskId'), draft_answer = json_extract(rows.row_json, '$.draftAnswer'), reference_revealed_at = json_extract(rows.row_json, '$.referenceRevealedAt') FROM rows WHERE lesson_tasks.id = json_extract(rows.row_json, '$.id') AND lesson_tasks.session_id = json_extract(rows.row_json, '$.sessionId') AND lesson_tasks.course_id = json_extract(rows.row_json, '$.courseId') AND EXISTS (SELECT 1 FROM review_logs WHERE id = ?)`,
+      )
+      .bind(...groups, reviewLogId)
+  })
+}
+
 const insertReviewLogIfPending = (
   db: D1Database,
   reviewLog: ReviewLogRecord,
   expectedQueuePolicyVersion: RecordAnswerInput['expectedQueuePolicyVersion'],
+  expectedFlowPolicyVersion: RecordAnswerInput['expectedFlowPolicyVersion'],
 ): D1PreparedStatement =>
   db
     .prepare(
-      "INSERT INTO review_logs (id, session_id, task_id, course_id, word_id, stage, task_type, user_answer, correct_answer, score, lesson_no, created_at, queue_disposition) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM lesson_tasks INNER JOIN lesson_sessions ON lesson_sessions.id = lesson_tasks.session_id AND lesson_sessions.course_id = lesson_tasks.course_id INNER JOIN courses ON courses.id = lesson_tasks.course_id WHERE lesson_tasks.id = ? AND lesson_tasks.session_id = ? AND lesson_tasks.course_id = ? AND lesson_tasks.status = 'pending' AND lesson_sessions.status = 'started' AND lesson_sessions.queue_policy_version = ? AND courses.status = 'active' AND NOT EXISTS (SELECT 1 FROM lesson_tasks AS earlier_task WHERE earlier_task.session_id = lesson_tasks.session_id AND earlier_task.status = 'pending' AND earlier_task.order_index < lesson_tasks.order_index))",
+      "INSERT INTO review_logs (id, session_id, task_id, course_id, word_id, stage, task_type, user_answer, correct_answer, score, lesson_no, created_at, queue_disposition, queue_capacity_reason) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM lesson_tasks INNER JOIN lesson_sessions ON lesson_sessions.id = lesson_tasks.session_id AND lesson_sessions.course_id = lesson_tasks.course_id INNER JOIN courses ON courses.id = lesson_tasks.course_id WHERE lesson_tasks.id = ? AND lesson_tasks.session_id = ? AND lesson_tasks.course_id = ? AND lesson_tasks.status = 'pending' AND lesson_sessions.status = 'started' AND lesson_sessions.queue_policy_version = ? AND lesson_sessions.flow_policy_version = ? AND courses.status = 'active' AND NOT EXISTS (SELECT 1 FROM lesson_tasks AS earlier_task WHERE earlier_task.session_id = lesson_tasks.session_id AND earlier_task.status = 'pending' AND earlier_task.order_index < lesson_tasks.order_index))",
     )
     .bind(
       reviewLog.id,
@@ -1044,11 +1084,18 @@ const insertReviewLogIfPending = (
       reviewLog.lessonNo,
       reviewLog.createdAt,
       reviewLog.queueDisposition ?? null,
+      reviewLog.queueCapacityReason ?? null,
       reviewLog.taskId,
       reviewLog.sessionId,
       reviewLog.courseId,
       expectedQueuePolicyVersion,
+      withLegacyFlowPolicyDefault(expectedFlowPolicyVersion),
     )
+
+const withLegacyFlowPolicyDefault = (
+  value: LessonSessionRecord['flowPolicyVersion'] | undefined,
+): LessonSessionRecord['flowPolicyVersion'] =>
+  value ?? 'v1_due_then_new_unbounded'
 
 const createRecordAnswerStatements = (
   db: D1Database,
@@ -1057,12 +1104,18 @@ const createRecordAnswerStatements = (
   const isPrimary = input.task.role === 'primary'
   const correctIncrement = isPrimary && isPassingReviewScore(input.reviewLog.score) ? 1 : 0
   const wrongIncrement = isPrimary && !isPassingReviewScore(input.reviewLog.score) ? 1 : 0
+  const newTaskIds = new Set(input.newTaskIds)
+  const newTasks = input.taskMutations.filter((task) => newTaskIds.has(task.id))
+  const existingTaskMutations = input.taskMutations.filter(
+    (task) => !newTaskIds.has(task.id),
+  )
 
   return [
     insertReviewLogIfPending(
       db,
       input.reviewLog,
       input.expectedQueuePolicyVersion,
+      input.expectedFlowPolicyVersion,
     ),
     ...createTemporarilyNegativeOrderStatements(
       db,
@@ -1070,7 +1123,8 @@ const createRecordAnswerStatements = (
       input.reorderedExistingTaskIds,
       input.reviewLog.id,
     ),
-    ...createBulkLessonTaskStatements(db, input.taskMutations, input.reviewLog.id),
+    ...updateExistingLessonTasks(db, existingTaskMutations, input.reviewLog.id),
+    ...createBulkLessonTaskStatements(db, newTasks, input.reviewLog.id),
     ...(input.persistWordState
       ? [updateWordState(db, input.wordState, input.reviewLog.id)]
       : []),
@@ -1207,6 +1261,7 @@ const mapLessonSession = (row: LessonSessionRow): LessonSessionRecord => ({
   correctCount: row.correct_count,
   wrongCount: row.wrong_count,
   queuePolicyVersion: row.queue_policy_version,
+  flowPolicyVersion: row.flow_policy_version,
   startedAt: row.started_at,
   ...(row.completed_at ? { completedAt: row.completed_at } : {}),
 })
@@ -1243,6 +1298,9 @@ const mapLessonTask = (row: LessonTaskRow): LessonTaskRecord => {
     ...(row.reflux_source_task_id === null
       ? {}
       : { refluxSourceTaskId: row.reflux_source_task_id }),
+    ...(row.reinforcement_source_task_id === null
+      ? {}
+      : { reinforcementSourceTaskId: row.reinforcement_source_task_id }),
     ...(row.draft_answer === null ? {} : { draftAnswer: row.draft_answer }),
     ...(row.reference_revealed_at === null
       ? {}
@@ -1288,6 +1346,9 @@ const mapReviewLog = (row: ReviewLogRow): ReviewLogRecord => ({
   ...(row.queue_disposition === null
     ? {}
     : { queueDisposition: row.queue_disposition }),
+  ...(row.queue_capacity_reason === null
+    ? {}
+    : { queueCapacityReason: row.queue_capacity_reason }),
   lessonNo: row.lesson_no,
   createdAt: row.created_at,
 })
@@ -1325,6 +1386,9 @@ const toLessonTaskView = (task: LessonTaskRecord): LessonTaskDto =>
     ...(task.refluxSourceTaskId === undefined
       ? {}
       : { refluxSourceTaskId: task.refluxSourceTaskId }),
+    ...(task.reinforcementSourceTaskId === undefined
+      ? {}
+      : { reinforcementSourceTaskId: task.reinforcementSourceTaskId }),
     ...(task.taskType === 'sentence_output' &&
     task.draftAnswer !== undefined &&
     task.referenceRevealedAt !== undefined

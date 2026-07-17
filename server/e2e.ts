@@ -215,8 +215,13 @@ const createE2EApplication = (env: E2EEnv): WorkerApp => {
       operationLedger,
       now,
       queueWriteMode: 'v2',
+      flowWriteMode: 'rolling_v2',
     }),
-    courseQueryService: createCourseQueryService({ contentRepository, courseRepository }),
+    courseQueryService: createCourseQueryService({
+      contentRepository,
+      courseRepository,
+      flowWriteMode: 'rolling_v2',
+    }),
     courseRepository,
     learnerSessionService: createLearnerSessionService({
       courseRepository,

@@ -10,6 +10,8 @@ import { isPassingReviewScore, type UserWordStateView } from '../../shared/domai
 import type { CourseRecord, CourseRepository } from '../repositories/courseRepository'
 import type { ContentRepository, SourceVersionSnapshot } from '../repositories/contentRepository'
 import { DomainError } from '../errors/DomainError'
+import { planRollingLessonFlow } from './LessonFlowPolicy'
+import type { LessonFlowWriteMode } from './CourseRuntime'
 
 export type CourseQueryPrincipal = {
   learnerId: string
@@ -28,6 +30,7 @@ export type CourseQueryService = {
 export const createCourseQueryService = (input: {
   contentRepository: ContentRepository
   courseRepository: CourseRepository
+  flowWriteMode: LessonFlowWriteMode
 }): CourseQueryService => ({
   async listAdminCourses() {
     const records = await input.courseRepository.listAdminCourses()
@@ -64,7 +67,12 @@ export const createCourseQueryService = (input: {
       })
     const counts = started
       ? countStartedLessonWords(started.tasks, wordStates, course.currentLessonNo)
-      : countNextLessonWords(sourceVersion, wordStates, course.currentLessonNo)
+      : countNextLessonWords(
+          sourceVersion,
+          wordStates,
+          course.currentLessonNo,
+          input.flowWriteMode,
+        )
 
     return courseHomeSchema.parse({
       course: toCourseView(course),
@@ -123,8 +131,14 @@ export const createCourseQueryService = (input: {
       throw new DomainError('dependency_failure', 'Completed primary task audit is incomplete')
     }
 
+    const scoreLogsForPractice =
+      snapshot.session.flowPolicyVersion === 'v2_rolling_reinforcement_budget24'
+        ? snapshot.reviewLogs
+        : primaryLogs
     const needsPracticeIds = new Set(
-      primaryLogs.filter((log) => !isPassingReviewScore(log.score)).map((log) => log.wordId),
+      scoreLogsForPractice
+        .filter((log) => !isPassingReviewScore(log.score))
+        .map((log) => log.wordId),
     )
     for (const log of snapshot.reviewLogs) {
       if (
@@ -208,23 +222,66 @@ const countStartedLessonWords = (
 
 const countNextLessonWords = (
   sourceVersion: SourceVersionSnapshot,
-  wordStates: Array<{
-    wordId: string
-    groupId: string
-    nextDueLessonNo: number
-    status: UserWordStateView['status']
-  }>,
+  wordStates: Array<
+    Pick<
+      UserWordStateView,
+      | 'wordId'
+      | 'groupId'
+      | 'stage'
+      | 'nextDueLessonNo'
+      | 'status'
+      | 'wrongStreak'
+      | 'masteryScore'
+      | 'lastSeenLessonNo'
+    >
+  >,
   lessonNo: number,
+  flowWriteMode: LessonFlowWriteMode,
 ): { newWordCount: number; reviewWordCount: number } => {
   const activatedGroupIds = new Set(wordStates.map((state) => state.groupId))
   const nextGroup = sourceVersion.groups.find((group) => !activatedGroupIds.has(group.id))
-  const newWordCount = nextGroup
+  const nextGroupWords = nextGroup
     ? sourceVersion.words.filter(
         (word) =>
           word.orderIndex >= nextGroup.startOrderIndex &&
           word.orderIndex <= nextGroup.endOrderIndex,
-      ).length
-    : 0
+      )
+    : []
+
+  if (flowWriteMode !== 'legacy_v1') {
+    const sourceOrderByWordId = new Map(
+      sourceVersion.words.map((word) => [word.id, word.orderIndex]),
+    )
+    const plan = planRollingLessonFlow({
+      currentLessonNo: lessonNo,
+      wordStates: wordStates.map((state) => {
+        const sourceOrderIndex = sourceOrderByWordId.get(state.wordId)
+
+        if (sourceOrderIndex === undefined) {
+          throw new DomainError(
+            'dependency_failure',
+            `Course word ${state.wordId} is unavailable`,
+          )
+        }
+
+        return {
+          ...state,
+          sourceOrderIndex,
+        }
+      }),
+      nextGroupWords: nextGroupWords.map((word) => ({
+        wordId: word.id,
+        sourceOrderIndex: word.orderIndex,
+      })),
+    })
+
+    return {
+      newWordCount: plan.selectedNewWords.length,
+      reviewWordCount: plan.selectedDue.length,
+    }
+  }
+
+  const newWordCount = nextGroupWords.length
   const reviewWordCount = new Set(
     wordStates
       .filter(

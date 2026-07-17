@@ -49,6 +49,7 @@ import {
 import { createContentBuilder, type ContentBuilder } from './services/ContentBuilder'
 import {
   createCourseRuntime,
+  parseLessonFlowWriteMode,
   parseLessonQueueWriteMode,
   type CourseRuntime,
 } from './services/CourseRuntime'
@@ -93,6 +94,7 @@ export type WorkerEnv = {
   CF_ACCESS_ISSUER?: string
   CF_ACCESS_AUDIENCE?: string
   LESSON_QUEUE_WRITE_MODE?: string
+  LESSON_FLOW_WRITE_MODE?: string
 }
 
 export type CreateWorkerAppInput = {
@@ -170,8 +172,13 @@ export const createTestWorkerApp = (
       operationLedger,
       now,
       queueWriteMode: 'v2',
+      flowWriteMode: 'rolling_v2',
     }),
-    courseQueryService: createCourseQueryService({ contentRepository, courseRepository }),
+    courseQueryService: createCourseQueryService({
+      contentRepository,
+      courseRepository,
+      flowWriteMode: 'rolling_v2',
+    }),
     courseRepository,
     learnerSessionService: createLearnerSessionService({
       courseRepository,
@@ -234,8 +241,13 @@ export const createDefaultWorkerApp = (env: WorkerEnv): WorkerApp => {
       operationLedger,
       now,
       queueWriteMode: parseLessonQueueWriteMode(env.LESSON_QUEUE_WRITE_MODE),
+      flowWriteMode: parseLessonFlowWriteMode(env.LESSON_FLOW_WRITE_MODE),
     }),
-    courseQueryService: createCourseQueryService({ contentRepository, courseRepository }),
+    courseQueryService: createCourseQueryService({
+      contentRepository,
+      courseRepository,
+      flowWriteMode: parseLessonFlowWriteMode(env.LESSON_FLOW_WRITE_MODE),
+    }),
     courseRepository,
     learnerSessionService: createLearnerSessionService({
       courseRepository,

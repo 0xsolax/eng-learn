@@ -1,18 +1,31 @@
 import type {
   LessonTaskStatus,
+  QueueCapacityReason,
   QueueDisposition,
   ReviewScore,
 } from '../../shared/domain/course'
 import type { LessonTaskRole } from '../../shared/api/taskSchemas'
+import type { WordStage } from '../../shared/domain/content'
+
+export const LESSON_QUEUE_LIMITS = Object.freeze({
+  maxTasksPerWordPerLesson: 3,
+  maxPlannedReinforcements: 3,
+  plannedGapMinimum: 2,
+  plannedGapMaximum: 4,
+  wrongGapMinimum: 3,
+  wrongGapMaximum: 6,
+})
 
 export type LessonQueueTask = {
   id: string
   wordId: string
+  stage?: WordStage
   orderIndex: number
   status: LessonTaskStatus
   role: LessonTaskRole
   required: boolean
   refluxSourceTaskId?: string
+  reinforcementSourceTaskId?: string
 }
 
 export type LessonQueueReviewLog = {
@@ -20,23 +33,39 @@ export type LessonQueueReviewLog = {
   wordId: string
   score: ReviewScore
   queueDisposition?: QueueDisposition
+  queueCapacityReason?: QueueCapacityReason
 }
 
 export type LessonQueueSnapshotInput<TTask extends LessonQueueTask = LessonQueueTask> = {
   tasks: readonly TTask[]
   reviewLogs: readonly LessonQueueReviewLog[]
   suspendedWordIds: ReadonlySet<string>
+  maximumTaskCount?: number
+  requireCapacityReasons?: boolean
 }
 
 export type LessonQueueFactories<TTask extends LessonQueueTask> = {
   sourceTaskId: string
   createReflux(source: TTask): TTask
   createBridge(source: TTask, index: number): TTask
+  maximumTaskCount?: number
 }
 
 export type WrongAnswerQueuePlan<TTask extends LessonQueueTask> = {
   disposition: QueueDisposition
+  capacityReason?: QueueCapacityReason
   tasks: TTask[]
+}
+
+export type PlannedReinforcementFactories<TTask extends LessonQueueTask> = {
+  newWordIds: readonly string[]
+  maximumTaskCount: number
+  createReinforcement(source: TTask): TTask
+}
+
+export type PlannedReinforcementQueuePlan<TTask extends LessonQueueTask> = {
+  tasks: TTask[]
+  createdSourceTaskId?: string
 }
 
 export type LessonQueueSchedulingProblem<TTask extends LessonQueueTask> = {
@@ -44,6 +73,8 @@ export type LessonQueueSchedulingProblem<TTask extends LessonQueueTask> = {
   sourceTaskId: string
   recurrenceTask: TTask
   bridgeCandidates: readonly TTask[]
+  maximumTaskCount?: number
+  preferEarliestCompletion?: boolean
 }
 
 export const planWrongAnswer = <TTask extends LessonQueueTask>(
@@ -52,9 +83,7 @@ export const planWrongAnswer = <TTask extends LessonQueueTask>(
 ): WrongAnswerQueuePlan<TTask> => {
   validateLessonQueueSnapshot(snapshot)
 
-  const ordered = [...snapshot.tasks].sort(
-    (left, right) => left.orderIndex - right.orderIndex,
-  )
+  const ordered = [...snapshot.tasks].sort(compareTaskOrder)
   const source = ordered.find((task) => task.id === factories.sourceTaskId)
   const current = ordered.find((task) => task.status === 'pending')
 
@@ -71,8 +100,19 @@ export const planWrongAnswer = <TTask extends LessonQueueTask>(
     (task) => task.wordId === source.wordId,
   ).length
 
-  if (scheduledCount >= 3) {
+  if (scheduledCount >= LESSON_QUEUE_LIMITS.maxTasksPerWordPerLesson) {
     return { disposition: 'deferred_cap', tasks: completedTasks }
+  }
+
+  if (
+    factories.maximumTaskCount !== undefined &&
+    completedTasks.length >= factories.maximumTaskCount
+  ) {
+    return {
+      disposition: 'deferred_capacity',
+      capacityReason: 'lesson_task_budget',
+      tasks: completedTasks,
+    }
   }
 
   const lessonWordCount = new Set(
@@ -81,8 +121,14 @@ export const planWrongAnswer = <TTask extends LessonQueueTask>(
       .map((task) => task.wordId),
   ).size
 
-  if (lessonWordCount < 4) {
-    return { disposition: 'deferred_capacity', tasks: completedTasks }
+  if (lessonWordCount < LESSON_QUEUE_LIMITS.wrongGapMinimum + 1) {
+    return {
+      disposition: 'deferred_capacity',
+      ...(factories.maximumTaskCount === undefined
+        ? {}
+        : { capacityReason: 'short_pool' as const }),
+      tasks: completedTasks,
+    }
   }
 
   const recurrenceTask = withTaskMetadata(factories.createReflux(source), {
@@ -109,7 +155,8 @@ export const planWrongAnswer = <TTask extends LessonQueueTask>(
       !openWordIds.has(task.wordId) &&
       !snapshot.suspendedWordIds.has(task.wordId) &&
       !pendingWordIds.has(task.wordId) &&
-      (taskCountByWord.get(task.wordId) ?? 0) < 3,
+      (taskCountByWord.get(task.wordId) ?? 0) <
+        LESSON_QUEUE_LIMITS.maxTasksPerWordPerLesson,
   )
   const bridgeCandidates = bridgeSources.map((bridgeSource, index) =>
     withTaskMetadata(factories.createBridge(bridgeSource, index + 1), {
@@ -131,16 +178,137 @@ export const planWrongAnswer = <TTask extends LessonQueueTask>(
   }
 
   if (!isQueueFeasible(problem)) {
-    return { disposition: 'deferred_capacity', tasks: completedTasks }
+    return {
+      disposition: 'deferred_capacity',
+      ...(factories.maximumTaskCount === undefined
+        ? {}
+        : { capacityReason: 'interval_infeasible' as const }),
+      tasks: completedTasks,
+    }
   }
 
-  const tasks = buildSchedule(problem)
+  const boundedProblem = {
+    ...problem,
+    ...(factories.maximumTaskCount === undefined
+      ? {}
+      : { maximumTaskCount: factories.maximumTaskCount }),
+  }
+
+  if (!isQueueFeasible(boundedProblem)) {
+    return {
+      disposition: 'deferred_capacity',
+      capacityReason: 'lesson_task_budget',
+      tasks: completedTasks,
+    }
+  }
+
+  const tasks = buildSchedule(boundedProblem)
 
   if (!tasks) {
     throw new Error('Queue invariant violation: feasible schedule was not built')
   }
 
   return { disposition: 'scheduled', tasks }
+}
+
+export const planPlannedReinforcement = <TTask extends LessonQueueTask>(
+  snapshot: LessonQueueSnapshotInput<TTask>,
+  factories: PlannedReinforcementFactories<TTask>,
+): PlannedReinforcementQueuePlan<TTask> => {
+  validateLessonQueueSnapshot(snapshot)
+
+  if (snapshot.tasks.length >= factories.maximumTaskCount) {
+    return { tasks: [...snapshot.tasks].sort(compareTaskOrder) }
+  }
+
+  const ordered = [...snapshot.tasks].sort(compareTaskOrder)
+  const tasksById = new Map(ordered.map((task) => [task.id, task]))
+  const logsByTaskId = new Map(snapshot.reviewLogs.map((log) => [log.taskId, log]))
+  const newWordIds = new Set(factories.newWordIds)
+  const sourcesWithChildren = new Set(
+    ordered
+      .map((task) => task.reinforcementSourceTaskId)
+      .filter((sourceId): sourceId is string => sourceId !== undefined),
+  )
+  const passingSources = ordered
+    .filter((task) => {
+      const log = logsByTaskId.get(task.id)
+
+      return (
+        task.role === 'primary' &&
+        task.stage === 'S0' &&
+        task.status === 'completed' &&
+        newWordIds.has(task.wordId) &&
+        log !== undefined &&
+        log.score >= 2
+      )
+    })
+    .slice(0, LESSON_QUEUE_LIMITS.maxPlannedReinforcements)
+  const taskCountByWord = countTasksByWord(ordered)
+  const pendingWordIds = new Set(
+    ordered
+      .filter((task) => task.status === 'pending')
+      .map((task) => task.wordId),
+  )
+
+  for (const [sourceIndex, source] of passingSources.entries()) {
+    if (
+      sourcesWithChildren.has(source.id) ||
+      snapshot.suspendedWordIds.has(source.wordId) ||
+      pendingWordIds.has(source.wordId) ||
+      ordered.some(
+        (task) =>
+          task.orderIndex > source.orderIndex &&
+          task.wordId === source.wordId,
+      ) ||
+      (taskCountByWord.get(source.wordId) ?? 0) >=
+        LESSON_QUEUE_LIMITS.maxTasksPerWordPerLesson
+    ) {
+      continue
+    }
+
+    const targetGap = sourceIndex + LESSON_QUEUE_LIMITS.plannedGapMinimum
+    const completedGap = ordered.filter((task) =>
+      task.orderIndex > source.orderIndex &&
+      task.status === 'completed' &&
+      logsByTaskId.has(task.id),
+    ).length
+
+    if (
+      completedGap < targetGap ||
+      completedGap > LESSON_QUEUE_LIMITS.plannedGapMaximum
+    ) continue
+
+    const reinforcementTask = withTaskMetadata(
+      factories.createReinforcement(source),
+      {
+        wordId: source.wordId,
+        status: 'pending',
+        role: 'bridge',
+        required: true,
+        reinforcementSourceTaskId: source.id,
+      },
+    )
+    const problem: LessonQueueSchedulingProblem<TTask> = {
+      snapshot,
+      sourceTaskId: source.id,
+      recurrenceTask: reinforcementTask,
+      bridgeCandidates: [],
+      maximumTaskCount: factories.maximumTaskCount,
+      preferEarliestCompletion: true,
+    }
+    const tasks = buildSchedule(problem)
+
+    if (!tasks) continue
+
+    const persistedSource = tasksById.get(source.id)
+
+    if (!persistedSource) continue
+
+    return { tasks, createdSourceTaskId: persistedSource.id }
+  }
+
+  return { tasks: ordered }
 }
 
 export const isQueueFeasible = <TTask extends LessonQueueTask>(
@@ -157,6 +325,16 @@ export const isQueueFeasible = <TTask extends LessonQueueTask>(
     if (
       fillerCount < 0 ||
       fillerCount > model.existingFillers.length + model.bridgeCandidates.length
+    ) {
+      continue
+    }
+
+    const bridgeCount = Math.max(0, fillerCount - model.existingFillers.length)
+
+    if (
+      model.maximumTaskCount !== undefined &&
+      model.fixedPrefix.length + model.allPending.length + bridgeCount >
+        model.maximumTaskCount
     ) {
       continue
     }
@@ -206,10 +384,20 @@ export const buildSchedule = <TTask extends LessonQueueTask>(
     if (!assignment) continue
 
     const usedExistingCount = Math.min(fillerCount, model.existingFillers.length)
+    const bridgeCount = fillerCount - usedExistingCount
+
+    if (
+      model.maximumTaskCount !== undefined &&
+      model.fixedPrefix.length + model.allPending.length + bridgeCount >
+        model.maximumTaskCount
+    ) {
+      continue
+    }
+
     candidates.push({
       lastSlot,
       assignment,
-      bridgeCount: fillerCount - usedExistingCount,
+      bridgeCount,
       usedExistingCount,
     })
   }
@@ -217,8 +405,10 @@ export const buildSchedule = <TTask extends LessonQueueTask>(
   candidates.sort(
     (left, right) =>
       left.bridgeCount - right.bridgeCount ||
-      right.usedExistingCount - left.usedExistingCount ||
-      left.lastSlot - right.lastSlot,
+      (problem.preferEarliestCompletion === true
+        ? left.lastSlot - right.lastSlot
+        : right.usedExistingCount - left.usedExistingCount ||
+          left.lastSlot - right.lastSlot),
   )
   const selected = candidates[0]
 
@@ -296,42 +486,92 @@ export const validateLessonQueueSnapshot = <TTask extends LessonQueueTask>(
     }
   }
 
-  if (ordered.length > primaryWordIds.size * 3) {
+  if (
+    ordered.length >
+      primaryWordIds.size * LESSON_QUEUE_LIMITS.maxTasksPerWordPerLesson
+  ) {
     throw new Error('Lesson task count exceeds three times the frozen lesson word set')
   }
 
+  if (
+    snapshot.maximumTaskCount !== undefined &&
+    ordered.length > snapshot.maximumTaskCount
+  ) {
+    throw new Error('Lesson task count exceeds the configured maximum')
+  }
+
   const tasksById = new Map(ordered.map((task) => [task.id, task]))
-  const childTasksBySource = new Map<string, TTask[]>()
+  const refluxChildrenBySource = new Map<string, TTask[]>()
+  const reinforcementChildrenBySource = new Map<string, TTask[]>()
   const taskCountByWord = new Map<string, number>()
+
+  if (
+    ordered.filter((task) => task.reinforcementSourceTaskId !== undefined).length >
+      LESSON_QUEUE_LIMITS.maxPlannedReinforcements
+  ) {
+    throw new Error('Lesson has more than three planned reinforcements')
+  }
 
   for (const task of ordered) {
     const taskCount = (taskCountByWord.get(task.wordId) ?? 0) + 1
     taskCountByWord.set(task.wordId, taskCount)
 
-    if (taskCount > 3) {
+    if (taskCount > LESSON_QUEUE_LIMITS.maxTasksPerWordPerLesson) {
       throw new Error(`Word ${task.wordId} has more than three tasks`)
     }
 
-    if (task.role !== 'reflux') {
-      if (task.refluxSourceTaskId !== undefined) {
-        throw new Error(`Non-reflux task ${task.id} has a reflux source`)
-      }
-      continue
+    if (task.role !== 'reflux' && task.refluxSourceTaskId !== undefined) {
+      throw new Error(`Non-reflux task ${task.id} has a reflux source`)
     }
 
-    if (!task.refluxSourceTaskId) {
+    if (task.refluxSourceTaskId !== undefined) {
+      const source = tasksById.get(task.refluxSourceTaskId)
+
+      if (!source || source.wordId !== task.wordId) {
+        throw new Error(`Reflux task ${task.id} has an invalid source`)
+      }
+
+      if (task.reinforcementSourceTaskId !== undefined) {
+        throw new Error(`Task ${task.id} cannot have two queue sources`)
+      }
+
+      const children = refluxChildrenBySource.get(source.id) ?? []
+      children.push(task)
+      refluxChildrenBySource.set(source.id, children)
+    } else if (task.role === 'reflux') {
       throw new Error(`Reflux task ${task.id} has no source`)
     }
 
-    const source = tasksById.get(task.refluxSourceTaskId)
+    if (task.reinforcementSourceTaskId === undefined) continue
 
-    if (!source || source.wordId !== task.wordId) {
-      throw new Error(`Reflux task ${task.id} has an invalid source`)
+    const source = tasksById.get(task.reinforcementSourceTaskId)
+
+    if (
+      !source ||
+      source.wordId !== task.wordId ||
+      source.role !== 'primary' ||
+      source.status !== 'completed' ||
+      task.role !== 'bridge' ||
+      !task.required
+    ) {
+      throw new Error(`Planned reinforcement ${task.id} has an invalid source`)
     }
 
-    const children = childTasksBySource.get(source.id) ?? []
+    if (source.stage !== undefined && source.stage !== 'S0') {
+      throw new Error(`Planned reinforcement source ${source.id} must be S0`)
+    }
+
+    if (task.stage !== undefined && task.stage !== 'S1') {
+      throw new Error(`Planned reinforcement ${task.id} must be S1`)
+    }
+
+    const children = reinforcementChildrenBySource.get(source.id) ?? []
     children.push(task)
-    childTasksBySource.set(source.id, children)
+    reinforcementChildrenBySource.set(source.id, children)
+
+    if (children.length > 1) {
+      throw new Error(`Planned reinforcement source ${source.id} has two children`)
+    }
   }
 
   const reviewLogsByTaskId = new Map<string, LessonQueueReviewLog>()
@@ -362,6 +602,21 @@ export const validateLessonQueueSnapshot = <TTask extends LessonQueueTask>(
     }
 
     if (
+      reviewLog.queueCapacityReason !== undefined &&
+      reviewLog.queueDisposition !== 'deferred_capacity'
+    ) {
+      throw new Error(`Queue capacity reason for ${reviewLog.taskId} is inconsistent`)
+    }
+
+    if (
+      snapshot.requireCapacityReasons === true &&
+      reviewLog.queueDisposition === 'deferred_capacity' &&
+      reviewLog.queueCapacityReason === undefined
+    ) {
+      throw new Error(`Capacity defer ${reviewLog.taskId} requires a reason`)
+    }
+
+    if (
       reviewLog.queueDisposition === 'deferred_cap' ||
       reviewLog.queueDisposition === 'deferred_capacity'
     ) {
@@ -377,7 +632,7 @@ export const validateLessonQueueSnapshot = <TTask extends LessonQueueTask>(
 
     if (reviewLog.queueDisposition !== 'scheduled') continue
 
-    const children = childTasksBySource.get(source.id) ?? []
+    const children = refluxChildrenBySource.get(source.id) ?? []
 
     if (children.length !== 1) {
       throw new Error(`Scheduled source ${source.id} must have one reflux child`)
@@ -409,9 +664,48 @@ export const validateLessonQueueSnapshot = <TTask extends LessonQueueTask>(
           : task.status !== 'skipped',
       ).length
 
-    if (interveningCount < 3 || interveningCount > 6) {
+    if (
+      interveningCount < LESSON_QUEUE_LIMITS.wrongGapMinimum ||
+      interveningCount > LESSON_QUEUE_LIMITS.wrongGapMaximum
+    ) {
       throw new Error(
         `Reflux child ${child.id} must follow three to six completed tasks`,
+      )
+    }
+  }
+
+  for (const [sourceId, children] of reinforcementChildrenBySource) {
+    const source = tasksById.get(sourceId)
+    const child = children[0]
+    const sourceLog = reviewLogsByTaskId.get(sourceId)
+
+    if (!source || !child || sourceLog === undefined || sourceLog.score < 2) {
+      throw new Error(`Planned reinforcement source ${sourceId} must be passing`)
+    }
+
+    const firstLaterSameWord = ordered.find(
+      (task) => task.orderIndex > source.orderIndex && task.wordId === source.wordId,
+    )
+
+    if (firstLaterSameWord?.id !== child.id) {
+      throw new Error(
+        `Planned reinforcement source ${source.id} first later same-word task must be its child`,
+      )
+    }
+
+    const sourceIndex = ordered.indexOf(source)
+    const childIndex = ordered.indexOf(child)
+    const interveningCount = ordered
+      .slice(sourceIndex + 1, childIndex)
+      .filter((task) => task.status === 'completed' && reviewLogsByTaskId.has(task.id))
+      .length
+
+    if (
+      interveningCount < LESSON_QUEUE_LIMITS.plannedGapMinimum ||
+      interveningCount > LESSON_QUEUE_LIMITS.plannedGapMaximum
+    ) {
+      throw new Error(
+        `Planned reinforcement ${child.id} must follow two to four completed tasks`,
       )
     }
   }
@@ -447,14 +741,13 @@ type SchedulingModel<TTask extends LessonQueueTask> = {
   bridgeCandidates: TTask[]
   nextSlot: number
   maximumDeadline: number
+  maximumTaskCount?: number
 }
 
 const createSchedulingModel = <TTask extends LessonQueueTask>(
   problem: LessonQueueSchedulingProblem<TTask>,
 ): SchedulingModel<TTask> | undefined => {
-  const ordered = [...problem.snapshot.tasks].sort(
-    (left, right) => left.orderIndex - right.orderIndex,
-  )
+  const ordered = [...problem.snapshot.tasks].sort(compareTaskOrder)
   const firstPendingIndex = ordered.findIndex((task) => task.status === 'pending')
   const fixedPrefix = firstPendingIndex < 0 ? ordered : ordered.slice(0, firstPendingIndex)
   const persistedPending = firstPendingIndex < 0 ? [] : ordered.slice(firstPendingIndex)
@@ -483,14 +776,20 @@ const createSchedulingModel = <TTask extends LessonQueueTask>(
     sourceRankById.set(task.id, completedRank)
   }
 
-  const recurrenceTasks = allPending.filter((task) => task.role === 'reflux')
-  const seenSourceIds = new Set<string>()
+  const queueTasks = allPending.filter(
+    (task) => task.role === 'reflux' || task.reinforcementSourceTaskId !== undefined,
+  )
+  const seenJobKeys = new Set<string>()
   const jobs: Array<SchedulingJob<TTask>> = []
 
-  for (const task of recurrenceTasks) {
-    const sourceTaskId = task.refluxSourceTaskId
+  for (const task of queueTasks) {
+    const isPlanned = task.reinforcementSourceTaskId !== undefined
+    const sourceTaskId = isPlanned
+      ? task.reinforcementSourceTaskId
+      : task.refluxSourceTaskId
     const source = sourceTaskId ? tasksById.get(sourceTaskId) : undefined
     const sourceRank = sourceTaskId ? sourceRankById.get(sourceTaskId) : undefined
+    const jobKey = `${isPlanned ? 'planned' : 'wrong'}:${sourceTaskId ?? ''}`
 
     if (
       !sourceTaskId ||
@@ -498,13 +797,25 @@ const createSchedulingModel = <TTask extends LessonQueueTask>(
       source.status !== 'completed' ||
       source.wordId !== task.wordId ||
       sourceRank === undefined ||
-      seenSourceIds.has(sourceTaskId)
+      seenJobKeys.has(jobKey)
     ) {
       return undefined
     }
 
-    seenSourceIds.add(sourceTaskId)
-    jobs.push({ task, release: sourceRank + 4, deadline: sourceRank + 7 })
+    seenJobKeys.add(jobKey)
+    jobs.push({
+      task,
+      release:
+        sourceRank +
+        (isPlanned
+          ? LESSON_QUEUE_LIMITS.plannedGapMinimum + 1
+          : LESSON_QUEUE_LIMITS.wrongGapMinimum + 1),
+      deadline:
+        sourceRank +
+        (isPlanned
+          ? LESSON_QUEUE_LIMITS.plannedGapMaximum + 1
+          : LESSON_QUEUE_LIMITS.wrongGapMaximum + 1),
+    })
   }
 
   if (jobs.length === 0) return undefined
@@ -526,6 +837,9 @@ const createSchedulingModel = <TTask extends LessonQueueTask>(
     bridgeCandidates,
     nextSlot: completedRank + 1,
     maximumDeadline: Math.max(...jobs.map((job) => job.deadline)),
+    ...(problem.maximumTaskCount === undefined
+      ? {}
+      : { maximumTaskCount: problem.maximumTaskCount }),
   }
 }
 
@@ -657,5 +971,13 @@ const withTaskMetadata = <TTask extends LessonQueueTask>(
   metadata: Pick<
     LessonQueueTask,
     'wordId' | 'status' | 'role' | 'required'
-  > & { refluxSourceTaskId?: string },
+  > & {
+    refluxSourceTaskId?: string
+    reinforcementSourceTaskId?: string
+  },
 ): TTask => ({ ...task, ...metadata })
+
+const compareTaskOrder = (
+  left: Pick<LessonQueueTask, 'orderIndex' | 'id'>,
+  right: Pick<LessonQueueTask, 'orderIndex' | 'id'>,
+): number => left.orderIndex - right.orderIndex || left.id.localeCompare(right.id)

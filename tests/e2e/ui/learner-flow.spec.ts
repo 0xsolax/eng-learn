@@ -29,7 +29,7 @@ test('@learner [mocked route fixture] closes code → course → lesson → repo
   await completeAction.click()
   await expect(page).toHaveURL(/\/app\/lesson\/session-7\/report$/u)
   await expect(page.getByRole('heading', { level: 1, name: '第 7 课完成' })).toBeVisible()
-  await expect(page.getByText('本课正确率：100%')).toBeVisible()
+  await expect(page.getByText('核心任务正确率：100%')).toBeVisible()
   await expect(page.getByText('apple')).toBeVisible()
 
   const overflow = await page.evaluate(() => ({
@@ -71,7 +71,7 @@ test('@learner [mocked route fixture] finishes fifteen capped wrong answers acro
   await page.getByRole('button', { name: '完成本课' }).click()
   await expect(page).toHaveURL(/\/app\/lesson\/session-cap\/report$/u)
   await expect(page.getByText('已完成 15 / 15 道任务。')).toBeVisible()
-  await expect(page.getByText('本课正确率：0%')).toBeVisible()
+  await expect(page.getByText('核心任务正确率：0%')).toBeVisible()
   const practiceSection = page
     .getByRole('heading', { level: 2, name: '还要再练' })
     .locator('..')

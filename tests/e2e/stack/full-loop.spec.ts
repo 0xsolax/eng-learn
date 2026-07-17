@@ -734,7 +734,7 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   await page.getByRole('button', { name: '完成本课' }).click()
   await expect(page).toHaveURL(/\/app\/lesson\/[^/]+\/report$/u)
   await expect(page.getByText('已完成 15 / 15 道任务。')).toBeVisible()
-  await expect(page.getByText('本课正确率：0%')).toBeVisible()
+  await expect(page.getByText('核心任务正确率：0%')).toBeVisible()
   const practiceWords = await page
     .getByRole('heading', { level: 2, name: '还要再练' })
     .locator('..')

@@ -197,16 +197,14 @@ describe('worker api workflow', () => {
       feedback: { taskType: 'recognize_meaning', response: 'known' },
     })
 
-    for (const task of lesson.tasks.slice(1, 4)) {
-      await readSuccess(
-        await app.fetch(
-          postJson(`/api/app/lessons/${lesson.session.id}/tasks/${task.id}/answer`, {
-            taskType: 'recognize_meaning',
-            response: 'known',
-          }, { origin: 'https://eng-learn.test', cookie }),
-        ),
-      )
-    }
+    const completableLesson = await answerUntilLessonIsCompletable({
+      app,
+      cookie,
+      sessionId: lesson.session.id,
+    })
+
+    expect(completableLesson.tasks).toHaveLength(7)
+    expect(completableLesson.tasks.filter((task) => task.status === 'completed')).toHaveLength(6)
 
     const completed = await readSuccess<CompletedLesson>(
       await app.fetch(
@@ -220,7 +218,8 @@ describe('worker api workflow', () => {
     expect(completed.course.currentLessonNo).toBe(2)
     expect(completed.session).toMatchObject({
       status: 'completed',
-      completedTaskCount: 4,
+      taskCount: 7,
+      completedTaskCount: 6,
     })
   })
 
@@ -265,4 +264,70 @@ const getRequiredTask = <T>(tasks: T[], index: number): T => {
   }
 
   return task
+}
+
+const answerUntilLessonIsCompletable = async (input: {
+  app: ReturnType<typeof createTestWorkerApp>
+  cookie: string
+  sessionId: string
+}): Promise<StartedLesson> => {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const lesson = await readSuccess<StartedLesson>(
+      await input.app.fetch(
+        new Request(`https://eng-learn.test/api/app/lessons/${input.sessionId}`, {
+          headers: { cookie: input.cookie },
+        }),
+      ),
+    )
+    const primaryTasks = lesson.tasks.filter((task) => task.role === 'primary')
+    const completedPrimaryCount = primaryTasks.filter(
+      (task) => task.status === 'completed',
+    ).length
+    const pendingRequiredTasks = lesson.tasks.filter(
+      (task) => task.required && task.status === 'pending',
+    )
+
+    if (
+      completedPrimaryCount * 5 >= primaryTasks.length * 4 &&
+      pendingRequiredTasks.length === 0
+    ) {
+      return lesson
+    }
+
+    const nextTask = lesson.tasks.find((task) => task.status === 'pending')
+
+    if (!nextTask) throw new Error('Expected a pending lesson task')
+
+    await readSuccess(
+      await input.app.fetch(
+        postJson(
+          `/api/app/lessons/${input.sessionId}/tasks/${nextTask.id}/answer`,
+          getCorrectSubmission(nextTask),
+          { origin: 'https://eng-learn.test', cookie: input.cookie },
+        ),
+      ),
+    )
+  }
+
+  throw new Error('Lesson did not become completable within 20 answers')
+}
+
+const getCorrectSubmission = (
+  task: StartedLesson['tasks'][number],
+): { taskType: 'recognize_meaning'; response: 'known' } | {
+  taskType: 'multiple_choice'
+  answer: string
+} => {
+  if (task.taskType === 'recognize_meaning') {
+    return { taskType: 'recognize_meaning', response: 'known' }
+  }
+
+  if (task.taskType !== 'multiple_choice') {
+    throw new Error(`Unexpected lesson-one task type: ${task.taskType}`)
+  }
+
+  return {
+    taskType: 'multiple_choice',
+    answer: task.prompt.meaning.replace(/^meaning-/u, 'word-'),
+  }
 }

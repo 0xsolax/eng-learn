@@ -16,9 +16,30 @@ export type RemoteD1Migration = {
   name: string
 }
 
+export type ReleaseEntry = 'normal' | 'flow-compat' | 'flow-freeze'
+
+export const RELEASE_ENTRY_WRITE_MODES: Readonly<Record<ReleaseEntry, Readonly<{
+  queue: 'v2'
+  flow: 'rolling_v2' | 'legacy_v1' | 'disabled'
+}>>>
+
 export function parseWranglerJsonc(contents: string): unknown
 
 export function assertProductionLessonQueueWriteMode(config: unknown): void
+
+export function assertProductionLessonWriteModes(
+  config: unknown,
+  entry: ReleaseEntry,
+): void
+
+export function assertRemoteMigrationGateConfiguration(
+  config: unknown,
+  entry?: ReleaseEntry,
+): void
+
+export function assertLessonFlowMigrationPresent(
+  localMigrationNames: string[],
+): void
 
 export function resolveRemoteD1MigrationTarget(
   config: unknown,
@@ -40,7 +61,7 @@ export function createRemoteD1ReadCommands(
   configPath: string,
 ): string[][]
 
-export function checkRemoteD1Migrations(): Promise<{
+export function checkRemoteD1Migrations(entry?: ReleaseEntry): Promise<{
   databaseName: string
   databaseId: string
   migrationCount: number

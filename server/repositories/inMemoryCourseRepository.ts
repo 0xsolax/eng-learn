@@ -28,6 +28,11 @@ type StoredLearnerRecord = LearnerRecord & {
   credentialVersion: number
 }
 
+const withLegacyFlowPolicyDefault = (
+  value: LessonSessionRecord['flowPolicyVersion'] | undefined,
+): LessonSessionRecord['flowPolicyVersion'] =>
+  value ?? 'v1_due_then_new_unbounded'
+
 export type InMemoryLearnerCredentialPort = {
   getLearnerSessionEligibility(input: {
     learnerId: string
@@ -97,6 +102,9 @@ export const createInMemoryCourseRepository = (
     ...(reviewLog.queueDisposition === undefined
       ? {}
       : { queueDisposition: reviewLog.queueDisposition }),
+    ...(reviewLog.queueCapacityReason === undefined
+      ? {}
+      : { queueCapacityReason: reviewLog.queueCapacityReason }),
   })
 
   const wordStateKey = (courseId: string, wordId: string) => `${courseId}:${wordId}`
@@ -177,6 +185,9 @@ export const createInMemoryCourseRepository = (
       ...(task.refluxSourceTaskId === undefined
         ? {}
         : { refluxSourceTaskId: task.refluxSourceTaskId }),
+      ...(task.reinforcementSourceTaskId === undefined
+        ? {}
+        : { reinforcementSourceTaskId: task.reinforcementSourceTaskId }),
       ...(task.taskType === 'sentence_output' &&
       task.draftAnswer !== undefined &&
       task.referenceRevealedAt !== undefined
@@ -411,13 +422,18 @@ export const createInMemoryCourseRepository = (
         return toStartedLesson(existing)
       }
 
-      sessions.set(input.session.id, input.session)
+      const session = {
+        ...input.session,
+        flowPolicyVersion: withLegacyFlowPolicyDefault(input.session.flowPolicyVersion),
+      }
+
+      sessions.set(session.id, session)
       tasksBySession.set(input.session.id, [...input.tasks])
       for (const state of input.wordStates) {
         wordStates.set(wordStateKey(state.courseId, state.wordId), state)
       }
 
-      return toStartedLesson(input.session)
+      return toStartedLesson(session)
     },
 
     async getLessonSessionForCourse(input) {
@@ -607,6 +623,10 @@ export const createInMemoryCourseRepository = (
 
       const sessionPolicy = session.queuePolicyVersion
       const expectedPolicy = input.expectedQueuePolicyVersion
+      const sessionFlowPolicy = session.flowPolicyVersion
+      const expectedFlowPolicy = withLegacyFlowPolicyDefault(
+        input.expectedFlowPolicyVersion,
+      )
       const isWrongAnswer = !isPassingReviewScore(input.reviewLog.score)
       const hasWrongDisposition =
         input.reviewLog.queueDisposition === 'scheduled' ||
@@ -618,8 +638,19 @@ export const createInMemoryCourseRepository = (
           : isWrongAnswer
             ? hasWrongDisposition
             : input.reviewLog.queueDisposition === undefined
+      const capacityReasonMatches =
+        sessionFlowPolicy === 'v2_rolling_reinforcement_budget24'
+          ? input.reviewLog.queueDisposition === 'deferred_capacity'
+            ? input.reviewLog.queueCapacityReason !== undefined
+            : input.reviewLog.queueCapacityReason === undefined
+          : input.reviewLog.queueCapacityReason === undefined
 
-      if (sessionPolicy !== expectedPolicy || !dispositionMatches) {
+      if (
+        sessionPolicy !== expectedPolicy ||
+        sessionFlowPolicy !== expectedFlowPolicy ||
+        !dispositionMatches ||
+        !capacityReasonMatches
+      ) {
         throw new Error('review_log_queue_policy_mismatch')
       }
 

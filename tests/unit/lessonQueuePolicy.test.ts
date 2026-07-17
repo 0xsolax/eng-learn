@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildSchedule,
   isQueueFeasible,
+  planPlannedReinforcement,
   planWrongAnswer,
   validateLessonQueueSnapshot,
   type LessonQueueFactories,
@@ -13,6 +14,226 @@ import {
 describe('lesson queue policy v2', () => {
   it('accepts an untouched five-word primary queue', () => {
     expect(() => { validateLessonQueueSnapshot(createSnapshot(5)); }).not.toThrow()
+  })
+
+  it('inserts the first planned reinforcement after two completed tasks without fillers', () => {
+    const initial = createSnapshot(5)
+    const tasks = initial.tasks.map((task, index) =>
+      index < 3 ? { ...task, status: 'completed' as const } : task,
+    )
+    const snapshot: LessonQueueSnapshotInput = {
+      ...initial,
+      tasks,
+      reviewLogs: tasks.slice(0, 3).map((task) => ({
+        taskId: task.id,
+        wordId: task.wordId,
+        score: 2 as const,
+      })),
+    }
+
+    const plan = planPlannedReinforcement(snapshot, {
+      newWordIds: initial.tasks.map((task) => task.wordId),
+      maximumTaskCount: 18,
+      createReinforcement: (source) => ({
+        ...source,
+        id: `reinforcement-for-${source.id}`,
+        stage: 'S1',
+        orderIndex: 0,
+        status: 'pending',
+        role: 'bridge',
+        required: true,
+        reinforcementSourceTaskId: source.id,
+      }),
+    })
+
+    expect(plan.createdSourceTaskId).toBe('primary-1')
+    expect(plan.tasks.map((task) => task.id)).toEqual([
+      'primary-1',
+      'primary-2',
+      'primary-3',
+      'reinforcement-for-primary-1',
+      'primary-4',
+      'primary-5',
+    ])
+    expect(plan.tasks.filter((task) => task.role === 'bridge')).toHaveLength(1)
+    expect(() => {
+      validateLessonQueueSnapshot({ ...snapshot, tasks: plan.tasks })
+    }).not.toThrow()
+  })
+
+  it('keeps a higher-priority wrong recurrence feasible when adding planned reinforcement', () => {
+    const initial = createSnapshot(6)
+    initial.tasks = initial.tasks.map((task, index) => ({
+      ...task,
+      status: index < 2 ? 'completed' as const : 'pending' as const,
+    }))
+    initial.reviewLogs = initial.tasks.slice(0, 2).map((task) => ({
+      taskId: task.id,
+      wordId: task.wordId,
+      score: 2 as const,
+    }))
+    const wrongPlan = planWrongAnswer(initial, {
+      ...createFactories('primary-3'),
+      maximumTaskCount: 24,
+    })
+    const afterWrong: LessonQueueSnapshotInput = {
+      suspendedWordIds: new Set(),
+      tasks: wrongPlan.tasks,
+      reviewLogs: [
+        ...initial.reviewLogs,
+        {
+          taskId: 'primary-3',
+          wordId: 'word-3',
+          score: 0,
+          queueDisposition: wrongPlan.disposition,
+          ...(wrongPlan.capacityReason === undefined
+            ? {}
+            : { queueCapacityReason: wrongPlan.capacityReason }),
+        },
+      ],
+      maximumTaskCount: 24,
+      requireCapacityReasons: true,
+    }
+    const combined = planPlannedReinforcement(afterWrong, {
+      newWordIds: initial.tasks.map((task) => task.wordId),
+      maximumTaskCount: 18,
+      createReinforcement: (source) => ({
+        ...source,
+        id: `reinforcement-for-${source.id}`,
+        stage: 'S1',
+        orderIndex: 0,
+        status: 'pending',
+        role: 'bridge',
+        required: true,
+        reinforcementSourceTaskId: source.id,
+      }),
+    })
+    const planned = combined.tasks.find(
+      (task) => task.reinforcementSourceTaskId === 'primary-1',
+    )
+    const reflux = combined.tasks.find(
+      (task) => task.refluxSourceTaskId === 'primary-3',
+    )
+
+    expect(wrongPlan.disposition).toBe('scheduled')
+    expect(planned).toBeTruthy()
+    expect(reflux).toBeTruthy()
+    expect((planned?.orderIndex ?? 0) - 1 - 1).toBeGreaterThanOrEqual(2)
+    expect((planned?.orderIndex ?? 0) - 1 - 1).toBeLessThanOrEqual(4)
+    expect((reflux?.orderIndex ?? 0) - 3 - 1).toBeGreaterThanOrEqual(3)
+    expect((reflux?.orderIndex ?? 0) - 3 - 1).toBeLessThanOrEqual(6)
+    expect(() => {
+      validateLessonQueueSnapshot({
+        ...afterWrong,
+        tasks: combined.tasks,
+      })
+    }).not.toThrow()
+  })
+
+  it('omits optional reinforcement when a wrong-answer filler already occupies its word', () => {
+    const initial = createSnapshot(5)
+    initial.tasks = initial.tasks.map((task, index) => ({
+      ...task,
+      status: index < 2 ? 'completed' as const : 'pending' as const,
+    }))
+    initial.reviewLogs = initial.tasks.slice(0, 2).map((task) => ({
+      taskId: task.id,
+      wordId: task.wordId,
+      score: 2 as const,
+    }))
+    const wrongPlan = planWrongAnswer(initial, {
+      ...createFactories('primary-3'),
+      maximumTaskCount: 24,
+    })
+    const snapshot: LessonQueueSnapshotInput = {
+      tasks: wrongPlan.tasks,
+      reviewLogs: [
+        ...initial.reviewLogs,
+        {
+          taskId: 'primary-3',
+          wordId: 'word-3',
+          score: 0,
+          queueDisposition: wrongPlan.disposition,
+          ...(wrongPlan.capacityReason === undefined
+            ? {}
+            : { queueCapacityReason: wrongPlan.capacityReason }),
+        },
+      ],
+      suspendedWordIds: new Set(),
+      maximumTaskCount: 24,
+      requireCapacityReasons: true,
+    }
+    const planned = planPlannedReinforcement(snapshot, {
+      newWordIds: initial.tasks.map((task) => task.wordId),
+      maximumTaskCount: 18,
+      createReinforcement: (source) => ({
+        ...source,
+        id: `reinforcement-for-${source.id}`,
+        stage: 'S1',
+        orderIndex: 0,
+        status: 'pending',
+        role: 'bridge',
+        required: true,
+        reinforcementSourceTaskId: source.id,
+      }),
+    })
+
+    expect(planned.createdSourceTaskId).toBeUndefined()
+    expect(() => {
+      validateLessonQueueSnapshot({
+        ...snapshot,
+        tasks: planned.tasks,
+      })
+    }).not.toThrow()
+  })
+
+  it('owns new-word S0 source eligibility inside the queue policy', () => {
+    const initial = createSnapshot(5)
+    const tasks = initial.tasks.map((task, index) => ({
+      ...task,
+      status: index < 3 ? 'completed' as const : 'pending' as const,
+    }))
+    const snapshot: LessonQueueSnapshotInput = {
+      ...initial,
+      tasks,
+      reviewLogs: tasks.slice(0, 3).map((task) => ({
+        taskId: task.id,
+        wordId: task.wordId,
+        score: 2 as const,
+      })),
+    }
+    const createReinforcement = (source: LessonQueueTask): LessonQueueTask => ({
+      ...source,
+      id: `reinforcement-for-${source.id}`,
+      stage: 'S1',
+      orderIndex: 0,
+      status: 'pending',
+      role: 'bridge',
+      required: true,
+      reinforcementSourceTaskId: source.id,
+    })
+
+    expect(planPlannedReinforcement(snapshot, {
+      newWordIds: [],
+      maximumTaskCount: 18,
+      createReinforcement,
+    }).createdSourceTaskId).toBeUndefined()
+
+    expect(planPlannedReinforcement(snapshot, {
+      newWordIds: ['word-1'],
+      maximumTaskCount: 18,
+      createReinforcement,
+    }).createdSourceTaskId).toBe('primary-1')
+
+    const nonS0Tasks = tasks.map((task) =>
+      task.id === 'primary-1' ? { ...task, stage: 'S1' as const } : task,
+    )
+
+    expect(planPlannedReinforcement({ ...snapshot, tasks: nonS0Tasks }, {
+      newWordIds: ['word-1'],
+      maximumTaskCount: 18,
+      createReinforcement,
+    }).createdSourceTaskId).toBeUndefined()
   })
 
   it.each([
@@ -78,6 +299,154 @@ describe('lesson queue policy v2', () => {
     expect(plan).toMatchObject({ disposition: 'deferred_capacity' })
     expect(plan.tasks).toHaveLength(1)
     expect(plan.tasks[0]).toMatchObject({ id: 'primary-1', status: 'completed' })
+  })
+
+  it('records short-pool, interval, and hard-budget capacity reasons distinctly', () => {
+    expect(
+      planWrongAnswer(createSnapshot(1), {
+        ...createFactories('primary-1'),
+        maximumTaskCount: 24,
+      }),
+    ).toMatchObject({
+      disposition: 'deferred_capacity',
+      capacityReason: 'short_pool',
+    })
+
+    const intervalSnapshot = createSnapshot(4)
+    intervalSnapshot.tasks = intervalSnapshot.tasks.map((task, index) => ({
+      ...task,
+      status: index < 3 ? 'completed' as const : 'pending' as const,
+    }))
+    intervalSnapshot.reviewLogs = intervalSnapshot.tasks.slice(0, 3).map((task) => ({
+      taskId: task.id,
+      wordId: task.wordId,
+      score: 2 as const,
+    }))
+    intervalSnapshot.suspendedWordIds = new Set(['word-1', 'word-2', 'word-3'])
+
+    expect(
+      planWrongAnswer(intervalSnapshot, {
+        ...createFactories('primary-4'),
+        maximumTaskCount: 24,
+      }),
+    ).toMatchObject({
+      disposition: 'deferred_capacity',
+      capacityReason: 'interval_infeasible',
+    })
+
+    const budgetPlan = planWrongAnswer(createSnapshot(24), {
+        ...createFactories('primary-1'),
+        maximumTaskCount: 24,
+      })
+
+    expect(budgetPlan).toMatchObject({
+      disposition: 'deferred_capacity',
+      capacityReason: 'lesson_task_budget',
+    })
+    expect(budgetPlan.tasks).toHaveLength(24)
+  })
+
+  it('prioritizes the hard lesson budget when a full queue is also interval-infeasible', () => {
+    const snapshot = createSnapshot(24)
+    snapshot.tasks = snapshot.tasks.map((task, index) => ({
+      ...task,
+      status: index < 23 ? 'completed' as const : 'pending' as const,
+    }))
+    snapshot.reviewLogs = snapshot.tasks.slice(0, 23).map((task) => ({
+      taskId: task.id,
+      wordId: task.wordId,
+      score: 2 as const,
+    }))
+    snapshot.suspendedWordIds = new Set(
+      snapshot.tasks.slice(0, 23).map((task) => task.wordId),
+    )
+
+    expect(
+      planWrongAnswer(snapshot, {
+        ...createFactories('primary-24'),
+        maximumTaskCount: 24,
+      }),
+    ).toMatchObject({
+      disposition: 'deferred_capacity',
+      capacityReason: 'lesson_task_budget',
+    })
+  })
+
+  it('rejects a snapshot with more than three planned reinforcements', () => {
+    const task = (
+      id: string,
+      wordId: string,
+      role: 'primary' | 'bridge',
+      reinforcementSourceTaskId?: string,
+    ) => ({
+      id,
+      wordId,
+      orderIndex: 0,
+      status: 'completed' as const,
+      role,
+      required: role === 'bridge',
+      ...(reinforcementSourceTaskId === undefined
+        ? {}
+        : { reinforcementSourceTaskId }),
+    })
+    const tasks = [
+      task('a0', 'a', 'primary'),
+      task('b0', 'b', 'primary'),
+      task('c0', 'c', 'primary'),
+      task('a1', 'a', 'bridge', 'a0'),
+      task('d0', 'd', 'primary'),
+      task('b1', 'b', 'bridge', 'b0'),
+      task('e0', 'e', 'primary'),
+      task('c1', 'c', 'bridge', 'c0'),
+      task('f0', 'f', 'primary'),
+      task('d1', 'd', 'bridge', 'd0'),
+    ].map((item, index) => ({ ...item, orderIndex: index + 1 }))
+
+    expect(() => {
+      validateLessonQueueSnapshot({
+        tasks,
+        reviewLogs: tasks.map((item) => ({
+          taskId: item.id,
+          wordId: item.wordId,
+          score: 2,
+        })),
+        suspendedWordIds: new Set(),
+      })
+    }).toThrow('more than three planned reinforcements')
+  })
+
+  it('requires a capacity reason only for rolling capacity defers', () => {
+    const snapshot = createSnapshot(1)
+    const task = snapshot.tasks[0]
+
+    if (!task) throw new Error('Expected a task')
+    task.status = 'completed'
+
+    expect(() => {
+      validateLessonQueueSnapshot({
+        ...snapshot,
+        requireCapacityReasons: true,
+        reviewLogs: [{
+          taskId: task.id,
+          wordId: task.wordId,
+          score: 0,
+          queueDisposition: 'deferred_capacity',
+        }],
+      })
+    }).toThrow('requires a reason')
+    expect(() => {
+      validateLessonQueueSnapshot({
+        ...snapshot,
+        requireCapacityReasons: true,
+        reviewLogs: [{
+          taskId: task.id,
+          wordId: task.wordId,
+          score: 0,
+          queueDisposition: 'deferred_capacity',
+          queueCapacityReason: 'short_pool',
+        }],
+      })
+    }).not.toThrow()
   })
 
   it('closes the word at three scheduled rows without creating a fourth', () => {
@@ -402,6 +771,7 @@ const createSnapshot = (wordCount: number): LessonQueueSnapshotInput => ({
   tasks: Array.from({ length: wordCount }, (_, index) => ({
     id: `primary-${String(index + 1)}`,
     wordId: `word-${String(index + 1)}`,
+    stage: 'S0',
     orderIndex: index + 1,
     status: 'pending',
     role: 'primary',

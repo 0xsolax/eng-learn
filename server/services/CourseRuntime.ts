@@ -11,6 +11,7 @@ import {
 import type {
   CompletedLesson,
   CreatedCourse,
+  QueueCapacityReason,
   StartedLesson,
   SubmittedTaskAnswer,
 } from '../../shared/domain/course'
@@ -31,9 +32,15 @@ import { requireLearnerSafeExerciseItemContent } from '../errors/PersistedConten
 import { DomainError } from '../errors/DomainError'
 import { applyAnswerScore, deferToNextLesson } from './StageEngine'
 import {
+  planPlannedReinforcement,
   planWrongAnswer,
   validateLessonQueueSnapshot,
 } from './LessonQueuePolicy'
+import {
+  LESSON_FLOW_BUDGETS,
+  planRollingLessonFlow,
+} from './LessonFlowPolicy'
+import { selectApprovedExerciseItem } from './ApprovedExerciseSelector'
 import {
   getLessonCompletionDecision,
   getNextPendingTask,
@@ -85,12 +92,20 @@ export type CreateCourseRuntimeInput = {
   operationLedger?: AdminOperationLedgerReader
   selectRefluxGap?: () => number
   queueWriteMode: LessonQueueWriteMode
+  flowWriteMode: LessonFlowWriteMode
 }
 
 export type LessonQueueWriteMode = 'legacy_v1' | 'v2' | 'disabled'
 
+export type LessonFlowWriteMode = 'legacy_v1' | 'rolling_v2' | 'disabled'
+
 export const parseLessonQueueWriteMode = (value: string | undefined): LessonQueueWriteMode =>
   value === 'legacy_v1' || value === 'v2' || value === 'disabled' ? value : 'disabled'
+
+export const parseLessonFlowWriteMode = (value: string | undefined): LessonFlowWriteMode =>
+  value === 'legacy_v1' || value === 'rolling_v2' || value === 'disabled'
+    ? value
+    : 'disabled'
 
 export const createCourseRuntime = ({
   contentRepository,
@@ -99,6 +114,7 @@ export const createCourseRuntime = ({
   operationLedger,
   selectRefluxGap = selectDefaultRefluxGap,
   queueWriteMode,
+  flowWriteMode,
 }: CreateCourseRuntimeInput): CourseRuntime => {
   const createCourse = async (input: {
     learnerName: string
@@ -234,15 +250,35 @@ export const createCourseRuntime = ({
       )
 
       if (existing) {
+        const persistedSession = await courseRepository.getLessonSession(
+          existing.session.id,
+        )
+
+        if (!persistedSession) {
+          throw new DomainError('conflict', 'Started lesson session is unavailable')
+        }
+
+        requireValidLessonPolicyCombination(persistedSession)
         return existing
       }
 
       const queuePolicyVersion = policyVersionForWriteMode(queueWriteMode)
+      const flowPolicyVersion = flowPolicyVersionForWriteMode(flowWriteMode)
 
-      if (!queuePolicyVersion) {
+      if (!queuePolicyVersion || !flowPolicyVersion) {
         throw new DomainError(
           'course_unavailable',
-          'New lesson sessions are disabled for the current queue policy',
+          'New lesson sessions are disabled for the current lesson policy',
+        )
+      }
+
+      if (
+        flowPolicyVersion === 'v2_rolling_reinforcement_budget24' &&
+        queuePolicyVersion !== 'v2_3_6_cap3'
+      ) {
+        throw new DomainError(
+          'course_unavailable',
+          'Rolling lesson flow requires the v2 queue policy',
         )
       }
 
@@ -253,18 +289,55 @@ export const createCourseRuntime = ({
       }
 
       const existingStates = await courseRepository.getWordStates(course.id)
-      const dueStates = existingStates.filter(
+      const legacyDueStates = existingStates.filter(
         (state) =>
           state.status !== 'suspended' && state.nextDueLessonNo <= course.currentLessonNo,
       )
       const activatedGroupIds = new Set(existingStates.map((state) => state.groupId))
       const nextGroup = sourceVersion.groups.find((group) => !activatedGroupIds.has(group.id))
+      const nextGroupWords = nextGroup
+        ? sourceVersion.words.filter(
+            (word) =>
+              word.orderIndex >= nextGroup.startOrderIndex &&
+              word.orderIndex <= nextGroup.endOrderIndex,
+          )
+        : []
+      const sourceOrderByWordId = new Map(
+        sourceVersion.words.map((word) => [word.id, word.orderIndex]),
+      )
+      const rollingPlan =
+        flowPolicyVersion === 'v2_rolling_reinforcement_budget24'
+          ? planRollingLessonFlow({
+              currentLessonNo: course.currentLessonNo,
+              wordStates: existingStates.map((state) => {
+                const sourceOrderIndex = sourceOrderByWordId.get(state.wordId)
+
+                if (sourceOrderIndex === undefined) {
+                  throw new DomainError(
+                    'course_unavailable',
+                    `Word ${state.wordId} is missing from the course source`,
+                  )
+                }
+
+                return { ...state, sourceOrderIndex }
+              }),
+              nextGroupWords: nextGroupWords.map((word) => ({
+                wordId: word.id,
+                sourceOrderIndex: word.orderIndex,
+                sourceWord: word,
+              })),
+            })
+          : undefined
+      const selectedDueStates = rollingPlan?.selectedDue ?? legacyDueStates
+      const selectedNewWords = rollingPlan
+        ? rollingPlan.selectedNewWords.map((candidate) => candidate.sourceWord)
+        : nextGroupWords
 
       if (existingStates.length === 0 && !nextGroup) {
         throw new DomainError('course_unavailable', 'Course source version has no word groups')
       }
 
-      if (dueStates.length === 0 && !nextGroup) {
+      if (selectedDueStates.length === 0 && selectedNewWords.length === 0) {
         const nextDueLessonNo = existingStates.reduce<number | undefined>(
           (minimum, state) =>
             state.status === 'suspended' || state.nextDueLessonNo <= course.currentLessonNo
@@ -295,15 +368,8 @@ export const createCourseRuntime = ({
 
       const createdAt = now().toISOString()
       const sessionId = crypto.randomUUID()
-      const nextGroupWords = nextGroup
-        ? sourceVersion.words.filter(
-            (word) =>
-              word.orderIndex >= nextGroup.startOrderIndex &&
-              word.orderIndex <= nextGroup.endOrderIndex,
-          )
-        : []
       const initialStates = nextGroup
-        ? nextGroupWords.map<UserWordStateRecord>((word) =>
+        ? selectedNewWords.map<UserWordStateRecord>((word) =>
             createInitialWordState({
               courseId: course.id,
               wordId: word.id,
@@ -313,7 +379,34 @@ export const createCourseRuntime = ({
             }),
           )
         : []
-      const dueTasks = dueStates.map((state, index) =>
+      const initialStateByWordId = new Map(
+        initialStates.map((state) => [state.wordId, state]),
+      )
+
+      if (flowPolicyVersion === 'v2_rolling_reinforcement_budget24') {
+        for (const state of initialStates) {
+          requireApprovedExerciseContent(sourceVersion, state.wordId, 'S0')
+          requireApprovedExerciseContent(sourceVersion, state.wordId, 'S1')
+        }
+      }
+
+      const primaryStates = rollingPlan
+        ? rollingPlan.primarySequence.map((selection) => {
+            if (selection.kind === 'due') return selection.word
+
+            const state = initialStateByWordId.get(selection.word.wordId)
+
+            if (!state) {
+              throw new DomainError(
+                'course_unavailable',
+                `Initial word state ${selection.word.wordId} is missing`,
+              )
+            }
+
+            return state
+          })
+        : [...selectedDueStates, ...initialStates]
+      const tasks = primaryStates.map((state, index) =>
         createLessonTask({
           sourceVersion,
           state,
@@ -322,16 +415,6 @@ export const createCourseRuntime = ({
           createdAt,
         }),
       )
-      const newTasks = initialStates.map((state, index) =>
-        createLessonTask({
-          sourceVersion,
-          state,
-          sessionId,
-          orderIndex: dueTasks.length + index + 1,
-          createdAt,
-        }),
-      )
-      const tasks = [...dueTasks, ...newTasks]
 
       if (tasks.length === 0) {
         throw new DomainError('course_unavailable', 'Lesson has no schedulable tasks')
@@ -348,6 +431,7 @@ export const createCourseRuntime = ({
           correctCount: 0,
           wrongCount: 0,
           queuePolicyVersion,
+          flowPolicyVersion,
           startedAt: createdAt,
         },
         tasks,
@@ -358,6 +442,7 @@ export const createCourseRuntime = ({
 
   const getLesson = async (sessionId: string): Promise<StartedLesson> => {
     const session = await requireLessonSession(courseRepository, sessionId)
+    requireValidLessonPolicyCombination(session)
     await requireActiveCourseById(courseRepository, session.courseId)
     const tasks = await courseRepository.getLessonTasks(session.id)
 
@@ -435,6 +520,15 @@ export const createCourseRuntime = ({
     }
 
     const usesV2QueuePolicy = session.queuePolicyVersion === 'v2_3_6_cap3'
+    const usesRollingFlow =
+      session.flowPolicyVersion === 'v2_rolling_reinforcement_budget24'
+
+    if (usesRollingFlow && !usesV2QueuePolicy) {
+      throw new DomainError(
+        'queue_invariant_violation',
+        'Rolling lesson flow requires the v2 queue policy',
+      )
+    }
     const queueSnapshot =
       usesV2QueuePolicy
         ? await courseRepository.getLessonQueueSnapshot({
@@ -447,7 +541,8 @@ export const createCourseRuntime = ({
       usesV2QueuePolicy &&
       (!queueSnapshot ||
         queueSnapshot.session.id !== session.id ||
-        queueSnapshot.session.queuePolicyVersion !== session.queuePolicyVersion)
+        queueSnapshot.session.queuePolicyVersion !== session.queuePolicyVersion ||
+        queueSnapshot.session.flowPolicyVersion !== session.flowPolicyVersion)
     ) {
       throw new DomainError(
         'queue_invariant_violation',
@@ -532,6 +627,7 @@ export const createCourseRuntime = ({
       createdAt,
     }
     let queueDisposition: QueueDisposition | undefined
+    let queueCapacityReason: QueueCapacityReason | undefined
     let nextQueue: LessonTaskRecord[]
 
     if (!usesV2QueuePolicy) {
@@ -558,9 +654,18 @@ export const createCourseRuntime = ({
               tasks: lessonTasks,
               reviewLogs: queueSnapshot?.reviewLogs ?? [],
               suspendedWordIds,
+              ...(usesRollingFlow
+                ? {
+                    maximumTaskCount: LESSON_FLOW_BUDGETS.hardVisibleTaskCap,
+                    requireCapacityReasons: true,
+                  }
+                : {}),
             },
             {
               sourceTaskId: task.id,
+              ...(usesRollingFlow
+                ? { maximumTaskCount: LESSON_FLOW_BUDGETS.hardVisibleTaskCap }
+                : {}),
               createBridge: (source) =>
                 cloneQueueTask(source, {
                   role: 'bridge',
@@ -577,28 +682,77 @@ export const createCourseRuntime = ({
             },
           )
           queueDisposition = plan.disposition
+          queueCapacityReason = plan.capacityReason
           nextQueue = plan.tasks
         } else {
           nextQueue = completedQueue
         }
 
+        const reviewLogs = [
+          ...(queueSnapshot?.reviewLogs ?? []),
+          {
+            taskId: task.id,
+            wordId: task.wordId,
+            score: evaluation.score,
+            ...(queueDisposition === undefined ? {} : { queueDisposition }),
+            ...(queueCapacityReason === undefined ? {} : { queueCapacityReason }),
+          },
+        ]
+
+        if (usesRollingFlow) {
+          const course = await courseRepository.getCourse(session.courseId)
+          const sourceVersion = course
+            ? await contentRepository.getSourceVersion(course.sourceVersionId)
+            : undefined
+
+          if (!course || !sourceVersion || sourceVersion.version.status !== 'published') {
+            throw new DomainError(
+              'dependency_failure',
+              'Course source snapshot is unavailable during reinforcement planning',
+            )
+          }
+
+          const newWordIds = (lessonWordStates ?? [])
+            .filter((state) => state.firstLessonNo === session.lessonNo)
+            .map((state) => state.wordId)
+          const reinforcementPlan = planPlannedReinforcement(
+            {
+              tasks: nextQueue,
+              reviewLogs,
+              suspendedWordIds,
+              maximumTaskCount: LESSON_FLOW_BUDGETS.hardVisibleTaskCap,
+              requireCapacityReasons: true,
+            },
+            {
+              newWordIds,
+              maximumTaskCount: LESSON_FLOW_BUDGETS.normalVisibleTaskBudget,
+              createReinforcement: (source) =>
+                createPlannedReinforcementTask({
+                  sourceVersion,
+                  source,
+                  createdAt,
+                }),
+            },
+          )
+          nextQueue = reinforcementPlan.tasks
+        }
+
         validateLessonQueueSnapshot({
           tasks: nextQueue,
-          reviewLogs: [
-            ...(queueSnapshot?.reviewLogs ?? []),
-            {
-              taskId: task.id,
-              wordId: task.wordId,
-              score: evaluation.score,
-              ...(queueDisposition === undefined ? {} : { queueDisposition }),
-            },
-          ],
+          reviewLogs,
           suspendedWordIds,
+          ...(usesRollingFlow
+            ? {
+                maximumTaskCount: LESSON_FLOW_BUDGETS.hardVisibleTaskCap,
+                requireCapacityReasons: true,
+              }
+            : {}),
         })
-      } catch {
+      } catch (error) {
         const raced = await courseRepository.getSubmittedAnswer(session.id, task.id)
 
         if (raced) return toSubmittedTaskAnswer(task, raced)
+        if (error instanceof DomainError) throw error
         throw new DomainError(
           'queue_invariant_violation',
           'Lesson queue state is inconsistent',
@@ -609,6 +763,7 @@ export const createCourseRuntime = ({
     const reviewLog: ReviewLogRecord = {
       ...reviewLogBase,
       ...(queueDisposition === undefined ? {} : { queueDisposition }),
+      ...(queueCapacityReason === undefined ? {} : { queueCapacityReason }),
     }
     const taskDelta = createRecordAnswerTaskDelta(lessonTasks, nextQueue)
     const recorded = await courseRepository.recordAnswer({
@@ -618,6 +773,7 @@ export const createCourseRuntime = ({
       ...taskDelta,
       persistWordState,
       expectedQueuePolicyVersion: session.queuePolicyVersion,
+      expectedFlowPolicyVersion: session.flowPolicyVersion,
     })
 
     return toSubmittedTaskAnswer(task, recorded)
@@ -625,6 +781,7 @@ export const createCourseRuntime = ({
 
   const completeLesson = async (sessionId: string): Promise<CompletedLesson> => {
     const session = await requireLessonSession(courseRepository, sessionId)
+    requireValidLessonPolicyCombination(session)
     await requireActiveCourseById(courseRepository, session.courseId)
 
     if (session.status === 'abandoned') {
@@ -657,7 +814,8 @@ export const createCourseRuntime = ({
       if (
         !queueSnapshot ||
         queueSnapshot.session.id !== session.id ||
-        queueSnapshot.session.queuePolicyVersion !== session.queuePolicyVersion
+        queueSnapshot.session.queuePolicyVersion !== session.queuePolicyVersion ||
+        queueSnapshot.session.flowPolicyVersion !== session.flowPolicyVersion
       ) {
         throw new DomainError(
           'queue_invariant_violation',
@@ -676,6 +834,12 @@ export const createCourseRuntime = ({
           tasks: queueSnapshot.tasks,
           reviewLogs: queueSnapshot.reviewLogs,
           suspendedWordIds,
+          ...(session.flowPolicyVersion === 'v2_rolling_reinforcement_budget24'
+            ? {
+                maximumTaskCount: LESSON_FLOW_BUDGETS.hardVisibleTaskCap,
+                requireCapacityReasons: true,
+              }
+            : {}),
         })
       } catch {
         throw new DomainError(
@@ -740,12 +904,14 @@ const createRecordAnswerTaskDelta = (
 ): Pick<
   RecordAnswerInput,
   | 'taskMutations'
+  | 'newTaskIds'
   | 'reorderedExistingTaskIds'
   | 'taskCount'
   | 'completedTaskCount'
 > => {
   const beforeById = new Map(before.map((task) => [task.id, task]))
   const taskMutations: LessonTaskRecord[] = []
+  const newTaskIds: string[] = []
   const reorderedExistingTaskIds: string[] = []
 
   for (const task of after) {
@@ -758,10 +924,13 @@ const createRecordAnswerTaskDelta = (
     if (!previous || hasMutableTaskColumnChange(previous, task)) {
       taskMutations.push(task)
     }
+
+    if (!previous) newTaskIds.push(task.id)
   }
 
   return {
     taskMutations,
+    newTaskIds,
     reorderedExistingTaskIds,
     taskCount: after.length,
     completedTaskCount: after.filter((task) => task.status === 'completed').length,
@@ -785,6 +954,7 @@ const hasMutableTaskColumnChange = (
   before.role !== after.role ||
   before.required !== after.required ||
   before.refluxSourceTaskId !== after.refluxSourceTaskId ||
+  before.reinforcementSourceTaskId !== after.reinforcementSourceTaskId ||
   before.draftAnswer !== after.draftAnswer ||
   before.referenceRevealedAt !== after.referenceRevealedAt
 
@@ -929,28 +1099,11 @@ const createLessonTask = (input: {
     throw new DomainError('course_unavailable', `Word ${input.state.wordId} is missing`)
   }
 
-  const exerciseItem = input.sourceVersion.exerciseItems.find(
-    (item) =>
-      item.wordId === input.state.wordId &&
-      item.stage === input.state.stage &&
-      item.status === 'approved',
+  const content = requireApprovedExerciseContent(
+    input.sourceVersion,
+    input.state.wordId,
+    input.state.stage,
   )
-
-  if (!exerciseItem) {
-    throw new DomainError(
-      'course_unavailable',
-      `Approved ${input.state.stage} exercise item is missing for ${word.word}`,
-    )
-  }
-
-  const content = exerciseItemContentSchema.parse({
-    stage: exerciseItem.stage,
-    taskType: exerciseItem.taskType,
-    prompt: exerciseItem.prompt,
-    answer: exerciseItem.answer,
-  })
-
-  requireLearnerSafeExerciseItemContent(content, word.word)
 
   return {
     id: crypto.randomUUID(),
@@ -966,6 +1119,33 @@ const createLessonTask = (input: {
   }
 }
 
+const requireApprovedExerciseContent = (
+  sourceVersion: SourceVersionSnapshot,
+  wordId: string,
+  stage: UserWordStateRecord['stage'],
+) => {
+  const word = sourceVersion.words.find((candidate) => candidate.id === wordId)
+  const exerciseItem = selectApprovedExerciseItem(sourceVersion, wordId, stage)
+
+  if (!word || !exerciseItem) {
+    throw new DomainError(
+      'course_unavailable',
+      `Approved ${stage} exercise item is missing for ${word?.word ?? wordId}`,
+    )
+  }
+
+  const content = exerciseItemContentSchema.parse({
+    stage: exerciseItem.stage,
+    taskType: exerciseItem.taskType,
+    prompt: exerciseItem.prompt,
+    answer: exerciseItem.answer,
+  })
+
+  requireLearnerSafeExerciseItemContent(content, word.word)
+
+  return content
+}
+
 const requireLessonSession = async (
   repository: CourseRepository,
   sessionId: string,
@@ -979,11 +1159,26 @@ const requireLessonSession = async (
   return session
 }
 
+const requireValidLessonPolicyCombination = (
+  session: LessonSessionRecord,
+): void => {
+  if (
+    session.flowPolicyVersion === 'v2_rolling_reinforcement_budget24' &&
+    session.queuePolicyVersion !== 'v2_3_6_cap3'
+  ) {
+    throw new DomainError(
+      'queue_invariant_violation',
+      'Rolling lesson flow requires the v2 queue policy',
+    )
+  }
+}
+
 const requireSessionTask = async (
   repository: CourseRepository,
   input: { sessionId: string; taskId: string },
 ): Promise<{ session: LessonSessionRecord; task: LessonTaskRecord }> => {
   const session = await requireLessonSession(repository, input.sessionId)
+  requireValidLessonPolicyCombination(session)
   await requireActiveCourseById(repository, session.courseId)
 
   if (session.status !== 'started') {
@@ -1102,6 +1297,28 @@ const cloneQueueTask = (
   }
 }
 
+const createPlannedReinforcementTask = (input: {
+  sourceVersion: SourceVersionSnapshot
+  source: LessonTaskRecord
+  createdAt: string
+}): LessonTaskRecord => ({
+  id: crypto.randomUUID(),
+  sessionId: input.source.sessionId,
+  courseId: input.source.courseId,
+  wordId: input.source.wordId,
+  orderIndex: 1,
+  status: 'pending',
+  role: 'bridge',
+  required: true,
+  reinforcementSourceTaskId: input.source.id,
+  createdAt: input.createdAt,
+  ...requireApprovedExerciseContent(
+    input.sourceVersion,
+    input.source.wordId,
+    'S1',
+  ),
+})
+
 const toStartedLesson = (
   session: LessonSessionRecord,
   tasks: LessonTaskRecord[],
@@ -1133,6 +1350,9 @@ const toLessonTaskDto = (task: LessonTaskRecord): LessonTaskDto =>
     ...(task.refluxSourceTaskId === undefined
       ? {}
       : { refluxSourceTaskId: task.refluxSourceTaskId }),
+    ...(task.reinforcementSourceTaskId === undefined
+      ? {}
+      : { reinforcementSourceTaskId: task.reinforcementSourceTaskId }),
     ...(task.taskType === 'sentence_output' &&
     task.draftAnswer !== undefined &&
     task.referenceRevealedAt !== undefined
@@ -1175,6 +1395,15 @@ const policyVersionForWriteMode = (
 ): LessonSessionRecord['queuePolicyVersion'] | undefined => {
   if (mode === 'legacy_v1') return 'v1_5_8_unbounded'
   if (mode === 'v2') return 'v2_3_6_cap3'
+
+  return undefined
+}
+
+const flowPolicyVersionForWriteMode = (
+  mode: LessonFlowWriteMode,
+): LessonSessionRecord['flowPolicyVersion'] | undefined => {
+  if (mode === 'legacy_v1') return 'v1_due_then_new_unbounded'
+  if (mode === 'rolling_v2') return 'v2_rolling_reinforcement_budget24'
 
   return undefined
 }

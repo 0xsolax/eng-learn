@@ -12,10 +12,19 @@ const MIGRATION_QUERY = 'SELECT id, name FROM d1_migrations ORDER BY id'
 const MIGRATION_FILENAME = /^\d{4}_.+\.sql$/u
 const ACCOUNT_ID = /^[0-9a-f]{32}$/u
 const DATABASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
+const REQUIRED_LESSON_FLOW_MIGRATION = '0013_add_lesson_flow_policy_v2.sql'
+
+export const RELEASE_ENTRY_WRITE_MODES = Object.freeze({
+  normal: Object.freeze({ queue: 'v2', flow: 'rolling_v2' }),
+  'flow-compat': Object.freeze({ queue: 'v2', flow: 'legacy_v1' }),
+  'flow-freeze': Object.freeze({ queue: 'v2', flow: 'disabled' }),
+})
 
 export const parseWranglerJsonc = (contents) => {
   try {
-    return JSON.parse(removeJsoncSyntax(contents.replace(/^\uFEFF/u, '')))
+    const json = removeJsoncSyntax(contents.replace(/^\uFEFF/u, ''))
+    assertNoDuplicateObjectKeys(json)
+    return JSON.parse(json)
   } catch {
     throw new Error('Could not parse wrangler.jsonc')
   }
@@ -30,6 +39,48 @@ export const assertProductionLessonQueueWriteMode = (config) => {
   if (writeMode !== 'v2') {
     throw new Error(
       'wrangler.jsonc production LESSON_QUEUE_WRITE_MODE must be exactly v2',
+    )
+  }
+}
+
+export const assertProductionLessonWriteModes = (config, entry) => {
+  const expected = RELEASE_ENTRY_WRITE_MODES[entry]
+
+  if (!expected) {
+    throw new Error(`Unknown production release entry: ${String(entry)}`)
+  }
+
+  const variables = isRecord(config) && isRecord(config.vars)
+    ? config.vars
+    : undefined
+  const queueWriteMode = variables?.LESSON_QUEUE_WRITE_MODE
+  const flowWriteMode = variables?.LESSON_FLOW_WRITE_MODE
+
+  if (queueWriteMode !== expected.queue) {
+    throw new Error(
+      `${entry} LESSON_QUEUE_WRITE_MODE must be exactly ${expected.queue}`,
+    )
+  }
+
+  if (flowWriteMode !== expected.flow) {
+    throw new Error(
+      `${entry} LESSON_FLOW_WRITE_MODE must be exactly ${expected.flow}`,
+    )
+  }
+}
+
+export const assertRemoteMigrationGateConfiguration = (config, entry) => {
+  assertProductionLessonQueueWriteMode(config)
+
+  if (entry !== undefined) {
+    assertProductionLessonWriteModes(config, entry)
+  }
+}
+
+export const assertLessonFlowMigrationPresent = (localMigrationNames) => {
+  if (!localMigrationNames.includes(REQUIRED_LESSON_FLOW_MIGRATION)) {
+    throw new Error(
+      `Required D1 migration is missing: ${REQUIRED_LESSON_FLOW_MIGRATION}`,
     )
   }
 }
@@ -180,9 +231,9 @@ export const createRemoteD1ReadCommands = (target, configPath) => [
   ],
 ]
 
-export const checkRemoteD1Migrations = async () => {
+export const checkRemoteD1Migrations = async (entry) => {
   const config = parseWranglerJsonc(await readFile(wranglerConfigPath, 'utf8'))
-  assertProductionLessonQueueWriteMode(config)
+  assertRemoteMigrationGateConfiguration(config, entry)
   const target = resolveRemoteD1MigrationTarget(config)
   const migrationsDirectory = resolve(repositoryRoot, target.migrationsDirectory)
   const repositoryPrefix = `${repositoryRoot}${sep}`
@@ -202,6 +253,7 @@ export const checkRemoteD1Migrations = async () => {
   }
 
   const localMigrationNames = sqlFiles.toSorted()
+  assertLessonFlowMigrationPresent(localMigrationNames)
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'eng-learn-d1-gate-'))
   const wranglerPath = join(repositoryRoot, 'node_modules', '.bin', 'wrangler')
   const environment = {
@@ -376,6 +428,118 @@ const removeJsoncSyntax = (contents) => {
   }
 
   return result
+}
+
+const assertNoDuplicateObjectKeys = (contents) => {
+  let index = 0
+
+  const skipWhitespace = () => {
+    while (/\s/u.test(contents[index] ?? '')) index += 1
+  }
+
+  const parseString = () => {
+    const start = index
+    let escaped = false
+    index += 1
+
+    while (index < contents.length) {
+      const character = contents[index]
+      index += 1
+
+      if (escaped) {
+        escaped = false
+      } else if (character === '\\') {
+        escaped = true
+      } else if (character === '"') {
+        return JSON.parse(contents.slice(start, index))
+      }
+    }
+
+    throw new Error('Unterminated JSON string')
+  }
+
+  const parsePrimitive = () => {
+    const start = index
+    while (
+      index < contents.length &&
+      !/[\s,\]}]/u.test(contents[index] ?? '')
+    ) {
+      index += 1
+    }
+    if (index === start) throw new Error('Invalid JSON value')
+  }
+
+  const parseArray = () => {
+    index += 1
+    skipWhitespace()
+    if (contents[index] === ']') {
+      index += 1
+      return
+    }
+
+    while (index < contents.length) {
+      parseValue()
+      skipWhitespace()
+      if (contents[index] === ']') {
+        index += 1
+        return
+      }
+      if (contents[index] !== ',') throw new Error('Invalid JSON array')
+      index += 1
+      skipWhitespace()
+    }
+
+    throw new Error('Unterminated JSON array')
+  }
+
+  const parseObject = () => {
+    const keys = new Set()
+    index += 1
+    skipWhitespace()
+    if (contents[index] === '}') {
+      index += 1
+      return
+    }
+
+    while (index < contents.length) {
+      if (contents[index] !== '"') throw new Error('Invalid JSON object key')
+      const key = parseString()
+      if (keys.has(key)) throw new Error(`Duplicate JSON object key: ${key}`)
+      keys.add(key)
+      skipWhitespace()
+      if (contents[index] !== ':') throw new Error('Invalid JSON object')
+      index += 1
+      parseValue()
+      skipWhitespace()
+      if (contents[index] === '}') {
+        index += 1
+        return
+      }
+      if (contents[index] !== ',') throw new Error('Invalid JSON object')
+      index += 1
+      skipWhitespace()
+    }
+
+    throw new Error('Unterminated JSON object')
+  }
+
+  const parseValue = () => {
+    skipWhitespace()
+    const character = contents[index]
+    if (character === '{') {
+      parseObject()
+    } else if (character === '[') {
+      parseArray()
+    } else if (character === '"') {
+      parseString()
+    } else {
+      parsePrimitive()
+    }
+  }
+
+  parseValue()
+  skipWhitespace()
+  if (index !== contents.length) throw new Error('Invalid trailing JSON content')
 }
 
 const isRecord = (value) =>

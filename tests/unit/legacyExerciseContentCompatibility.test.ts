@@ -32,6 +32,7 @@ const currentMigrationPaths = [
   '../../migrations/0009_add_lesson_queue_policy_v2.sql',
   '../../migrations/0011_add_progressive_context_model.sql',
   '../../migrations/0012_add_exercise_review_feedback.sql',
+  '../../migrations/0013_add_lesson_flow_policy_v2.sql',
 ]
 
 type SqliteD1Statement = {
@@ -288,8 +289,13 @@ const createLegacyLearnerApp = (db: D1Database): WorkerApp => {
       courseRepository,
       now,
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     }),
-    courseQueryService: createCourseQueryService({ contentRepository, courseRepository }),
+    courseQueryService: createCourseQueryService({
+      contentRepository,
+      courseRepository,
+      flowWriteMode: 'legacy_v1',
+    }),
     courseRepository,
     learnerSessionService: createLearnerSessionService({
       courseRepository,
@@ -466,6 +472,7 @@ describe('legacy exercise content compatibility after migrations 0003-0009', () 
       courseRepository: repository,
       now: () => new Date(NOW),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
 
     const restored = await runtime.getLesson('session-legacy')
@@ -508,6 +515,7 @@ describe('legacy exercise content compatibility after migrations 0003-0009', () 
       courseRepository: createD1CourseRepository(db),
       now: () => new Date(NOW),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
 
     const started = await runtime.startLesson('course-legacy')
@@ -539,6 +547,7 @@ describe('legacy exercise content compatibility after migrations 0003-0009', () 
         courseRepository: createD1CourseRepository(db),
         now: () => new Date(NOW),
         queueWriteMode: 'legacy_v1',
+        flowWriteMode: 'legacy_v1',
       })
 
       await expect(runtime.startLesson('course-legacy')).rejects.toMatchObject({
@@ -590,6 +599,7 @@ describe('legacy exercise content compatibility after migrations 0003-0009', () 
       courseRepository: createD1CourseRepository(db),
       now: () => new Date(NOW),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
 
     await expect(runtime.startLesson('course-legacy')).rejects.toMatchObject({
@@ -646,6 +656,7 @@ describe('legacy exercise content compatibility after migrations 0003-0009', () 
       courseRepository: createD1CourseRepository(db),
       now: () => new Date(NOW),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
 
     await expect(runtime.getLesson('session-legacy')).rejects.toMatchObject({

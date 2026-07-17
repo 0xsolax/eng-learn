@@ -491,6 +491,7 @@ const createFixture = () => {
       operationLedger: ledger,
       now: () => NOW,
       queueWriteMode: 'v2',
+      flowWriteMode: 'legacy_v1',
     }),
     sessionService: createLearnerSessionService({
       courseRepository,

@@ -153,6 +153,7 @@ const lessonTaskBase = {
   role: lessonTaskRoleSchema,
   required: z.boolean(),
   refluxSourceTaskId: nonEmptyText.optional(),
+  reinforcementSourceTaskId: nonEmptyText.optional(),
 }
 
 export const lessonTaskSchema = z.discriminatedUnion('taskType', [

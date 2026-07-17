@@ -1,7 +1,10 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 import {
+  assertLessonFlowMigrationPresent,
   assertProductionLessonQueueWriteMode,
+  assertProductionLessonWriteModes,
+  assertRemoteMigrationGateConfiguration,
   assertRemoteD1MigrationParity,
   createRemoteD1ReadCommands,
   parseRemoteD1Info,
@@ -55,14 +58,95 @@ describe('remote D1 migration release gate', () => {
     }).not.toThrow()
   })
 
-  it('keeps the committed production lesson queue write mode at v2', async () => {
+  it.each([
+    ['normal', 'rolling_v2'],
+    ['flow-compat', 'legacy_v1'],
+    ['flow-freeze', 'disabled'],
+  ] as const)('requires the exact queue/flow pair for %s', (entry, flowMode) => {
+    const accepted = parseWranglerJsonc(`{
+      "vars": {
+        "LESSON_QUEUE_WRITE_MODE": "v2",
+        "LESSON_FLOW_WRITE_MODE": "${flowMode}"
+      }
+    }`)
+
+    expect(() => {
+      assertProductionLessonWriteModes(accepted, entry)
+    }).not.toThrow()
+
+    expect(() => {
+      assertProductionLessonWriteModes(
+        parseWranglerJsonc(`{
+          "vars": {
+            "LESSON_QUEUE_WRITE_MODE": "legacy_v1",
+            "LESSON_FLOW_WRITE_MODE": "${flowMode}"
+          }
+        }`),
+        entry,
+      )
+    }).toThrow(/LESSON_QUEUE_WRITE_MODE.*v2/u)
+
+    for (const rejectedFlowMode of ['rolling_v2', 'legacy_v1', 'disabled']) {
+      if (rejectedFlowMode === flowMode) continue
+
+      expect(() => {
+        assertProductionLessonWriteModes(
+          parseWranglerJsonc(`{
+            "vars": {
+              "LESSON_QUEUE_WRITE_MODE": "v2",
+              "LESSON_FLOW_WRITE_MODE": "${rejectedFlowMode}"
+            }
+          }`),
+          entry,
+        )
+      }).toThrow(new RegExp(`LESSON_FLOW_WRITE_MODE.*${flowMode}`, 'u'))
+    }
+  })
+
+  it('rejects missing, misplaced, and duplicate flow configuration', () => {
+    const rejectedConfigurations = [
+      '{}',
+      '{ "LESSON_FLOW_WRITE_MODE": "rolling_v2", "vars": { "LESSON_QUEUE_WRITE_MODE": "v2" } }',
+      '{ "vars": { "LESSON_QUEUE_WRITE_MODE": "v2" } }',
+      '{ "vars": { "LESSON_QUEUE_WRITE_MODE": "v2", "LESSON_FLOW_WRITE_MODE": "rolling_v2", "LESSON_FLOW_WRITE_MODE": "legacy_v1" } }',
+    ]
+
+    for (const contents of rejectedConfigurations) {
+      expect(() => {
+        assertProductionLessonWriteModes(parseWranglerJsonc(contents), 'normal')
+      }).toThrow()
+    }
+  })
+
+  it('keeps standalone parity reads available while the committed release profile stays compat', async () => {
     const contents = await readFile(
       new URL('../../wrangler.jsonc', import.meta.url),
       'utf8',
     )
+    const config = parseWranglerJsonc(contents)
 
     expect(() => {
-      assertProductionLessonQueueWriteMode(parseWranglerJsonc(contents))
+      assertRemoteMigrationGateConfiguration(config)
+    }).not.toThrow()
+    expect(() => {
+      assertRemoteMigrationGateConfiguration(config, 'flow-compat')
+    }).not.toThrow()
+    expect(() => {
+      assertRemoteMigrationGateConfiguration(config, 'normal')
+    }).toThrow(/LESSON_FLOW_WRITE_MODE.*rolling_v2/u)
+  })
+
+  it('requires migration 0013 before any release profile can pass', () => {
+    expect(() => {
+      assertLessonFlowMigrationPresent(['0011_previous.sql', '0012_previous.sql'])
+    }).toThrow(/0013_add_lesson_flow_policy_v2\.sql/u)
+
+    expect(() => {
+      assertLessonFlowMigrationPresent([
+        '0011_previous.sql',
+        '0012_previous.sql',
+        '0013_add_lesson_flow_policy_v2.sql',
+      ])
     }).not.toThrow()
   })
 

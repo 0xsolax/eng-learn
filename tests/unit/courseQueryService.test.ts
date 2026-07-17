@@ -88,6 +88,82 @@ describe('course query service', () => {
     })
   })
 
+  it.each(['rolling_v2', 'disabled'] as const)(
+    'uses the rolling flow gate when %s previews a review-pressure lesson',
+    async (flowWriteMode) => {
+    const fixture = await createFixture(20, flowWriteMode)
+    const created = await fixture.runtime.createCourse({
+      learnerName: 'Alice',
+      sourceVersionId: fixture.versionId,
+    })
+    const source = await fixture.contentRepository.getSourceVersion(fixture.versionId)
+
+    if (!source) throw new Error('Expected the published source snapshot')
+
+    const states = source.words.slice(0, 15).map((word, index) => {
+      const group = source.groups.find(
+        (candidate) =>
+          word.orderIndex >= candidate.startOrderIndex &&
+          word.orderIndex <= candidate.endOrderIndex,
+      )
+
+      if (!group) throw new Error(`Expected a group for ${word.id}`)
+
+      return {
+        id: `pressure-state-${String(index + 1)}`,
+        courseId: created.course.id,
+        wordId: word.id,
+        groupId: group.id,
+        stage: 'S2' as const,
+        totalAttemptCount: 2,
+        totalCorrectCount: 2,
+        totalWrongCount: 0,
+        currentStreak: 2,
+        wrongStreak: 0,
+        lapseCount: 0,
+        easeFactor: 1,
+        masteryScore: 27,
+        firstLessonNo: 1,
+        lastSeenLessonNo: 1,
+        nextDueLessonNo: 1,
+        status: 'learning' as const,
+        createdAt: NOW.toISOString(),
+        updatedAt: NOW.toISOString(),
+      }
+    })
+
+    await fixture.courseRepository.createLesson({
+      session: {
+        id: 'pressure-history',
+        courseId: created.course.id,
+        lessonNo: 1,
+        status: 'completed',
+        taskCount: 0,
+        completedTaskCount: 0,
+        correctCount: 0,
+        wrongCount: 0,
+        queuePolicyVersion: 'v2_3_6_cap3',
+        flowPolicyVersion: 'v2_rolling_reinforcement_budget24',
+        startedAt: NOW.toISOString(),
+        completedAt: NOW.toISOString(),
+      },
+      tasks: [],
+      wordStates: states,
+    })
+
+    await expect(
+      fixture.queries.getCourseHome({
+        learnerId: created.learner.id,
+        courseId: created.course.id,
+      }),
+    ).resolves.toMatchObject({
+      newWordCount: 0,
+      reviewWordCount: 15,
+      action: 'start',
+    })
+    },
+  )
+
   it('shows the latest completed session instead of inventing a skipped lesson', async () => {
     const fixture = await createFixture(5)
     const created = await fixture.runtime.createCourse({
@@ -263,6 +339,70 @@ describe('course query service', () => {
     expect(report.progressWords.map((word) => word.id)).not.toContain(firstBridge.wordId)
   })
 
+  it('keeps a planned-reinforcement mistake in the rolling report after its recurrence passes', async () => {
+    const fixture = await createFixture(5, 'rolling_v2')
+    const created = await fixture.runtime.createCourse({
+      learnerName: 'Alice',
+      sourceVersionId: fixture.versionId,
+    })
+    const lesson = await fixture.runtime.startLesson(created.course.id)
+    let plannedWrongSubmitted = false
+
+    for (;;) {
+      const current = (await fixture.runtime.getLesson(lesson.session.id)).tasks.find(
+        (task) => task.status === 'pending',
+      )
+
+      if (!current) break
+      const stored = await fixture.courseRepository.getLessonTask(lesson.session.id, current.id)
+
+      if (!stored) throw new Error(`Expected task ${current.id}`)
+
+      if (stored.taskType === 'recognize_meaning') {
+        await fixture.runtime.submitAnswer({
+          sessionId: lesson.session.id,
+          taskId: stored.id,
+          submission: { taskType: 'recognize_meaning', response: 'known' },
+        })
+        continue
+      }
+
+      if (stored.taskType !== 'multiple_choice') {
+        throw new Error(`Unexpected rolling task type ${stored.taskType}`)
+      }
+
+      const shouldSubmitWrong =
+        stored.reinforcementSourceTaskId !== undefined && !plannedWrongSubmitted
+
+      await fixture.runtime.submitAnswer({
+        sessionId: lesson.session.id,
+        taskId: stored.id,
+        submission: {
+          taskType: 'multiple_choice',
+          answer: shouldSubmitWrong ? '__wrong__' : stored.answer.word,
+        },
+      })
+      plannedWrongSubmitted ||= shouldSubmitWrong
+    }
+
+    expect(plannedWrongSubmitted).toBe(true)
+    await fixture.runtime.completeLesson(lesson.session.id)
+    const report = await fixture.queries.getLessonReport(
+      { learnerId: created.learner.id, courseId: created.course.id },
+      lesson.session.id,
+    )
+    const firstWord = requireValue(
+      (await fixture.contentRepository.getSourceVersion(fixture.versionId))?.words[0],
+      'Expected the first source word',
+    )
+
+    expect(report.correctRate).toBe(1)
+    expect(report.needsPracticeWords).toContainEqual({
+      id: firstWord.id,
+      word: firstWord.word,
+    })
+  })
+
   it('rejects a completed v2 report when a non-primary answer audit is missing', async () => {
     const fixture = await createFixture(5)
     const created = await fixture.runtime.createCourse({
@@ -304,6 +444,7 @@ describe('course query service', () => {
     )
     const corruptQueries = createCourseQueryService({
       contentRepository: fixture.contentRepository,
+      flowWriteMode: 'legacy_v1',
       courseRepository: {
         ...fixture.courseRepository,
         getLessonReportSnapshot: () =>
@@ -351,7 +492,10 @@ describe('course query service', () => {
   })
 })
 
-const createFixture = async (wordCount = 10) => {
+const createFixture = async (
+  wordCount = 10,
+  flowWriteMode: 'legacy_v1' | 'rolling_v2' | 'disabled' = 'legacy_v1',
+) => {
   const contentRepository = createInMemoryContentRepository()
   const courseRepository = createInMemoryCourseRepository()
   const builder = createContentBuilder({ repository: contentRepository, now: () => NOW })
@@ -381,8 +525,13 @@ const createFixture = async (wordCount = 10) => {
       courseRepository,
       now: () => NOW,
       queueWriteMode: 'v2',
+      flowWriteMode,
     }),
-    queries: createCourseQueryService({ contentRepository, courseRepository }),
+    queries: createCourseQueryService({
+      contentRepository,
+      courseRepository,
+      flowWriteMode,
+    }),
   }
 }
 

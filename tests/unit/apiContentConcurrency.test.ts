@@ -212,8 +212,13 @@ const createContentRaceApp = (
       operationLedger,
       now,
       queueWriteMode: 'v2',
+      flowWriteMode: 'legacy_v1',
     }),
-    courseQueryService: createCourseQueryService({ contentRepository, courseRepository }),
+    courseQueryService: createCourseQueryService({
+      contentRepository,
+      courseRepository,
+      flowWriteMode: 'legacy_v1',
+    }),
     courseRepository,
     learnerSessionService: createLearnerSessionService({
       courseRepository,

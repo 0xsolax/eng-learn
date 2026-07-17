@@ -834,8 +834,13 @@ const createAvailabilityFixture = async () => {
     now: () => NOW,
     selectRefluxGap: () => 5,
     queueWriteMode: 'legacy_v1',
+    flowWriteMode: 'legacy_v1',
   })
-  const queries = createCourseQueryService({ contentRepository, courseRepository })
+  const queries = createCourseQueryService({
+    contentRepository,
+    courseRepository,
+    flowWriteMode: 'legacy_v1',
+  })
   const sessions = createLearnerSessionService({
     courseRepository,
     sessionRepository,
@@ -913,9 +918,7 @@ const createAvailabilityFixture = async () => {
           wrongCount: 0,
           startedAt: NOW.toISOString(),
         } as const
-      storedSession = session
-
-      return baseCourseRepository.createLesson({
+      const lesson = await baseCourseRepository.createLesson({
         session,
         tasks: [
           {
@@ -957,6 +960,9 @@ const createAvailabilityFixture = async () => {
           },
         ],
       })
+      storedSession = await baseCourseRepository.getLessonSession(session.id)
+
+      return lesson
     },
   }
 }

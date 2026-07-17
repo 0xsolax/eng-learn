@@ -596,6 +596,7 @@ describe('course runtime authoritative task queue', () => {
       courseRepository: corruptRepository,
       now: () => NOW,
       queueWriteMode: 'v2',
+      flowWriteMode: 'legacy_v1',
     })
 
     await expect(
@@ -651,6 +652,7 @@ describe('course runtime authoritative task queue', () => {
       courseRepository: corruptRepository,
       now: () => NOW,
       queueWriteMode: 'v2',
+      flowWriteMode: 'legacy_v1',
     })
 
     await expect(corruptRuntime.completeLesson(lesson.session.id)).rejects.toMatchObject({
@@ -714,6 +716,7 @@ const createFixture = async (
     now: () => NOW,
     selectRefluxGap: typeof refluxGap === 'function' ? refluxGap : () => refluxGap,
     queueWriteMode,
+    flowWriteMode: 'legacy_v1',
   })
   const created = await runtime.createCourse({
     learnerName: 'Alice',
@@ -896,6 +899,7 @@ const createSentenceOutputFixture = async (
       now: () => NOW,
       selectRefluxGap: () => 5,
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     }),
     courseRepository,
     courseId,

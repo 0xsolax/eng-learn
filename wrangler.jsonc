@@ -18,7 +18,8 @@
   "vars": {
     "APP_ORIGIN": "https://eng-learn.0xsolax.workers.dev",
     "ADMIN_BROWSER_AUTH_MODE": "application_session",
-    "LESSON_QUEUE_WRITE_MODE": "v2"
+    "LESSON_QUEUE_WRITE_MODE": "v2",
+    "LESSON_FLOW_WRITE_MODE": "legacy_v1"
   },
   "d1_databases": [
     {

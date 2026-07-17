@@ -130,7 +130,7 @@ onMounted(loadReport)
       已完成 {{ summary.completedTaskCount }} / {{ summary.totalTaskCount }} 道任务。
     </UiStatusMessage>
     <p class="lesson-report__rate">
-      本课正确率：{{ Math.round(summary.correctRate * 100) }}%
+      核心任务正确率：{{ Math.round(summary.correctRate * 100) }}%
     </p>
     <section aria-labelledby="needs-practice-title">
       <h2 id="needs-practice-title">

@@ -4,6 +4,7 @@ import { createInMemoryCourseRepository } from '../../server/repositories/inMemo
 import { createContentBuilder } from '../../server/services/ContentBuilder'
 import {
   createCourseRuntime,
+  parseLessonFlowWriteMode,
   parseLessonQueueWriteMode,
   type CourseRuntime,
 } from '../../server/services/CourseRuntime'
@@ -42,6 +43,20 @@ describe('course runtime workflow', () => {
     },
   )
 
+  it.each([
+    { configured: undefined, expected: 'disabled' },
+    { configured: '', expected: 'disabled' },
+    { configured: 'unexpected', expected: 'disabled' },
+    { configured: 'legacy_v1', expected: 'legacy_v1' },
+    { configured: 'rolling_v2', expected: 'rolling_v2' },
+    { configured: 'disabled', expected: 'disabled' },
+  ] as const)(
+    'parses flow write mode "$configured" as $expected',
+    ({ configured, expected }) => {
+      expect(parseLessonFlowWriteMode(configured)).toBe(expected)
+    },
+  )
+
   it('persists the selected v2 queue policy on a new lesson session', async () => {
     const fixture = await createQueueModeFixture()
     const lesson = await fixture.createRuntime('v2').startLesson(fixture.courseId)
@@ -49,6 +64,45 @@ describe('course runtime workflow', () => {
     await expect(
       fixture.courseRepository.getLessonSession(lesson.session.id),
     ).resolves.toMatchObject({ queuePolicyVersion: 'v2_3_6_cap3' })
+  })
+
+  it('persists rolling flow only with queue v2 and fails closed otherwise', async () => {
+    const rolling = await createQueueModeFixture()
+    const lesson = await rolling
+      .createRuntime('v2', 'rolling_v2')
+      .startLesson(rolling.courseId)
+
+    await expect(
+      rolling.courseRepository.getLessonSession(lesson.session.id),
+    ).resolves.toMatchObject({
+      queuePolicyVersion: 'v2_3_6_cap3',
+      flowPolicyVersion: 'v2_rolling_reinforcement_budget24',
+    })
+
+    const mismatch = await createQueueModeFixture()
+    await expect(
+      mismatch.createRuntime('legacy_v1', 'rolling_v2').startLesson(mismatch.courseId),
+    ).rejects.toMatchObject({ code: 'course_unavailable' })
+    await expect(
+      mismatch.courseRepository.getStartedLesson(mismatch.courseId, 1),
+    ).resolves.toBeUndefined()
+  })
+
+  it('blocks new flow sessions when disabled but resumes a persisted rolling session', async () => {
+    const blocked = await createQueueModeFixture()
+    await expect(
+      blocked.createRuntime('v2', 'disabled').startLesson(blocked.courseId),
+    ).rejects.toMatchObject({ code: 'course_unavailable' })
+
+    const resumable = await createQueueModeFixture()
+    const started = await resumable
+      .createRuntime('v2', 'rolling_v2')
+      .startLesson(resumable.courseId)
+    const resumed = await resumable
+      .createRuntime('v2', 'disabled')
+      .startLesson(resumable.courseId)
+
+    expect(resumed).toEqual(started)
   })
 
   it('rejects a new lesson in disabled mode without creating a session', async () => {
@@ -84,6 +138,7 @@ describe('course runtime workflow', () => {
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Course source',
@@ -124,6 +179,7 @@ describe('course runtime workflow', () => {
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Lesson source',
@@ -162,6 +218,7 @@ describe('course runtime workflow', () => {
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Concurrent lesson source',
@@ -195,6 +252,7 @@ describe('course runtime workflow', () => {
       courseRepository,
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Answer source',
@@ -255,6 +313,7 @@ describe('course runtime workflow', () => {
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Wrong answer source',
@@ -299,6 +358,7 @@ describe('course runtime workflow', () => {
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Wrong word reflux source',
@@ -389,6 +449,7 @@ describe('course runtime workflow', () => {
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Completion source',
@@ -444,6 +505,7 @@ describe('course runtime workflow', () => {
       courseRepository: createInMemoryCourseRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Lesson two source',
@@ -502,6 +564,7 @@ describe('course runtime workflow', () => {
       courseRepository,
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Lesson gap source',
@@ -558,6 +621,7 @@ describe('course runtime workflow', () => {
       courseRepository,
       now: () => new Date('2026-07-06T00:00:00.000Z'),
       queueWriteMode: 'legacy_v1',
+      flowWriteMode: 'legacy_v1',
     })
     const draft = await contentBuilder.importNewSourceIdempotently({ operationToken: generateAdminOperationToken(),
       sourceName: 'Twenty-word lesson gap source',
@@ -608,12 +672,16 @@ const createQueueModeFixture = async () => {
 
   await buildApproveAndPublish(contentBuilder, draft.versionId)
 
-  const createRuntime = (queueWriteMode: 'legacy_v1' | 'v2' | 'disabled') =>
+  const createRuntime = (
+    queueWriteMode: 'legacy_v1' | 'v2' | 'disabled',
+    flowWriteMode: 'legacy_v1' | 'rolling_v2' | 'disabled' = 'legacy_v1',
+  ) =>
     createCourseRuntime({
       contentRepository,
       courseRepository,
       now,
       queueWriteMode,
+      flowWriteMode,
     })
   const created = await createRuntime('v2').createCourse({
     learnerName: 'Alice',
