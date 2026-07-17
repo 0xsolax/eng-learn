@@ -167,7 +167,9 @@ describe('SourceVersionDetailPage', () => {
     const command = wrapper.get('[data-command-bar]').element
     const pipeline = wrapper.get('[data-pipeline]').element
     const blockers = wrapper.get('[data-blockers]').element
+    const blockerScroll = wrapper.get('[data-scroll-region="publish-blockers"]')
     const matrix = wrapper.get('[data-coverage-matrix]').element
+    const matrixScroll = wrapper.get('[data-scroll-region="coverage-matrix"]')
     const approval = wrapper.get('[data-approval-list]').element
 
     expect(wrapper.findAll('[data-command-bar]')).toHaveLength(1)
@@ -175,6 +177,10 @@ describe('SourceVersionDetailPage', () => {
     expect(isBefore(pipeline, blockers)).toBe(true)
     expect(isBefore(blockers, matrix)).toBe(true)
     expect(isBefore(matrix, approval)).toBe(true)
+    expect(blockerScroll.element.parentElement).toBe(blockers)
+    expect(blockers.querySelector('[data-scroll-region="publish-blockers"] > ul')).not.toBeNull()
+    expect(blockerScroll.attributes('tabindex')).toBe('0')
+    expect(matrixScroll.attributes('tabindex')).toBe('0')
     expect(wrapper.get('[data-publish-blocker]').text()).toContain('当前有 1 项发布阻断')
   })
 

@@ -127,6 +127,92 @@ test('@admin review keeps the compact boundary and closes the feedback correctio
   expect(pageErrors).toEqual([])
 })
 
+test('@admin long version keeps blockers and coverage inside bounded scroll regions', async ({
+  page,
+}) => {
+  const width = page.viewportSize()?.width ?? 0
+  test.skip(width !== 375 && width !== 1280, 'Long-region geometry is checked at desktop and mobile')
+
+  const consoleErrors: string[] = []
+  const pageErrors: string[] = []
+  page.on('console', (message) => {
+    if (message.type() === 'error') consoleErrors.push(message.text())
+  })
+  page.on('pageerror', (error) => pageErrors.push(error.message))
+
+  await installLongVersionDetailFixture(page)
+  await page.goto('/admin/source-versions/version-long')
+
+  const blockerScroll = page.locator('[data-scroll-region="publish-blockers"]')
+  const matrixScroll = page.locator('[data-scroll-region="coverage-matrix"]')
+  await expect(blockerScroll).toBeVisible()
+  await expect(matrixScroll).toBeVisible()
+  await expect(page.locator('[data-blocker-item]')).toHaveCount(708)
+  await expect(page.locator('[data-matrix-row]')).toHaveCount(118)
+
+  const geometry = await page.evaluate(() => {
+    const readRegion = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector)
+      if (!element) throw new Error(`Missing region ${selector}`)
+      return {
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+        overflowY: getComputedStyle(element).overflowY,
+      }
+    }
+    return {
+      blocker: readRegion('[data-scroll-region="publish-blockers"]'),
+      matrix: readRegion('[data-scroll-region="coverage-matrix"]'),
+      documentHeight: document.documentElement.scrollHeight,
+      documentWidth: document.documentElement.scrollWidth,
+      viewportWidth: document.documentElement.clientWidth,
+    }
+  })
+
+  expect(geometry.blocker.overflowY).toMatch(/auto|scroll/u)
+  expect(geometry.blocker.scrollHeight).toBeGreaterThan(geometry.blocker.clientHeight)
+  expect(geometry.blocker.clientHeight).toBeGreaterThanOrEqual(280)
+  expect(geometry.blocker.clientHeight).toBeLessThanOrEqual(560)
+  expect(geometry.matrix.overflowY).toMatch(/auto|scroll/u)
+  expect(geometry.matrix.scrollHeight).toBeGreaterThan(geometry.matrix.clientHeight)
+  expect(geometry.matrix.clientHeight).toBeGreaterThanOrEqual(280)
+  expect(geometry.matrix.clientHeight).toBeLessThanOrEqual(560)
+  expect(geometry.documentHeight).toBeLessThan(width === 1280 ? 1600 : 2500)
+  expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth)
+
+  await blockerScroll.evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+  })
+  await matrixScroll.evaluate((element) => {
+    element.scrollTop = element.scrollHeight
+  })
+  expect(await blockerScroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+  expect(await matrixScroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+
+  if (width === 1280) {
+    await expect(page.locator('[data-review-actions]')).toBeVisible()
+    await expect(page.locator('[data-enter-review]')).toBeVisible()
+    await expect(page.locator('[data-approve-all]')).toBeVisible()
+  } else {
+    await expect(page.locator('[data-compact-readonly]')).toBeVisible()
+    await expect(page.locator('[data-review-actions]')).toHaveCount(0)
+  }
+
+  await mkdir(outputDir, { recursive: true })
+  await page.screenshot({
+    path: path.join(
+      outputDir,
+      width === 1280
+        ? 'version-detail-desktop-1280-bounded-regions.png'
+        : 'version-detail-mobile-375-bounded-regions.png',
+    ),
+    fullPage: true,
+  })
+
+  expect(consoleErrors).toEqual([])
+  expect(pageErrors).toEqual([])
+})
+
 const installReviewFixture = async (page: Page) => {
   const decisionActions: string[] = []
   const appRequests: string[] = []
@@ -400,4 +486,146 @@ const installReviewFixture = async (page: Page) => {
   })
 
   return { decisionActions, appRequests }
+}
+
+const installLongVersionDetailFixture = async (page: Page): Promise<void> => {
+  const stageTasks = [
+    { stage: 'S0', taskType: 'recognize_meaning' },
+    { stage: 'S1', taskType: 'multiple_choice' },
+    { stage: 'S2', taskType: 'recall_word' },
+    { stage: 'S3', taskType: 'fill_blank' },
+    { stage: 'S4', taskType: 'sentence_build' },
+    { stage: 'S5', taskType: 'sentence_output' },
+  ] as const
+  const words = Array.from({ length: 118 }, (_, index) => ({
+    id: `long-word-${String(index + 1)}`,
+    word: `word-${String(index + 1).padStart(3, '0')}`,
+  }))
+  const coverageCells = words.flatMap((word) =>
+    stageTasks.map((task) => ({
+      wordId: word.id,
+      word: word.word,
+      stage: task.stage,
+      taskType: task.taskType,
+      status: 'draft' as const,
+      itemId: `matrix-${word.id}-${task.stage}`,
+      reason: 'exercise_item_draft' as const,
+    })),
+  )
+  const missingItems = coverageCells.map((cell) => ({
+    word: cell.word,
+    stage: cell.stage,
+    taskType: cell.taskType,
+    reason: cell.reason,
+  }))
+  const exerciseItems = coverageCells.map((cell, index) => ({
+    id: `long-item-${String(index + 1)}`,
+    sourceVersionId: 'version-long',
+    wordId: cell.wordId,
+    word: cell.word,
+    stage: 'S2' as const,
+    taskType: 'recall_word' as const,
+    prompt: { meaning: `释义 ${String(index + 1)}` },
+    answer: { word: cell.word },
+    status: 'draft' as const,
+  }))
+
+  await page.route('**/api/admin/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const key = `${request.method()} ${url.pathname}`
+    const fulfill = async (data: unknown): Promise<void> => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true, data }),
+      })
+    }
+
+    if (key === 'GET /api/admin/session') {
+      await fulfill({
+        id: 'long-version-admin',
+        source: 'application_session',
+        displayName: 'Solazhu',
+      })
+      return
+    }
+
+    if (key === 'GET /api/admin/source-versions/version-long') {
+      await fulfill({
+        sourceId: 'source-long',
+        sourceName: '118 词长列表验收词库',
+        versionId: 'version-long',
+        versionNo: 1,
+        status: 'draft',
+        wordCount: words.length,
+        groupCount: 24,
+        exerciseItemCount: exerciseItems.length,
+        approvedItemCount: 0,
+        createdAt: '2026-07-17T10:00:00.000Z',
+        readyToPublish: false,
+        missingItems,
+      })
+      return
+    }
+
+    if (key === 'GET /api/admin/source-versions/version-long/coverage') {
+      await fulfill({
+        sourceVersionId: 'version-long',
+        wordCount: words.length,
+        readyToPublish: false,
+        cells: coverageCells,
+        missingItems,
+      })
+      return
+    }
+
+    if (key === 'GET /api/admin/source-versions/version-long/exercises') {
+      await fulfill(exerciseItems)
+      return
+    }
+
+    if (key === 'GET /api/admin/source-versions/version-long/review') {
+      const current = exerciseItems[0]
+      await fulfill({
+        sourceVersionId: 'version-long',
+        sourceName: '118 词长列表验收词库',
+        versionNo: 1,
+        contentRevision: 1,
+        totalCount: exerciseItems.length,
+        approvedCount: 0,
+        pendingCount: exerciseItems.length,
+        needsReworkCount: 0,
+        disabledCount: 0,
+        allApproved: false,
+        firstItemId: current?.id,
+        ...(current
+          ? {
+              current: {
+                id: current.id,
+                wordId: current.wordId,
+                word: current.word,
+                wordOrderIndex: 1,
+                position: 1,
+                stage: current.stage,
+                taskType: current.taskType,
+                status: current.status,
+                reviewState: 'pending_review',
+                prompt: current.prompt,
+              },
+            }
+          : {}),
+      })
+      return
+    }
+
+    await route.fulfill({
+      status: 404,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: false,
+        error: { code: 'not_found', message: `Unhandled long-version fixture route ${key}` },
+      }),
+    })
+  })
 }

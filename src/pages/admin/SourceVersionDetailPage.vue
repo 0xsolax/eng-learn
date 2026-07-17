@@ -684,27 +684,34 @@ onBeforeUnmount(() => {
               </div>
               <span>{{ detail.missingItems.length }} 项</span>
             </header>
-            <ul>
-              <li
-                v-for="(item, index) in blockerRows"
-                :key="`${item.word}-${item.stage}-${item.taskType}-${String(index)}`"
-                data-blocker-item
-              >
-                <div class="blocker-facts">
-                  <strong lang="en">{{ item.word }} · {{ item.stage }}</strong>
-                  <span>题型 {{ taskTypeLabel(item.taskType) }}</span>
-                  <span>原因 {{ reasonLabel(item.reason) }}</span>
-                </div>
-                <router-link
-                  v-if="item.itemId"
-                  class="row-link"
-                  :to="`/admin/source-versions/${encodeURIComponent(detail.versionId)}/exercises/${encodeURIComponent(item.itemId)}`"
+            <div
+              class="blocker-scroll"
+              data-scroll-region="publish-blockers"
+              tabindex="0"
+              aria-label="发布阻断项列表"
+            >
+              <ul>
+                <li
+                  v-for="(item, index) in blockerRows"
+                  :key="`${item.word}-${item.stage}-${item.taskType}-${String(index)}`"
+                  data-blocker-item
                 >
-                  打开练习
-                </router-link>
-                <span v-else>暂无可处理项目</span>
-              </li>
-            </ul>
+                  <div class="blocker-facts">
+                    <strong lang="en">{{ item.word }} · {{ item.stage }}</strong>
+                    <span>题型 {{ taskTypeLabel(item.taskType) }}</span>
+                    <span>原因 {{ reasonLabel(item.reason) }}</span>
+                  </div>
+                  <router-link
+                    v-if="item.itemId"
+                    class="row-link"
+                    :to="`/admin/source-versions/${encodeURIComponent(detail.versionId)}/exercises/${encodeURIComponent(item.itemId)}`"
+                  >
+                    打开练习
+                  </router-link>
+                  <span v-else>暂无可处理项目</span>
+                </li>
+              </ul>
+            </div>
           </section>
 
           <section
@@ -1082,10 +1089,21 @@ onBeforeUnmount(() => {
   text-decoration: none;
 }
 
-.blockers ul {
-  padding: 0;
+.blocker-scroll,
+.matrix-scroll {
+  max-height: clamp(280px, 52vh, 520px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.blocker-scroll {
   border: 1px solid var(--color-line);
   background: var(--color-surface);
+}
+
+.blockers ul {
+  padding: 0;
   list-style: none;
 }
 
@@ -1158,6 +1176,7 @@ td {
   text-align: left;
 }
 
+.blocker-scroll:focus-visible,
 .matrix-scroll:focus-visible {
   outline: 3px solid var(--color-brand);
   outline-offset: 2px;
@@ -1330,7 +1349,7 @@ tbody tr:last-child > * {
   .cell-status,
   .status-badge,
   .command-bar,
-  .blockers ul,
+  .blocker-scroll,
   .table-scroll {
     border: 1px solid CanvasText;
   }
