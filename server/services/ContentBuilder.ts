@@ -321,18 +321,7 @@ export const createContentBuilder = ({
       return replaySourceVersionImport(existing, expectedImportedSource)
     }
 
-    try {
-      await repository.assertImportSchemaReady()
-    } catch (error) {
-      if (isDomainError(error) && error.code === 'schema_not_ready') {
-        throw error
-      }
-
-      throw new DomainError(
-        'import_reconcile_required',
-        'Source import schema readiness requires reconciliation',
-      )
-    }
+    await repository.assertImportSchemaReady()
 
     const createdAt = timestamp()
     const source =

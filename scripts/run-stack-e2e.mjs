@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process'
-import { chmod, cp, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { get as httpsGet } from 'node:https'
 import { homedir, tmpdir } from 'node:os'
@@ -16,6 +16,8 @@ const temporaryRoot = await mkdtemp(join(tmpdir(), 'eng-learn-stack-e2e-'))
 const projectRoot = join(temporaryRoot, 'project')
 const stateRoot = join(temporaryRoot, 'state')
 const outputRoot = join(temporaryRoot, 'test-results')
+const progressiveContextMigration = '0011_add_progressive_context_model.sql'
+const pendingMigrationPath = join(temporaryRoot, progressiveContextMigration)
 const dbSentinel = randomUUID()
 const adminUsername = 'e2e-admin'
 const adminPassword = `E2E-${randomBytes(24).toString('base64url')}`
@@ -148,19 +150,68 @@ const readLocalJson = (url) =>
   })
 
 const stopWorker = async () => {
-  if (!worker || worker.exitCode !== null) return
+  const activeWorker = worker
+  worker = undefined
 
-  worker.kill('SIGTERM')
+  if (!activeWorker || activeWorker.exitCode !== null) return
+
+  activeWorker.kill('SIGTERM')
   await Promise.race([
-    new Promise((resolvePromise) => worker.once('exit', resolvePromise)),
+    new Promise((resolvePromise) => activeWorker.once('exit', resolvePromise)),
     new Promise((resolvePromise) =>
       setTimeout(() => {
-        if (worker.exitCode === null) worker.kill('SIGKILL')
+        if (activeWorker.exitCode === null) activeWorker.kill('SIGKILL')
         resolvePromise()
       }, 5_000),
     ),
   ])
 }
+
+const startWorker = async (wrangler) => {
+  const port = await reservePort()
+  const baseURL = `https://127.0.0.1:${String(port)}`
+  worker = spawn(
+    wrangler,
+    [
+      'dev',
+      '--config',
+      'wrangler.e2e.jsonc',
+      '--local',
+      '--persist-to',
+      stateRoot,
+      '--ip',
+      '127.0.0.1',
+      '--port',
+      String(port),
+      '--local-protocol',
+      'https',
+      '--var',
+      `APP_ORIGIN:${baseURL}`,
+      '--var',
+      'E2E_ENVIRONMENT:local-e2e',
+      '--var',
+      `E2E_RUN_ID:${dbSentinel}`,
+      '--log-level',
+      'warn',
+    ],
+    { cwd: projectRoot, env: environment, stdio: 'inherit' },
+  )
+
+  await waitForIdentity(baseURL, dbSentinel)
+  return baseURL
+}
+
+const runStackTest = async (playwright, testFile, baseURL, outputDirectory) =>
+  run(playwright, ['test', testFile, '--config', 'playwright.stack.config.ts'], {
+    env: {
+      ...environment,
+      STACK_BASE_URL: baseURL,
+      STACK_DB_SENTINEL: dbSentinel,
+      STACK_OUTPUT_DIR: outputDirectory,
+      STACK_ADMIN_USERNAME: adminUsername,
+      STACK_ADMIN_PASSWORD: adminPassword,
+    },
+  })
 
 try {
   await mkdir(projectRoot, { recursive: true })
@@ -175,6 +226,10 @@ try {
       force: false,
     })
   }
+  await rename(
+    join(projectRoot, 'migrations', progressiveContextMigration),
+    pendingMigrationPath,
+  )
   await symlink(join(repositoryRoot, 'node_modules'), join(projectRoot, 'node_modules'), 'dir')
   const devVarsPath = join(projectRoot, '.dev.vars')
   await writeFile(devVarsPath, `ADMIN_AUTH_CONFIG=${adminAuthConfig}\n`, {
@@ -217,46 +272,35 @@ try {
     `CREATE TABLE e2e_guard (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO e2e_guard (key, value) VALUES ('db_sentinel', '${dbSentinel}')`,
   ])
 
-  const port = await reservePort()
-  const baseURL = `https://127.0.0.1:${String(port)}`
-  worker = spawn(
-    wrangler,
-    [
-      'dev',
-      '--config',
-      'wrangler.e2e.jsonc',
-      '--local',
-      '--persist-to',
-      stateRoot,
-      '--ip',
-      '127.0.0.1',
-      '--port',
-      String(port),
-      '--local-protocol',
-      'https',
-      '--var',
-      `APP_ORIGIN:${baseURL}`,
-      '--var',
-      'E2E_ENVIRONMENT:local-e2e',
-      '--var',
-      `E2E_RUN_ID:${dbSentinel}`,
-      '--log-level',
-      'warn',
-    ],
-    { cwd: projectRoot, env: environment, stdio: 'inherit' },
+  const preMigrationBaseURL = await startWorker(wrangler)
+  await runStackTest(
+    playwright,
+    'tests/e2e/stack/import-schema-not-ready.spec.ts',
+    preMigrationBaseURL,
+    join(outputRoot, 'schema-not-ready'),
   )
+  await stopWorker()
 
-  await waitForIdentity(baseURL, dbSentinel)
-  await run(playwright, ['test', '--config', 'playwright.stack.config.ts'], {
-    env: {
-      ...environment,
-      STACK_BASE_URL: baseURL,
-      STACK_DB_SENTINEL: dbSentinel,
-      STACK_OUTPUT_DIR: outputRoot,
-      STACK_ADMIN_USERNAME: adminUsername,
-      STACK_ADMIN_PASSWORD: adminPassword,
-    },
-  })
+  await rename(pendingMigrationPath, join(projectRoot, 'migrations', progressiveContextMigration))
+  await run(wrangler, [
+    'd1',
+    'migrations',
+    'apply',
+    'DB',
+    '--config',
+    'wrangler.e2e.jsonc',
+    '--local',
+    '--persist-to',
+    stateRoot,
+  ])
+
+  const fullStackBaseURL = await startWorker(wrangler)
+  await runStackTest(
+    playwright,
+    'tests/e2e/stack/full-loop.spec.ts',
+    fullStackBaseURL,
+    join(outputRoot, 'full'),
+  )
   await run(process.execPath, [
     join(repositoryRoot, 'scripts', 'check-no-secret-artifacts.mjs'),
     outputRoot,

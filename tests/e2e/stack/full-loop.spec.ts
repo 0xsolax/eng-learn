@@ -31,6 +31,15 @@ import { ADMIN_SESSION_COOKIE_NAME } from '../../../server/security/adminHttpSec
 const expectedSentinel = process.env.STACK_DB_SENTINEL
 const adminUsername = process.env.STACK_ADMIN_USERNAME
 const adminPassword = process.env.STACK_ADMIN_PASSWORD
+const importEvidenceSchema = z
+  .object({
+    sourceCount: z.number().int().nonnegative(),
+    versionCount: z.number().int().nonnegative(),
+    wordCount: z.number().int().nonnegative(),
+    groupCount: z.number().int().nonnegative(),
+    operationCount: z.number().int().nonnegative(),
+  })
+  .strict()
 
 const createImportWords = (prefix: string, count: number) =>
   Array.from({ length: count }, (_, index) => ({
@@ -187,6 +196,19 @@ test('enforces response-loss replay, token boundaries, and one-winner rotation i
   expect(
     replayedVersions.filter((version) => version.sourceId === imported.sourceId),
   ).toHaveLength(2)
+  const importEvidence = await success(
+    await request.get(
+      `/api/e2e/import-evidence?sourceId=${encodeURIComponent(imported.sourceId)}`,
+    ),
+    importEvidenceSchema,
+  )
+  expect(importEvidence).toEqual({
+    sourceCount: 1,
+    versionCount: 2,
+    wordCount: 40,
+    groupCount: 8,
+    operationCount: 2,
+  })
 
   const crossKindConflict = await request.post('/api/admin/courses', {
     headers: originHeaders,

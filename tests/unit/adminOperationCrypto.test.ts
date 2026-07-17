@@ -97,6 +97,9 @@ describe('admin operation crypto', () => {
       candidates.map((candidate) => fingerprintSourceVersionImportRequest(candidate)),
     )
 
+    expect(fingerprints[0]).toBe(
+      'sha256:c72cff2b43def325abb34ec452584cdb3e3fed96ce23dfccfe3507f849052c31',
+    )
     expect(new Set(fingerprints).size).toBe(candidates.length)
   })
 

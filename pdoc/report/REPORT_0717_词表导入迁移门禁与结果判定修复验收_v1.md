@@ -233,3 +233,47 @@ Cloudflare Workers Builds 的 Deploy command 已由 `npx wrangler deploy` 改为
 - 当前生产 Worker 与 health：通过。
 - 118 词生产数据完整性：通过。
 - 用户后续练习构建：状态已记录，不纳入导入重复判定，不做额外修改。
+
+## 12. 后续审查补丁验收（2026-07-17）
+
+### 12.1 修复结论
+
+首次验收后的代码复核发现并修复了三个证据与实现缺口：
+
+1. ledger 已查空后的 readiness 普通依赖失败不再误转为 `import_reconcile_required`，而是保持明确的 `dependency_failure`。
+2. 导入 operation 指纹改为复用共享 `ImportWordInput`，六列序列化由 `keyof` 穷尽约束；既有 v2 golden hash 保持不变。
+3. 整栈验收新增真实 0010 D1 阶段和 D1 权威计数，不再以“全迁移数据库上的模拟异常”或仅版本数量代替缺迁移、零写入与 operation 唯一性证据。
+
+本补丁的验收阶段只修改本地代码、测试、计划和验收报告；没有执行远端 migration、生产部署、生产数据写入或 push。
+
+### 12.2 红绿证据
+
+| 切片 | 红测 | 绿测 |
+| --- | --- | --- |
+| readiness 错误分类 | 期望 `dependency_failure`，旧实现实际返回 `import_reconcile_required` | workflow 定向套件 14/14 通过；crypto + workflow 合计 19/19 通过 |
+| 指纹共享类型 | 先记录当前 v2 指纹并加入 golden 断言 | 重构后 hash 仍为 `sha256:c72cff2b43def325abb34ec452584cdb3e3fed96ce23dfccfe3507f849052c31`，类型检查通过 |
+| 缺 0011 整栈 | 原 runner 先应用全部 11 个 migration，测试观察到导入成功而非 503 | 真实 0001–0010 D1 返回 503 / `schema_not_ready`，五类计数均为 0，1/1 通过 |
+| operation 唯一性 | 原用例只断言 source version 数量 | 新建导入与下一版本各响应丢失一次后，D1 为 1 source / 2 versions / 40 words / 8 groups / 2 operations |
+
+### 12.3 独立验收矩阵
+
+最终验收基线为提交 `2e8428e` 加本补丁 8 个代码/测试文件的一次性隔离副本，避免工作区内并行开发影响判定。
+
+| 门禁 | 结果 |
+| --- | --- |
+| TypeScript 三项目 | 通过 |
+| ESLint | 通过 |
+| unit | 64 files / 562 tests 通过 |
+| component | 19 files / 253 tests 通过 |
+| pre-0011 Worker + D1 | 1/1 通过 |
+| post-0011 完整 Worker + D1 | 6/6 通过 |
+| UI Playwright | 55 passed / 13 skipped / 0 failed |
+| 发布构建与敏感产物扫描 | 通过 |
+| Cloudflare types / startup | 通过 |
+| `git diff --check` | 通过 |
+
+### 12.4 并行工作区边界
+
+验收期间工作区并行出现“学习版本双路径审阅”相关的共享类型、repository、service、页面和测试改动。该组改动在开发中途导致当前工作区 typecheck/lint 失败，并因页面删除“先查看”链接而使 6 个宽屏 UI 断言失败；在未包含该组改动的隔离副本中，同一 UI 套件 55/55 执行项通过。最终只读回查时 typecheck 已通过，lint 仍有 4 个 error 和 14 个 warning，均位于并行审阅功能文件。
+
+因此，本节只确认词表导入后续补丁自身通过，不替并行功能宣布全仓集成完成，也没有修改或回退其文件。

@@ -2,6 +2,7 @@ import type {
   AdminOperationKind,
   RawAdminOperationToken,
 } from '../../shared/security/adminOperationToken'
+import type { ImportWordInput } from '../../shared/domain/content'
 import {
   parseRawAccessCode,
   type RawAccessCode,
@@ -49,14 +50,7 @@ export type SourceVersionImportOperationRequest = {
   mode: 'new_source' | 'next_version'
   targetId: string
   sourceName?: string
-  words: Array<{
-    word: string
-    meaning: string
-    examplePhrase: string
-    exampleSentence: string
-    exampleSentenceExtended: string
-    partOfSpeech?: string
-  }>
+  words: ImportWordInput[]
 }
 
 export const hashAdminOperationToken = async (
@@ -81,14 +75,7 @@ export const fingerprintSourceVersionImportRequest = async (
   const payload = [
     lengthPrefixed(input.mode),
     lengthPrefixed(input.sourceName ?? ''),
-    ...input.words.flatMap((word) => [
-      lengthPrefixed(word.word),
-      lengthPrefixed(word.meaning),
-      lengthPrefixed(word.examplePhrase),
-      lengthPrefixed(word.exampleSentence),
-      lengthPrefixed(word.exampleSentenceExtended),
-      lengthPrefixed(word.partOfSpeech ?? ''),
-    ]),
+    ...input.words.flatMap(serializeSourceVersionImportWord),
   ].join('\0')
 
   return (await hashText(
@@ -156,6 +143,16 @@ const operationPayload = (input: AdminOperationRequest): string => {
 }
 
 const lengthPrefixed = (value: string): string => `${String(value.length)}:${value}`
+
+const serializeSourceVersionImportWord = (word: ImportWordInput): string[] =>
+  Object.values({
+    word: lengthPrefixed(word.word),
+    meaning: lengthPrefixed(word.meaning),
+    examplePhrase: lengthPrefixed(word.examplePhrase),
+    exampleSentence: lengthPrefixed(word.exampleSentence),
+    exampleSentenceExtended: lengthPrefixed(word.exampleSentenceExtended),
+    partOfSpeech: lengthPrefixed(word.partOfSpeech ?? ''),
+  } satisfies Record<keyof ImportWordInput, string>)
 
 const hashText = async (value: string): Promise<string> => {
   const digest = await digestText(value)

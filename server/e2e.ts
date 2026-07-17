@@ -50,6 +50,22 @@ export default {
       )
     }
 
+    if (url.pathname === '/api/e2e/import-evidence') {
+      const sourceId = url.searchParams.get('sourceId')
+
+      if (url.searchParams.has('sourceId') && !sourceId) {
+        return Response.json(
+          { ok: false, error: { code: 'validation_error', message: 'sourceId is required' } },
+          { status: 400 },
+        )
+      }
+
+      return Response.json(
+        { ok: true, data: await readImportEvidence(env.DB, sourceId ?? undefined) },
+        { headers: { 'cache-control': 'no-store' } },
+      )
+    }
+
     if (!application || applicationRunId !== env.E2E_RUN_ID) {
       application = createE2EApplication(env)
       applicationRunId = env.E2E_RUN_ID
@@ -93,6 +109,58 @@ const hasMatchingDatabaseSentinel = async (env: E2EEnv): Promise<boolean> => {
   } catch {
     return false
   }
+}
+
+const readImportEvidence = async (db: D1Database, sourceId?: string) => {
+  if (!sourceId) {
+    const [sourceCount, versionCount, wordCount, groupCount, operationCount] =
+      await Promise.all([
+        countRows(db, 'SELECT COUNT(*) AS row_count FROM word_sources'),
+        countRows(db, 'SELECT COUNT(*) AS row_count FROM source_versions'),
+        countRows(db, 'SELECT COUNT(*) AS row_count FROM words'),
+        countRows(db, 'SELECT COUNT(*) AS row_count FROM word_groups'),
+        countRows(
+          db,
+          "SELECT COUNT(*) AS row_count FROM admin_operations WHERE kind = 'create_source'",
+        ),
+      ])
+
+    return { sourceCount, versionCount, wordCount, groupCount, operationCount }
+  }
+
+  const [sourceCount, versionCount, wordCount, groupCount, operationCount] =
+    await Promise.all([
+      countRows(db, 'SELECT COUNT(*) AS row_count FROM word_sources WHERE id = ?', sourceId),
+      countRows(
+        db,
+        'SELECT COUNT(*) AS row_count FROM source_versions WHERE source_id = ?',
+        sourceId,
+      ),
+      countRows(
+        db,
+        'SELECT COUNT(*) AS row_count FROM words WHERE source_version_id IN (SELECT id FROM source_versions WHERE source_id = ?)',
+        sourceId,
+      ),
+      countRows(
+        db,
+        'SELECT COUNT(*) AS row_count FROM word_groups WHERE source_version_id IN (SELECT id FROM source_versions WHERE source_id = ?)',
+        sourceId,
+      ),
+      countRows(
+        db,
+        "SELECT COUNT(*) AS row_count FROM admin_operations WHERE kind = 'create_source' AND outcome_source_id = ?",
+        sourceId,
+      ),
+    ])
+
+  return { sourceCount, versionCount, wordCount, groupCount, operationCount }
+}
+
+const countRows = async (db: D1Database, query: string, ...bindings: unknown[]) => {
+  const statement = bindings.length > 0 ? db.prepare(query).bind(...bindings) : db.prepare(query)
+  const row = await statement.first<{ row_count: number }>()
+
+  return row?.row_count ?? 0
 }
 
 const createE2EApplication = (env: E2EEnv): WorkerApp => {

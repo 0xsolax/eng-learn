@@ -202,7 +202,7 @@ describe('admin operation workflow', () => {
     await expect(contentBuilder.listSourceVersions()).resolves.toHaveLength(1)
   })
 
-  it('requires reconciliation when import schema readiness cannot be determined', async () => {
+  it('keeps a schema-readiness dependency failure explicit after the ledger is known empty', async () => {
     const storedRepository = createInMemoryContentRepository()
     const repository: ContentRepository = {
       ...storedRepository,
@@ -220,7 +220,7 @@ describe('admin operation workflow', () => {
         sourceName: 'Starter',
         words: WORDS,
       }),
-    ).rejects.toMatchObject({ code: 'import_reconcile_required' })
+    ).rejects.toMatchObject({ code: 'dependency_failure' })
     await expect(contentBuilder.listSourceVersions()).resolves.toHaveLength(0)
   })
 
