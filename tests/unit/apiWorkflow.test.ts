@@ -33,7 +33,9 @@ const createWords = (count: number): ImportWordInput[] =>
     return {
       word: `word-${label}`,
       meaning: `meaning-${label}`,
-      exampleSentence: `I can use word-${label}.`,
+      examplePhrase: `word-${label}`,
+      exampleSentence: `I use word-${label}.`,
+      exampleSentenceExtended: `I can use word-${label} every day.`,
     }
   })
 

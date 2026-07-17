@@ -154,7 +154,9 @@ const createWords = () =>
   Array.from({ length: 10 }, (_, index) => ({
     word: `word-${String(index + 1)}`,
     meaning: `meaning-${String(index + 1)}`,
+    examplePhrase: `word-${String(index + 1)}`,
     exampleSentence: `I use word-${String(index + 1)} here.`,
+    exampleSentenceExtended: `I use word-${String(index + 1)} here every day.`,
   }))
 
 const adminRequest = (

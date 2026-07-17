@@ -1,6 +1,7 @@
 import type {
   ArchivedSourceVersion,
   BuildCoverage,
+  ContentModel,
   CoverageBlockReason,
   CoverageCell,
   ExerciseItemView,
@@ -35,11 +36,13 @@ import { findExactAdminOperation, prepareAdminOperation } from './adminOperation
 
 const GROUP_SIZE = 5
 
-const MVP_STAGE_TASKS: Array<{
+type StageTaskDefinition = {
   stage: WordStage
   taskType: TaskType
   requiresExampleSentence: boolean
-}> = [
+}
+
+const LEGACY_STAGE_TASKS: StageTaskDefinition[] = [
   { stage: 'S0', taskType: 'recognize_meaning', requiresExampleSentence: false },
   { stage: 'S1', taskType: 'recall_word', requiresExampleSentence: false },
   { stage: 'S2', taskType: 'multiple_choice', requiresExampleSentence: false },
@@ -47,6 +50,20 @@ const MVP_STAGE_TASKS: Array<{
   { stage: 'S4', taskType: 'sentence_build', requiresExampleSentence: true },
   { stage: 'S5', taskType: 'sentence_output', requiresExampleSentence: true },
 ]
+
+const PROGRESSIVE_STAGE_TASKS: StageTaskDefinition[] = [
+  { stage: 'S0', taskType: 'recognize_meaning', requiresExampleSentence: false },
+  { stage: 'S1', taskType: 'multiple_choice', requiresExampleSentence: false },
+  { stage: 'S2', taskType: 'recall_word', requiresExampleSentence: false },
+  { stage: 'S3', taskType: 'fill_blank', requiresExampleSentence: true },
+  { stage: 'S4', taskType: 'sentence_build', requiresExampleSentence: true },
+  { stage: 'S5', taskType: 'sentence_output', requiresExampleSentence: true },
+]
+
+const getStageTasks = (contentModel: ContentModel): StageTaskDefinition[] =>
+  contentModel === 'v2_progressive_context'
+    ? PROGRESSIVE_STAGE_TASKS
+    : LEGACY_STAGE_TASKS
 
 export type ContentBuilder = {
   importWords(input: {
@@ -104,6 +121,7 @@ export const createContentBuilder = ({
       sourceId: input.source.id,
       versionNo: input.versionNo,
       contentRevision: 0,
+      contentModel: 'v2_progressive_context',
       status: 'draft',
       createdAt,
     }
@@ -113,7 +131,9 @@ export const createContentBuilder = ({
       orderIndex: index + 1,
       word: word.word,
       meaning: word.meaning,
+      examplePhrase: word.examplePhrase,
       exampleSentence: word.exampleSentence,
+      exampleSentenceExtended: word.exampleSentenceExtended,
       ...(word.partOfSpeech ? { partOfSpeech: word.partOfSpeech } : {}),
       createdAt,
     }))
@@ -188,7 +208,7 @@ export const createContentBuilder = ({
         throw new Error(`Word ${item.wordId} is missing`)
       }
 
-      parseExerciseContent(item, word, snapshot.words)
+      parseExerciseContent(item, word, snapshot.words, snapshot.version.contentModel)
     }
 
     await repository.updateExerciseItems(
@@ -320,8 +340,11 @@ export const createContentBuilder = ({
       requireDraft(snapshot.version.status)
 
       const createdAt = timestamp()
+      const stageTasks = getStageTasks(snapshot.version.contentModel)
       const exerciseItems = snapshot.words.flatMap((word) =>
-        MVP_STAGE_TASKS.filter((task) => canBuildTask(word, task, snapshot.words)).map(
+        stageTasks.filter((task) =>
+          canBuildTask(word, task, snapshot.words, snapshot.version.contentModel),
+        ).map(
           (task) =>
             createExerciseItem(
               sourceVersionId,
@@ -329,6 +352,7 @@ export const createContentBuilder = ({
               task.stage,
               task.taskType,
               snapshot.words,
+              snapshot.version.contentModel,
               createdAt,
             ),
         ).filter(
@@ -404,6 +428,7 @@ export const createContentBuilder = ({
         },
         word,
         snapshot.words,
+        snapshot.version.contentModel,
       )
 
       const edited: ExerciseItemRecord = {
@@ -506,11 +531,28 @@ const normalizeImportedWords = (words: ImportWordInput[]): ImportWordInput[] => 
   return words.map((word, index) => {
     const normalizedWord = word.word.trim()
     const normalizedMeaning = word.meaning.trim()
+    const normalizedExamplePhrase = word.examplePhrase.trim()
+    const normalizedExampleSentence = word.exampleSentence.trim()
+    const normalizedExampleSentenceExtended = word.exampleSentenceExtended.trim()
 
     if (!normalizedWord || !normalizedMeaning) {
       const field = normalizedWord ? 'meaning' : 'word'
 
       throw validationError(`words.${String(index)}.${field}`, 'Imported word and meaning are required')
+    }
+
+    if (
+      !normalizedExamplePhrase ||
+      !normalizedExampleSentence ||
+      !normalizedExampleSentenceExtended
+    ) {
+      const field = !normalizedExamplePhrase
+        ? 'examplePhrase'
+        : !normalizedExampleSentence
+          ? 'exampleSentence'
+          : 'exampleSentenceExtended'
+
+      throw validationError(`words.${String(index)}.${field}`, `${field} is required`)
     }
 
     const duplicateKey = canonicalizeLearningText(normalizedWord)
@@ -524,7 +566,9 @@ const normalizeImportedWords = (words: ImportWordInput[]): ImportWordInput[] => 
     return {
       word: normalizedWord,
       meaning: normalizedMeaning,
-      exampleSentence: word.exampleSentence,
+      examplePhrase: normalizedExamplePhrase,
+      exampleSentence: normalizedExampleSentence,
+      exampleSentenceExtended: normalizedExampleSentenceExtended,
       ...(word.partOfSpeech ? { partOfSpeech: word.partOfSpeech.trim() } : {}),
     }
   })
@@ -532,14 +576,16 @@ const normalizeImportedWords = (words: ImportWordInput[]): ImportWordInput[] => 
 
 const canBuildTask = (
   word: WordRecord,
-  task: (typeof MVP_STAGE_TASKS)[number],
+  task: StageTaskDefinition,
   words: WordRecord[],
-): boolean => getTaskBuildBlockReason(word, task, words) === undefined
+  contentModel: ContentModel,
+): boolean => getTaskBuildBlockReason(word, task, words, contentModel) === undefined
 
 const getTaskBuildBlockReason = (
   word: WordRecord,
-  task: (typeof MVP_STAGE_TASKS)[number],
+  task: StageTaskDefinition,
   words: WordRecord[],
+  contentModel: ContentModel,
 ): CoverageBlockReason | undefined => {
   if (
     (task.taskType === 'recall_word' || task.taskType === 'multiple_choice') &&
@@ -548,20 +594,22 @@ const getTaskBuildBlockReason = (
     return 'exercise_item_invalid'
   }
 
-  if (task.requiresExampleSentence && word.exampleSentence.trim().length === 0) {
+  const contextSentence = getContextSentence(word, task.stage, contentModel)
+
+  if (task.requiresExampleSentence && contextSentence.trim().length === 0) {
     return 'example_sentence_required'
   }
 
   if (
     (task.taskType === 'sentence_build' || task.taskType === 'sentence_output') &&
-    !containsUnicodeWholeToken(word.exampleSentence, word.word)
+    !containsUnicodeWholeToken(contextSentence, word.word)
   ) {
     return 'example_sentence_required'
   }
 
   if (
     task.taskType === 'sentence_output' &&
-    generatedTaskRevealsAnswer(word, task, words)
+    generatedTaskRevealsAnswer(word, task, words, contentModel)
   ) {
     return 'exercise_item_invalid'
   }
@@ -570,11 +618,11 @@ const getTaskBuildBlockReason = (
     return 'distractors_required'
   }
 
-  if (task.taskType === 'fill_blank' && !createFillBlankSentence(word)) {
+  if (task.taskType === 'fill_blank' && !createFillBlankSentence(word, contextSentence)) {
     return 'example_sentence_required'
   }
 
-  if (task.taskType === 'sentence_build' && !hasVisibleSentenceShuffle(word)) {
+  if (task.taskType === 'sentence_build' && !hasVisibleSentenceShuffle(contextSentence)) {
     return 'sentence_pieces_required'
   }
 
@@ -584,9 +632,10 @@ const getTaskBuildBlockReason = (
 const createCoverageCells = (
   words: WordRecord[],
   exerciseItems: ExerciseItemRecord[],
+  contentModel: ContentModel,
 ): CoverageCell[] =>
   words.flatMap((word) =>
-    MVP_STAGE_TASKS.map((task) => {
+    getStageTasks(contentModel).map((task) => {
       const item = exerciseItems.find(
         (candidate) =>
           candidate.wordId === word.id &&
@@ -601,7 +650,7 @@ const createCoverageCells = (
       }
 
       if (item) {
-        const isValid = isExerciseContentValid(item, word, words)
+        const isValid = isExerciseContentValid(item, word, words, contentModel)
         const reason: CoverageBlockReason | undefined = !isValid
           ? 'exercise_item_invalid'
           : item.status === 'approved'
@@ -618,7 +667,8 @@ const createCoverageCells = (
         }
       }
 
-      const reason = getTaskBuildBlockReason(word, task, words) ?? 'exercise_item_required'
+      const reason =
+        getTaskBuildBlockReason(word, task, words, contentModel) ?? 'exercise_item_required'
 
       return {
         ...base,
@@ -639,7 +689,11 @@ const hasExerciseItem = (
   )
 
 const toCoverage = (snapshot: Awaited<ReturnType<typeof requireSourceVersion>>): BuildCoverage => {
-  const cells = createCoverageCells(snapshot.words, snapshot.exerciseItems)
+  const cells = createCoverageCells(
+    snapshot.words,
+    snapshot.exerciseItems,
+    snapshot.version.contentModel,
+  )
   const missingItems = cells.flatMap((cell) =>
     cell.reason
       ? [{
@@ -728,13 +782,15 @@ const createExerciseItem = (
   stage: WordStage,
   taskType: TaskType,
   words: WordRecord[],
+  contentModel: ContentModel,
   createdAt: string,
 ): ExerciseItemRecord => {
-  const generatedContent = createExerciseContent(word, stage, taskType, words)
+  const generatedContent = createExerciseContent(word, stage, taskType, words, contentModel)
   const content = parseExerciseContent(
     generatedContent,
     word,
     words,
+    contentModel,
   )
 
   return {
@@ -755,9 +811,12 @@ const createExerciseContent = (
   stage: WordStage,
   taskType: TaskType,
   words: WordRecord[],
+  contentModel: ContentModel,
 ): Pick<ExerciseItemRecord, 'stage' | 'taskType' | 'prompt' | 'answer'> => {
+  const contextSentence = getContextSentence(word, stage, contentModel)
+
   if (stage === 'S4' && taskType === 'sentence_build') {
-    const pieces = createSentencePieces(word, () => crypto.randomUUID())
+    const pieces = createSentencePieces(contextSentence, () => crypto.randomUUID())
 
     return {
       stage,
@@ -765,7 +824,7 @@ const createExerciseContent = (
       prompt: { pieces: [...pieces].reverse() },
       answer: {
         pieceIds: pieces.map((piece) => piece.id),
-        referenceSentence: word.exampleSentence,
+        referenceSentence: contextSentence,
       },
     }
   }
@@ -773,39 +832,66 @@ const createExerciseContent = (
   return {
     stage,
     taskType,
-    prompt: createPrompt(word, stage, words),
-    answer: createAnswer(word, stage),
+    prompt: createPrompt(word, stage, taskType, words, contentModel),
+    answer: createAnswer(word, taskType, contextSentence),
   }
 }
 
 const generatedTaskRevealsAnswer = (
   word: WordRecord,
-  task: (typeof MVP_STAGE_TASKS)[number],
+  task: StageTaskDefinition,
   words: WordRecord[],
+  contentModel: ContentModel,
 ): boolean => {
   const content = exerciseItemContentSchema.safeParse(
-    createExerciseContent(word, task.stage, task.taskType, words),
+    createExerciseContent(word, task.stage, task.taskType, words, contentModel),
   )
 
   return !content.success || learnerPromptRevealsAnswer(content.data, word.word)
 }
 
-const createPrompt = (word: WordRecord, stage: WordStage, words: WordRecord[]): unknown => {
+const getContextSentence = (
+  word: WordRecord,
+  stage: WordStage,
+  contentModel: ContentModel,
+): string => {
+  if (contentModel === 'v1_single_sentence') {
+    return word.exampleSentence
+  }
+
   if (stage === 'S0') {
+    return word.examplePhrase
+  }
+
+  if (stage === 'S4' || stage === 'S5') {
+    return word.exampleSentenceExtended
+  }
+
+  return word.exampleSentence
+}
+
+const createPrompt = (
+  word: WordRecord,
+  stage: WordStage,
+  taskType: TaskType,
+  words: WordRecord[],
+  contentModel: ContentModel,
+): unknown => {
+  if (taskType === 'recognize_meaning') {
     return {
       word: word.word,
       meaning: word.meaning,
-      exampleSentence: word.exampleSentence,
+      exampleSentence: getContextSentence(word, stage, contentModel),
     }
   }
 
-  if (stage === 'S1') {
+  if (taskType === 'recall_word') {
     return {
       meaning: word.meaning,
     }
   }
 
-  if (stage === 'S2') {
+  if (taskType === 'multiple_choice') {
     const options = [
       word.word,
       ...words
@@ -821,9 +907,10 @@ const createPrompt = (word: WordRecord, stage: WordStage, words: WordRecord[]): 
     }
   }
 
-  if (stage === 'S3') {
+  if (taskType === 'fill_blank') {
     return {
-      sentence: createFillBlankSentence(word) ?? '',
+      sentence:
+        createFillBlankSentence(word, getContextSentence(word, stage, contentModel)) ?? '',
     }
   }
 
@@ -833,17 +920,21 @@ const createPrompt = (word: WordRecord, stage: WordStage, words: WordRecord[]): 
   }
 }
 
-const createAnswer = (word: WordRecord, stage: WordStage): unknown => {
-  if (stage === 'S0') {
+const createAnswer = (
+  word: WordRecord,
+  taskType: TaskType,
+  contextSentence: string,
+): unknown => {
+  if (taskType === 'recognize_meaning') {
     return {
       word: word.word,
       expectedResponse: 'known',
     }
   }
 
-  if (stage === 'S5') {
+  if (taskType === 'sentence_output') {
     return {
-      referenceSentence: word.exampleSentence,
+      referenceSentence: contextSentence,
     }
   }
 
@@ -853,16 +944,18 @@ const createAnswer = (word: WordRecord, stage: WordStage): unknown => {
 }
 
 const createSentencePieces = (
-  word: WordRecord,
+  sentence: string,
   createId: (index: number) => string = (index) => String(index + 1),
 ): Array<{ id: string; text: string }> =>
-  word.exampleSentence.trim().split(/\s+/).map((text, index) => ({
+  sentence.trim().split(/\s+/).map((text, index) => ({
     id: createId(index),
     text,
   }))
 
-const createFillBlankSentence = (word: WordRecord): string | undefined => {
-  const sentence = word.exampleSentence
+const createFillBlankSentence = (
+  word: WordRecord,
+  sentence: string,
+): string | undefined => {
   const target = word.word.trim()
 
   if (!target) {
@@ -884,8 +977,8 @@ const createFillBlankSentence = (word: WordRecord): string | undefined => {
 const escapeRegularExpression = (value: string): string =>
   value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
 
-const hasVisibleSentenceShuffle = (word: WordRecord): boolean => {
-  const pieces = createSentencePieces(word)
+const hasVisibleSentenceShuffle = (sentence: string): boolean => {
+  const pieces = createSentencePieces(sentence)
 
   if (pieces.length < 2) {
     return false
@@ -900,6 +993,7 @@ const parseExerciseContent = (
   item: Pick<ExerciseItemRecord, 'stage' | 'taskType' | 'prompt' | 'answer'>,
   word: WordRecord,
   words: WordRecord[],
+  contentModel: ContentModel,
 ) => {
   const content = exerciseItemContentSchema.parse({
     stage: item.stage,
@@ -907,6 +1001,27 @@ const parseExerciseContent = (
     prompt: item.prompt,
     answer: item.answer,
   })
+  const expectedTask = getStageTasks(contentModel).find(
+    (task) => task.stage === content.stage,
+  )
+
+  if (!expectedTask || expectedTask.taskType !== content.taskType) {
+    throw validationError(
+      'content.taskType',
+      'Task type must match the source version content model',
+    )
+  }
+
+  if (
+    contentModel === 'v2_progressive_context' &&
+    content.taskType === 'recognize_meaning' &&
+    content.prompt.exampleSentence.trim().length === 0
+  ) {
+    throw validationError(
+      'content.prompt.exampleSentence',
+      'Progressive S0 context is required',
+    )
+  }
 
   if (
     'word' in content.answer &&
@@ -993,9 +1108,10 @@ const isExerciseContentValid = (
   item: ExerciseItemRecord,
   word: WordRecord,
   words: WordRecord[],
+  contentModel: ContentModel,
 ): boolean => {
   try {
-    parseExerciseContent(item, word, words)
+    parseExerciseContent(item, word, words, contentModel)
 
     return true
   } catch {

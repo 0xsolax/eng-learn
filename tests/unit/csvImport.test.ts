@@ -12,12 +12,14 @@ describe('admin CSV import', () => {
   it('provides a header-only Excel-compatible template that remains valid when filled in', async () => {
     expect(ADMIN_CSV_TEMPLATE_FILENAME).toBe('eng-learn-word-import-template.csv')
     expect(ADMIN_CSV_TEMPLATE_CONTENT).toBe(
-      '\uFEFFword,meaning,exampleSentence,partOfSpeech\r\n',
+      '\uFEFFword,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech\r\n',
     )
 
     await expect(
       parseAdminCsv(
-        csvFile(`${ADMIN_CSV_TEMPLATE_CONTENT}apple,苹果,I eat an apple.,noun\r\n`),
+        csvFile(
+          `${ADMIN_CSV_TEMPLATE_CONTENT}apple,苹果,An apple,I eat an apple,I eat an apple every day,noun\r\n`,
+        ),
       ),
     ).resolves.toEqual({
       ok: true,
@@ -25,7 +27,9 @@ describe('admin CSV import', () => {
         {
           word: 'apple',
           meaning: '苹果',
-          exampleSentence: 'I eat an apple.',
+          examplePhrase: 'An apple',
+          exampleSentence: 'I eat an apple',
+          exampleSentenceExtended: 'I eat an apple every day',
           partOfSpeech: 'noun',
         },
       ],
@@ -34,8 +38,8 @@ describe('admin CSV import', () => {
 
   it('decodes an optional UTF-8 BOM and RFC4180 quoted fields into structured words', async () => {
     const file = csvFile(
-      '\uFEFFword,meaning,exampleSentence,partOfSpeech\r\n' +
-        'apple,"red, round fruit","She said ""apple"".\r\nThen she ate it.",noun\r\n',
+      '\uFEFFword,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech\r\n' +
+        'apple,"red, round fruit","an apple","She said ""apple"".\r\nThen she ate it.","She ate the apple after lunch.",noun\r\n',
     )
 
     await expect(parseAdminCsv(file)).resolves.toEqual({
@@ -44,7 +48,9 @@ describe('admin CSV import', () => {
         {
           word: 'apple',
           meaning: 'red, round fruit',
+          examplePhrase: 'an apple',
           exampleSentence: 'She said "apple".\r\nThen she ate it.',
+          exampleSentenceExtended: 'She ate the apple after lunch.',
           partOfSpeech: 'noun',
         },
       ],
@@ -56,7 +62,8 @@ describe('admin CSV import', () => {
       type: 'text/csv',
     })
     const replacementCharacter = csvFile(
-      'word,meaning,exampleSentence,partOfSpeech\napp\uFFFDle,fruit,,noun',
+      'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech\n' +
+        'app\uFFFDle,fruit,a phrase,a sentence,an extended sentence,noun',
     )
     const expected = {
       ok: false,
@@ -78,40 +85,60 @@ describe('admin CSV import', () => {
       issues: [
         {
           code: 'invalid_header',
-          message: 'Expected header: word,meaning,exampleSentence,partOfSpeech',
+          message:
+            'Expected header: word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech',
         },
       ],
     }
 
     await expect(
       parseAdminCsv(
-        csvFile('word,meaning,example_sentence,part_of_speech\napple,fruit,,noun'),
+        csvFile(
+          'word,meaning,example_phrase,example_sentence,example_sentence_extended,part_of_speech\n' +
+            'apple,fruit,an apple,I eat an apple,I eat an apple every day,noun',
+        ),
       ),
     ).resolves.toEqual(expected)
     await expect(
       parseAdminCsv(
-        csvFile('meaning,word,exampleSentence,partOfSpeech\nfruit,apple,,noun'),
+        csvFile(
+          'meaning,word,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech\n' +
+            'fruit,apple,an apple,I eat an apple,I eat an apple every day,noun',
+        ),
       ),
     ).resolves.toEqual(expected)
     await expect(
       parseAdminCsv(
-        csvFile('word,meaning,exampleSentence,partOfSpeech,notes\napple,fruit,,noun,x'),
+        csvFile(
+          'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech,notes\n' +
+            'apple,fruit,an apple,I eat an apple,I eat an apple every day,noun,x',
+        ),
       ),
     ).resolves.toEqual(expected)
   })
 
   it('rejects files larger than 256 KiB before parsing', async () => {
-    const header = 'word,meaning,exampleSentence,partOfSpeech'
+    const header =
+      'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech'
+    let paddingBytes = 256 * 1024 - new TextEncoder().encode([
+      header,
+      ...Array.from(
+        { length: 500 },
+        (_, index) => `word-${String(index + 1)},${'m'.repeat(500)},p,s,e,noun`,
+      ),
+    ].join('\n')).byteLength
     const atLimitRows = Array.from({ length: 500 }, (_, index) => {
-      const exampleLength = index < 2 ? 2_000 : index === 2 ? 211 : 0
+      const padding = Math.min(paddingBytes, 1_999)
 
-      return `word-${String(index + 1)},${'m'.repeat(500)},${'e'.repeat(exampleLength)},noun`
+      paddingBytes -= padding
+      return `word-${String(index + 1)},${'m'.repeat(500)},p,s,${'e'.repeat(padding + 1)},noun`
     })
     const atLimit = csvFile([header, ...atLimitRows].join('\n'))
     const oversized = new File([new Uint8Array(256 * 1024 + 1)], 'oversized.csv', {
       type: 'text/csv',
     })
 
+    expect(paddingBytes).toBe(0)
     expect(atLimit.size).toBe(256 * 1024)
     expect((await parseAdminCsv(atLimit)).ok).toBe(true)
     await expect(parseAdminCsv(oversized)).resolves.toEqual({
@@ -131,7 +158,10 @@ describe('admin CSV import', () => {
     try {
       await expect(
         parseAdminCsv(
-          csvFile('word,meaning,exampleSentence,partOfSpeech\napple,fruit,,noun'),
+          csvFile(
+            'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech\n' +
+              'apple,fruit,an apple,I eat an apple,I eat an apple every day,noun',
+          ),
         ),
       ).resolves.toMatchObject({ ok: true })
       expect(fetchSpy).not.toHaveBeenCalled()
@@ -141,10 +171,12 @@ describe('admin CSV import', () => {
   })
 
   it('accepts at most 500 data rows', async () => {
-    const header = 'word,meaning,exampleSentence,partOfSpeech'
+    const header =
+      'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech'
     const rows = Array.from(
       { length: 501 },
-      (_, index) => `word-${String(index + 1)},meaning-${String(index + 1)},,noun`,
+      (_, index) =>
+        `word-${String(index + 1)},meaning-${String(index + 1)},phrase-${String(index + 1)},sentence-${String(index + 1)},extended-${String(index + 1)},noun`,
     )
     const accepted = await parseAdminCsv(csvFile([header, ...rows.slice(0, 500)].join('\n')))
 
@@ -165,11 +197,14 @@ describe('admin CSV import', () => {
     const result = await parseAdminCsv(
       csvFile(
         [
-          'word,meaning,exampleSentence,partOfSpeech',
-          '  ,fruit,,noun',
-          'pear,   ,,',
-          'Apple,fruit,,noun',
-          ' apple ,different fruit,,noun',
+          'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech',
+          '  ,fruit,a phrase,a sentence,an extended sentence,noun',
+          'pear,   ,a pear,I eat a pear,I eat a pear every day,',
+          'Apple,fruit,an apple,I eat an apple,I eat an apple every day,noun',
+          ' apple ,different fruit,an apple,I buy an apple,I buy an apple today,noun',
+          'plum,fruit,   ,I eat a plum,I eat a plum every day,noun',
+          'peach,fruit,a peach,   ,I eat a peach every day,noun',
+          'grape,fruit,a grape,I eat a grape,   ,noun',
         ].join('\n'),
       ),
     )
@@ -196,6 +231,24 @@ describe('admin CSV import', () => {
           field: 'word',
           firstRow: 4,
         },
+        {
+          code: 'required_field',
+          message: 'examplePhrase is required',
+          row: 6,
+          field: 'examplePhrase',
+        },
+        {
+          code: 'required_field',
+          message: 'exampleSentence is required',
+          row: 7,
+          field: 'exampleSentence',
+        },
+        {
+          code: 'required_field',
+          message: 'exampleSentenceExtended is required',
+          row: 8,
+          field: 'exampleSentenceExtended',
+        },
       ],
     })
   })
@@ -205,9 +258,9 @@ describe('admin CSV import', () => {
       parseAdminCsv(
         csvFile(
           [
-            'word,meaning,exampleSentence,partOfSpeech',
-            'café,咖啡,,noun',
-            'cafe\u0301,同一咖啡,,noun',
+            'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech',
+            'café,咖啡,un café,I drink café,I drink café every morning,noun',
+            'cafe\u0301,同一咖啡,un café,I like café,I like café after lunch,noun',
           ].join('\n'),
         ),
       ),
@@ -229,8 +282,8 @@ describe('admin CSV import', () => {
     const result = await parseAdminCsv(
       csvFile(
         [
-          'word,meaning,exampleSentence,partOfSpeech',
-          `${'w'.repeat(121)},${'m'.repeat(501)},${'e'.repeat(2_001)},${'p'.repeat(65)}`,
+          'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech',
+          `${'w'.repeat(121)},${'m'.repeat(501)},${'p'.repeat(2_001)},${'s'.repeat(2_001)},${'e'.repeat(2_001)},${'x'.repeat(65)}`,
         ].join('\n'),
       ),
     )
@@ -252,9 +305,21 @@ describe('admin CSV import', () => {
         },
         {
           code: 'field_too_long',
+          message: 'examplePhrase must not exceed 2000 characters',
+          row: 2,
+          field: 'examplePhrase',
+        },
+        {
+          code: 'field_too_long',
           message: 'exampleSentence must not exceed 2000 characters',
           row: 2,
           field: 'exampleSentence',
+        },
+        {
+          code: 'field_too_long',
+          message: 'exampleSentenceExtended must not exceed 2000 characters',
+          row: 2,
+          field: 'exampleSentenceExtended',
         },
         {
           code: 'field_too_long',
@@ -267,9 +332,12 @@ describe('admin CSV import', () => {
   })
 
   it('rejects malformed RFC4180 quoting and data rows with the wrong field count', async () => {
-    const header = 'word,meaning,exampleSentence,partOfSpeech'
+    const header =
+      'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech'
 
-    await expect(parseAdminCsv(csvFile(`${header}\n"apple,fruit,,noun`))).resolves.toEqual({
+    await expect(
+      parseAdminCsv(csvFile(`${header}\n"apple,fruit,an apple,a sentence,extended,noun`)),
+    ).resolves.toEqual({
       ok: false,
       issues: [
         {
@@ -279,12 +347,14 @@ describe('admin CSV import', () => {
         },
       ],
     })
-    await expect(parseAdminCsv(csvFile(`${header}\napple,fruit,,noun,extra`))).resolves.toEqual({
+    await expect(
+      parseAdminCsv(csvFile(`${header}\napple,fruit,an apple,a sentence,extended`)),
+    ).resolves.toEqual({
       ok: false,
       issues: [
         {
           code: 'invalid_column_count',
-          message: 'Expected 4 fields',
+          message: 'Expected 6 fields',
           row: 2,
         },
       ],
@@ -293,7 +363,11 @@ describe('admin CSV import', () => {
 
   it('rejects a header-only file with no data rows', async () => {
     await expect(
-      parseAdminCsv(csvFile('word,meaning,exampleSentence,partOfSpeech\n')),
+      parseAdminCsv(
+        csvFile(
+          'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech\n',
+        ),
+      ),
     ).resolves.toEqual({
       ok: false,
       issues: [

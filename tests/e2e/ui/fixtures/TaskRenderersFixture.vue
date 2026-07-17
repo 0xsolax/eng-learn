@@ -22,21 +22,21 @@ const tasks = {
     orderIndex: 1,
     stage: 'S0',
     taskType: 'recognize_meaning',
-    prompt: { word: 'apple', meaning: '苹果', exampleSentence: 'I see an apple.' },
+    prompt: { word: 'apple', meaning: '苹果', exampleSentence: 'An apple' },
   },
   recall: {
     ...base,
-    id: 'fixture-s1',
-    orderIndex: 2,
-    stage: 'S1',
+    id: 'fixture-s2',
+    orderIndex: 3,
+    stage: 'S2',
     taskType: 'recall_word',
     prompt: { meaning: '苹果' },
   },
   choice: {
     ...base,
-    id: 'fixture-s2',
-    orderIndex: 3,
-    stage: 'S2',
+    id: 'fixture-s1',
+    orderIndex: 2,
+    stage: 'S1',
     taskType: 'multiple_choice',
     prompt: { meaning: '苹果', options: ['pear', 'apple', 'peach'] },
   },
@@ -46,7 +46,7 @@ const tasks = {
     orderIndex: 4,
     stage: 'S3',
     taskType: 'fill_blank',
-    prompt: { sentence: 'I see an ____.' },
+    prompt: { sentence: 'I eat an ____.' },
   },
   build: {
     ...base,
@@ -56,7 +56,8 @@ const tasks = {
     taskType: 'sentence_build',
     prompt: {
       pieces: [
-        { id: 'correct-position-2', text: 'see' },
+        { id: 'correct-position-2', text: 'eat' },
+        { id: 'correct-position-4', text: 'every day' },
         { id: 'correct-position-3', text: 'an apple' },
         { id: 'correct-position-1', text: 'I' },
       ],
@@ -68,7 +69,7 @@ const tasks = {
     orderIndex: 6,
     stage: 'S5',
     taskType: 'sentence_output',
-    prompt: { meaning: '我看见一个苹果。', instruction: '写一个完整英文句子' },
+    prompt: { meaning: '我每天吃一个苹果。', instruction: '写一个完整英文句子' },
   },
 } satisfies Record<string, LessonTaskDto>
 
@@ -105,19 +106,19 @@ const showReference = (): void => {
     </section>
     <section
       data-renderer="s1"
-      aria-label="S1 回忆任务"
+      aria-label="S1 选择任务"
     >
       <TaskRenderer
-        :task="tasks.recall"
+        :task="tasks.choice"
         @submit="recordSubmission"
       />
     </section>
     <section
       data-renderer="s2"
-      aria-label="S2 选择任务"
+      aria-label="S2 回忆任务"
     >
       <TaskRenderer
-        :task="tasks.choice"
+        :task="tasks.recall"
         @submit="recordSubmission"
       />
     </section>

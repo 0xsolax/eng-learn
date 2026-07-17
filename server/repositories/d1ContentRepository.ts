@@ -1,4 +1,5 @@
 import type {
+  ContentModel,
   SourceVersionSummary,
   SourceVersionStatus,
   TaskType,
@@ -29,6 +30,7 @@ type SourceVersionRow = {
   source_id: string
   version_no: number
   content_revision: number
+  content_model: ContentModel
   status: SourceVersionStatus
   created_at: string
   published_at: string | null
@@ -40,7 +42,9 @@ type WordRow = {
   order_index: number
   word: string
   meaning: string
+  example_phrase: string
   example_sentence: string
+  example_sentence_extended: string
   part_of_speech: string | null
   created_at: string
 }
@@ -116,7 +120,9 @@ export const createD1ContentRepository = (db: D1Database): ContentRepository => 
         orderIndex: word.orderIndex,
         word: word.word,
         meaning: word.meaning,
+        examplePhrase: word.examplePhrase,
         exampleSentence: word.exampleSentence,
+        exampleSentenceExtended: word.exampleSentenceExtended,
         partOfSpeech: word.partOfSpeech ?? null,
         createdAt: word.createdAt,
       })),
@@ -144,13 +150,14 @@ export const createD1ContentRepository = (db: D1Database): ContentRepository => 
         : []),
       db
         .prepare(
-          'INSERT INTO source_versions (id, source_id, version_no, content_revision, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          'INSERT INTO source_versions (id, source_id, version_no, content_revision, content_model, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
         )
         .bind(
           input.version.id,
           input.version.sourceId,
           input.version.versionNo,
           input.version.contentRevision,
+          input.version.contentModel,
           input.version.status,
           input.version.createdAt,
         ),
@@ -469,7 +476,8 @@ const createWordInsert = (
     .prepare(
       `INSERT INTO words (
         id, source_version_id, order_index, word, meaning,
-        example_sentence, part_of_speech, created_at
+        example_phrase, example_sentence, example_sentence_extended,
+        part_of_speech, created_at
       )
       SELECT
         json_extract(json_row.value, '$.id'),
@@ -477,7 +485,9 @@ const createWordInsert = (
         CAST(json_extract(json_row.value, '$.orderIndex') AS INTEGER),
         json_extract(json_row.value, '$.word'),
         json_extract(json_row.value, '$.meaning'),
+        json_extract(json_row.value, '$.examplePhrase'),
         json_extract(json_row.value, '$.exampleSentence'),
+        json_extract(json_row.value, '$.exampleSentenceExtended'),
         json_extract(json_row.value, '$.partOfSpeech'),
         json_extract(json_row.value, '$.createdAt')
       FROM json_each(?1) AS json_row`,
@@ -745,6 +755,7 @@ const mapSourceVersion = (row: SourceVersionRow): SourceVersionRecord => ({
   sourceId: row.source_id,
   versionNo: row.version_no,
   contentRevision: row.content_revision,
+  contentModel: row.content_model,
   status: row.status,
   createdAt: row.created_at,
   ...(row.published_at ? { publishedAt: row.published_at } : {}),
@@ -772,7 +783,9 @@ const mapWord = (row: WordRow): WordRecord => ({
   orderIndex: row.order_index,
   word: row.word,
   meaning: row.meaning,
+  examplePhrase: row.example_phrase,
   exampleSentence: row.example_sentence,
+  exampleSentenceExtended: row.example_sentence_extended,
   ...(row.part_of_speech ? { partOfSpeech: row.part_of_speech } : {}),
   createdAt: row.created_at,
 })

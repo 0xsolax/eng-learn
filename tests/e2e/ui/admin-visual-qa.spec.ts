@@ -873,13 +873,13 @@ const workspaceViewport = { width: 1280, height: 800 }
 const versionViewport = { width: 1280, height: 900 }
 const ephemeralVisualPassword = `visual-input-${crypto.randomUUID()}`
 const validCsv = [
-  'word,meaning,exampleSentence,partOfSpeech',
-  'apple,苹果,I eat an apple.,noun',
-  'book,书,This is my book.,noun',
+  'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech',
+  'apple,苹果,An apple,I eat an apple,I eat an apple every day,noun',
+  'book,书,A book,This is my book,This is my favorite book to read,noun',
 ].join('\n')
 const invalidCsv = [
-  'word,meaning,exampleSentence,partOfSpeech',
-  ',苹果,I eat an apple.,noun',
+  'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech',
+  ',苹果,An apple,I eat an apple,I eat an apple every day,noun',
 ].join('\n')
 
 const fillLoginFormAndSubmit = async (page: Page): Promise<void> => {

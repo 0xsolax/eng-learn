@@ -143,7 +143,9 @@ describe('worker admin content lifecycle contract', () => {
     sourceWords[0] = {
       word: 'apple',
       meaning: '苹果',
+      examplePhrase: 'an apple',
       exampleSentence: 'I ate an apple.',
+      exampleSentenceExtended: 'I ate an apple after lunch.',
     }
 
     const draft = await contentBuilder.importWords({
@@ -330,7 +332,9 @@ const words = (count: number) =>
   Array.from({ length: count }, (_, index) => ({
     word: `word-${String(index + 1)}`,
     meaning: `meaning-${String(index + 1)}`,
+    examplePhrase: `word-${String(index + 1)}`,
     exampleSentence: `I use word-${String(index + 1)} here.`,
+    exampleSentenceExtended: `I use word-${String(index + 1)} here every day.`,
   }))
 
 const request = (

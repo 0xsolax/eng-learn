@@ -5,7 +5,7 @@
 - 项目：eng-learn
 - 计划版本：v1
 - 创建日期：2026-07-06
-- 更新日期：2026-07-14
+- 更新日期：2026-07-17
 - 修改人：Solazhu
 - 负责人：Solazhu
 - 操作人：Solazhu
@@ -259,10 +259,11 @@ Cloudflare D1
 实施内容：
 
 1. 实现管理端词库创建和词表导入 API。
-2. 支持最小导入字段：`word`、`meaning`、`example_sentence`、`part_of_speech`。
-3. 导入后创建 `source_version=draft`。
-4. 按 `order_index` 每 5 个词生成 `word_groups`。
-5. 管理端提供词库预览页面，显示总词数、分组数、缺失字段、重复词。
+2. 新导入版本固定使用六列：`word`、`meaning`、`examplePhrase`、`exampleSentence`、`exampleSentenceExtended`、`partOfSpeech`。
+3. 词库版本写入不可变内容模型标识；历史版本保持 `v1_single_sentence`，新导入版本使用 `v2_progressive_context`。
+4. 导入后创建 `source_version=draft`。
+5. 按 `order_index` 每 5 个词生成 `word_groups`。
+6. 管理端提供词库预览页面，显示总词数、分组数、缺失字段、重复词。
 
 耦合控制：
 
@@ -291,12 +292,12 @@ Cloudflare D1
 
 1. 实现 `ContentBuilder` 服务，只负责从词库生成练习包和练习项目。
 2. 为每个词生成 MVP 题型：
-   - S0：看词识义、基础句展示。
-   - S1：中文到英文、看释义选词。
-   - S2：同类或异类干扰选择题。
-   - S3：短句填空、短句理解。
-   - S4：句子拼装。
-   - S5：中文到英文短句输出。
+   - S0：看词识义，展示 `examplePhrase` 最短语境。
+   - S1：看释义选择英文单词。
+   - S2：根据释义主动默写英文单词。
+   - S3：使用 `exampleSentence` 基础句填空。
+   - S4：使用 `exampleSentenceExtended` 扩展句拼装。
+   - S5：独立输出后对照 `exampleSentenceExtended`。
 3. 实现 `exercise_packs` 和 `exercise_items` 持久化。
 4. 实现覆盖率页面：按词、阶段、题型展示是否满足 MVP 最低题量。
 5. 实现练习项目编辑、批准、禁用。
@@ -312,7 +313,8 @@ Cloudflare D1
 测试方式：
 
 - 单元测试：每个词至少生成 S0-S5 的最低练习项目。
-- 单元测试：缺少 example_sentence 的词不能生成 S3/S4/S5 合格项目，覆盖率显示缺口。
+- 单元测试：缺少 `examplePhrase`、`exampleSentence` 或 `exampleSentenceExtended` 的新模型词不能进入构建，错误指出具体字段。
+- 兼容测试：历史模型仍按原 S1/S2 映射和单例句语义构建；既有 lesson task 快照不被改写。
 - API 测试：未达覆盖率无法 publish。
 - API 测试：已发布版本不能被修改，只能创建新版本。
 - 页面手测：管理员能从导入到发布完成一次内容构建。
@@ -454,14 +456,14 @@ Cloudflare D1
 
 ### 11.1 后台内容构建验收
 
-输入：20 个单词，每个词包含 `word`、`meaning`、`example_sentence`。
+输入：20 个单词，每个词包含 `word`、`meaning`、`examplePhrase`、`exampleSentence`、`exampleSentenceExtended`、`partOfSpeech`。
 
 预期：
 
 - 系统创建 1 个草稿版本。
 - 系统创建 20 个 words。
 - 系统创建 4 个 groups。
-- 系统为每个词生成 S0-S5 的练习项目。
+- 系统为每个词生成 S0-S5 的练习项目，语境按短语、基础句、扩展句逐级展开。
 - 覆盖率达标后可发布版本。
 - 发布后版本不可原地修改。
 

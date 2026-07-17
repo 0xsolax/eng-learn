@@ -52,10 +52,10 @@ test('@learner production routes expose no serious or critical automated accessi
   await expectNoSeriousViolations(page)
 
   await page.getByRole('button', { name: '继续第 7 课' }).click()
-  await expect(page.getByLabel('写出英文单词')).toBeVisible()
+  await expect(page.getByLabel('apple')).toBeVisible()
   await expectNoSeriousViolations(page)
 
-  await page.getByLabel('写出英文单词').fill('apple')
+  await page.getByLabel('apple').check()
   await page.getByRole('button', { name: '检查答案' }).click()
   await expect(page.getByRole('status')).toContainText('参考答案：apple')
   await expectNoSeriousViolations(page)

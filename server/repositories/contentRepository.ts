@@ -1,4 +1,5 @@
 import type {
+  ContentModel,
   ExerciseItemStatus,
   SourceVersionSummary,
   SourceVersionStatus,
@@ -18,6 +19,7 @@ export type SourceVersionRecord = {
   sourceId: string
   versionNo: number
   contentRevision: number
+  contentModel: ContentModel
   status: SourceVersionStatus
   createdAt: string
   publishedAt?: string
@@ -29,7 +31,9 @@ export type WordRecord = {
   orderIndex: number
   word: string
   meaning: string
+  examplePhrase: string
   exampleSentence: string
+  exampleSentenceExtended: string
   partOfSpeech?: string
   createdAt: string
 }

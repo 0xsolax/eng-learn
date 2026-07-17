@@ -51,7 +51,7 @@ const readonlyRows = computed<Array<{ label: string; value: string }>>(() => {
       return [
         { label: '题面单词', value: props.item.prompt.word },
         { label: '中文词义', value: props.item.prompt.meaning },
-        { label: '例句', value: props.item.prompt.exampleSentence || '未填写' },
+        { label: '接触语境', value: props.item.prompt.exampleSentence || '未填写' },
         { label: '标准单词', value: props.item.answer.word },
       ]
     case 'recall_word':
@@ -174,7 +174,7 @@ const toCandidate = (item: AdminExerciseItemDto, values: EditorFields): unknown 
   switch (item.taskType) {
     case 'recognize_meaning':
       return {
-        stage: 'S0',
+        stage: item.stage,
         taskType: 'recognize_meaning',
         prompt: {
           word: values.promptWord,
@@ -185,28 +185,28 @@ const toCandidate = (item: AdminExerciseItemDto, values: EditorFields): unknown 
       }
     case 'recall_word':
       return {
-        stage: 'S1',
+        stage: item.stage,
         taskType: 'recall_word',
         prompt: { meaning: values.meaning },
         answer: { word: values.answerWord },
       }
     case 'multiple_choice':
       return {
-        stage: 'S2',
+        stage: item.stage,
         taskType: 'multiple_choice',
         prompt: { meaning: values.meaning, options: toLines(values.options) },
         answer: { word: values.answerWord },
       }
     case 'fill_blank':
       return {
-        stage: 'S3',
+        stage: item.stage,
         taskType: 'fill_blank',
         prompt: { sentence: values.sentence },
         answer: { word: values.answerWord },
       }
     case 'sentence_build':
       return {
-        stage: 'S4',
+        stage: item.stage,
         taskType: 'sentence_build',
         prompt: { pieces: toPieces(values.pieces) },
         answer: {
@@ -216,7 +216,7 @@ const toCandidate = (item: AdminExerciseItemDto, values: EditorFields): unknown 
       }
     case 'sentence_output':
       return {
-        stage: 'S5',
+        stage: item.stage,
         taskType: 'sentence_output',
         prompt: { meaning: values.meaning, instruction: values.instruction },
         answer: { referenceSentence: values.referenceSentence },
@@ -351,7 +351,7 @@ function emptyFields(): EditorFields {
         :disabled="readonly || saving"
       />
       <label class="native-field">
-        <span>例句</span>
+        <span>接触语境</span>
         <textarea
           v-model="fields.exampleSentence"
           name="example-sentence"

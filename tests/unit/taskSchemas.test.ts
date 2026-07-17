@@ -70,6 +70,50 @@ describe('shared task schemas', () => {
     }
   })
 
+  it('accepts both versioned S1/S2 mappings while rejecting unrelated stage pairs', () => {
+    expect(() =>
+      lessonTaskSchema.parse({
+        ...baseTask,
+        stage: 'S1',
+        taskType: 'multiple_choice',
+        prompt: { meaning: '苹果', options: ['apple', 'pear', 'peach'] },
+      }),
+    ).not.toThrow()
+    expect(() =>
+      lessonTaskSchema.parse({
+        ...baseTask,
+        stage: 'S2',
+        taskType: 'recall_word',
+        prompt: { meaning: '苹果' },
+      }),
+    ).not.toThrow()
+    expect(() =>
+      lessonTaskSchema.parse({
+        ...baseTask,
+        stage: 'S3',
+        taskType: 'recall_word',
+        prompt: { meaning: '苹果' },
+      }),
+    ).toThrow()
+
+    expect(() =>
+      exerciseItemContentSchema.parse({
+        stage: 'S1',
+        taskType: 'multiple_choice',
+        prompt: { meaning: '苹果', options: ['apple', 'pear', 'peach'] },
+        answer: { word: 'apple' },
+      }),
+    ).not.toThrow()
+    expect(() =>
+      exerciseItemContentSchema.parse({
+        stage: 'S2',
+        taskType: 'recall_word',
+        prompt: { meaning: '苹果' },
+        answer: { word: 'apple' },
+      }),
+    ).not.toThrow()
+  })
+
   it('rejects a mismatched stage, malformed distractors, and duplicate piece ids', () => {
     expect(() =>
       lessonTaskSchema.parse({

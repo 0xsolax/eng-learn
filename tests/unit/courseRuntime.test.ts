@@ -20,7 +20,9 @@ const createWords = (count: number): ImportWordInput[] =>
     return {
       word: `word-${label}`,
       meaning: `meaning-${label}`,
-      exampleSentence: `I can use word-${label}.`,
+      examplePhrase: `word-${label}`,
+      exampleSentence: `I use word-${label}.`,
+      exampleSentenceExtended: `I can use word-${label} every day.`,
     }
   })
 
@@ -528,7 +530,7 @@ describe('course runtime workflow', () => {
       await courseRuntime.submitAnswer({
         sessionId: lessonTwo.session.id,
         taskId: task.id,
-        submission: { taskType: 'recall_word', answer: `word-${String(index + 1)}` },
+        submission: { taskType: 'multiple_choice', answer: `word-${String(index + 1)}` },
       })
     }
     const lessonTwoCompletion = await courseRuntime.completeLesson(lessonTwo.session.id)

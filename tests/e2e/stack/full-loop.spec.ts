@@ -93,7 +93,9 @@ test('enforces response-loss replay, token boundaries, and one-winner rotation i
     words: Array.from({ length: 5 }, (_, index) => ({
       word: `lost-word-${String(index + 1)}`,
       meaning: `lost-meaning-${String(index + 1)}`,
-      exampleSentence: `I use lost-word-${String(index + 1)} here.`,
+      examplePhrase: `lost-word-${String(index + 1)}`,
+      exampleSentence: `I use lost-word-${String(index + 1)}.`,
+      exampleSentenceExtended: `I use lost-word-${String(index + 1)} here every day.`,
     })),
   }
 
@@ -251,11 +253,11 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   await authenticateAdminPage(page)
   const sourceName = 'Browser stack source'
   const csv = [
-    'word,meaning,exampleSentence,partOfSpeech',
+    'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech',
     ...Array.from(
       { length: 5 },
       (_, index) =>
-        `browser-word-${String(index + 1)},browser-meaning-${String(index + 1)},I use browser-word-${String(index + 1)} here.,noun`,
+        `browser-word-${String(index + 1)},browser-meaning-${String(index + 1)},browser-word-${String(index + 1)},I use browser-word-${String(index + 1)}.,I use browser-word-${String(index + 1)} here every day.,noun`,
     ),
   ].join('\n')
 
@@ -440,7 +442,9 @@ test('runs admin lifecycle, learner isolation, capped v2 reflux, recovery, and c
         words: Array.from({ length: 5 }, (_, index) => ({
           word: `word-${String(index + 1)}`,
           meaning: `meaning-${String(index + 1)}`,
-          exampleSentence: `I use word-${String(index + 1)} here.`,
+          examplePhrase: `word-${String(index + 1)}`,
+          exampleSentence: `I use word-${String(index + 1)}.`,
+          exampleSentenceExtended: `I use word-${String(index + 1)} here every day.`,
         })),
       },
     }),

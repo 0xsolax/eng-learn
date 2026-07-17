@@ -148,6 +148,32 @@ describe('ExerciseItemPage', () => {
     expect(wrapper.get('[role="status"]').text()).toContain('练习内容已保存')
   })
 
+  it('preserves the progressive S1 identity when editing a multiple-choice item', async () => {
+    const progressiveItem = { ...multipleChoiceItem, stage: 'S1' as const }
+    const api = {
+      getSourceVersion: vi.fn().mockResolvedValue(draftVersion),
+      getExerciseItem: vi.fn().mockResolvedValue(progressiveItem),
+      editExerciseItem: vi.fn().mockResolvedValue(progressiveItem),
+      approveExerciseItem: vi.fn(),
+      disableExerciseItem: vi.fn(),
+    }
+    const wrapper = mountPage(api)
+    await flushPromises()
+
+    await wrapper.get('input[name="meaning"]').setValue('一种水果')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+
+    expect(api.editExerciseItem).toHaveBeenCalledOnce()
+    const submittedInput = api.editExerciseItem.mock.calls[0]?.[1] as unknown
+    expect(submittedInput).toMatchObject({
+      content: {
+        stage: 'S1',
+        taskType: 'multiple_choice',
+      },
+    })
+  })
+
   it('blocks an invalid structured answer before sending a write request', async () => {
     const api = {
       getSourceVersion: vi.fn().mockResolvedValue(draftVersion),

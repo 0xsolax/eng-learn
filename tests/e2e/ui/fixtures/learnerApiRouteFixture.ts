@@ -22,8 +22,8 @@ const pendingTask = {
   role: 'primary',
   required: true,
   stage: 'S1',
-  taskType: 'recall_word',
-  prompt: { meaning: '苹果' },
+  taskType: 'multiple_choice',
+  prompt: { meaning: '苹果', options: ['pear', 'apple', 'peach'] },
 }
 
 const pendingLesson = {
@@ -109,7 +109,7 @@ export const installMockedLearnerApiRouteFixture = async (page: Page): Promise<v
             taskId: 'task-1',
             score: 3,
             correct: true,
-            feedback: { taskType: 'recall_word', correctAnswer: 'apple' },
+            feedback: { taskType: 'multiple_choice', correctAnswer: 'apple' },
           },
         })
         return
@@ -171,7 +171,7 @@ const cappedTasks = Array.from({ length: 15 }, (_, index) => {
     prompt: {
       word: word.word,
       meaning: word.meaning,
-      exampleSentence: `I use ${word.word} here.`,
+      exampleSentence: word.word,
     },
   }
 })

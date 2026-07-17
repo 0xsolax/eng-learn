@@ -183,7 +183,9 @@ const createPublishedCourseFixture = async () => {
           words: Array.from({ length: 5 }, (_, index) => ({
             word: `word-${String(index + 1)}`,
             meaning: `meaning-${String(index + 1)}`,
+            examplePhrase: `word-${String(index + 1)}`,
             exampleSentence: `I use word-${String(index + 1)} here.`,
+            exampleSentenceExtended: `I use word-${String(index + 1)} here every day.`,
           })),
         },
       }),

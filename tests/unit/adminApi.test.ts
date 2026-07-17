@@ -188,7 +188,9 @@ describe('admin API client', () => {
         {
           word: 'apple',
           meaning: '苹果',
+          examplePhrase: 'An apple',
           exampleSentence: 'I eat an apple.',
+          exampleSentenceExtended: 'I eat an apple every day.',
           partOfSpeech: 'noun',
         },
       ],
@@ -612,7 +614,15 @@ describe('admin API client', () => {
         mode: 'new_source',
         operationToken: OPERATION_TOKEN,
         sourceName: 'Starter words',
-        words: [{ word: 'apple', meaning: '苹果', exampleSentence: '' }],
+        words: [
+          {
+            word: 'apple',
+            meaning: '苹果',
+            examplePhrase: 'An apple',
+            exampleSentence: 'I eat an apple.',
+            exampleSentenceExtended: 'I eat an apple every day.',
+          },
+        ],
       }),
       api.buildSourceVersion('version-1'),
       api.getCoverage('version-1'),

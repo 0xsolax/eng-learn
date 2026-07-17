@@ -7,6 +7,13 @@ import {
 import { lessonTaskSchema } from '../../shared/api/taskSchemas'
 
 const OPERATION_TOKEN = 'a'.repeat(64)
+const IMPORT_WORD = {
+  word: 'apple',
+  meaning: '苹果',
+  examplePhrase: 'an apple',
+  exampleSentence: 'I eat an apple',
+  exampleSentenceExtended: 'I eat an apple every day',
+}
 
 describe('API envelope schemas', () => {
   it('validates success data at the client boundary', () => {
@@ -106,13 +113,13 @@ describe('API envelope schemas', () => {
         mode: 'new_source',
         operationToken: OPERATION_TOKEN,
         sourceName: 'Starter',
-        words: [{ word: 'apple', meaning: '苹果', exampleSentence: '' }],
+        words: [IMPORT_WORD],
       }),
     ).toBeTruthy()
     expect(() =>
       importSourceVersionCommandSchema.parse({
         sourceName: 'Ambiguous',
-        words: [{ word: 'apple', meaning: '苹果', exampleSentence: '' }],
+        words: [IMPORT_WORD],
       }),
     ).toThrow()
     expect(
@@ -127,7 +134,7 @@ describe('API envelope schemas', () => {
         mode: 'new_source',
         operationToken: OPERATION_TOKEN,
         sourceName: 's'.repeat(121),
-        words: [{ word: 'apple', meaning: '苹果', exampleSentence: '' }],
+        words: [IMPORT_WORD],
       }),
     ).toThrow()
     expect(() =>
@@ -139,9 +146,19 @@ describe('API envelope schemas', () => {
           {
             word: 'apple',
             meaning: 'm'.repeat(501),
-            exampleSentence: '',
+            examplePhrase: 'an apple',
+            exampleSentence: 'I eat an apple',
+            exampleSentenceExtended: 'I eat an apple every day',
           },
         ],
+      }),
+    ).toThrow()
+    expect(() =>
+      importSourceVersionCommandSchema.parse({
+        mode: 'new_source',
+        operationToken: OPERATION_TOKEN,
+        sourceName: 'Starter',
+        words: [{ ...IMPORT_WORD, examplePhrase: '' }],
       }),
     ).toThrow()
   })

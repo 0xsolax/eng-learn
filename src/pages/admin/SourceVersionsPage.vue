@@ -444,7 +444,10 @@ onBeforeUnmount(() => {
           <h2 id="import-title">
             导入词表
           </h2>
-          <p>UTF-8 CSV，表头必须为 word、meaning、exampleSentence、partOfSpeech。</p>
+          <p>
+            UTF-8 CSV，表头依次为 word、meaning、examplePhrase、exampleSentence、exampleSentenceExtended、partOfSpeech。
+          </p>
+          <p>请按“短语 → 基础句 → 扩展句”填写三层语境；词性可留空。</p>
         </div>
         <a
           data-download-csv-template

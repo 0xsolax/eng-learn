@@ -16,7 +16,7 @@ test('@learner [mocked route fixture] closes code → course → lesson → repo
 
   await page.getByRole('button', { name: '继续第 7 课' }).click()
   await expect(page).toHaveURL(/\/app\/lesson\/session-7$/u)
-  await page.getByLabel('写出英文单词').fill('apple')
+  await page.getByLabel('apple').check()
   await page.getByRole('button', { name: '检查答案' }).click()
   await expect(page.getByRole('status')).toContainText('参考答案：apple')
 

@@ -13,7 +13,9 @@ const createWords = (count: number): ImportWordInput[] =>
     return {
       word: `word-${label}`,
       meaning: `meaning-${label}`,
-      exampleSentence: `I can use word-${label}.`,
+      examplePhrase: `word-${label}`,
+      exampleSentence: `I use word-${label}.`,
+      exampleSentenceExtended: `I can use word-${label} every day.`,
       partOfSpeech: 'noun',
     }
   })
@@ -199,7 +201,7 @@ describe('admin content building workflow', () => {
     })
   })
 
-  it('builds all six exercise variants with schema-valid prompt and answer content', async () => {
+  it('builds all six progressive exercise variants from their intended context level', async () => {
     const contentBuilder = createContentBuilder({
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
@@ -225,6 +227,113 @@ describe('admin content building workflow', () => {
         }),
       ).not.toThrow()
     }
+
+    const wordItems = items.filter((item) => item.word === 'word-1')
+
+    expect(wordItems).toEqual([
+      expect.objectContaining({
+        stage: 'S0',
+        taskType: 'recognize_meaning',
+        prompt: {
+          word: 'word-1',
+          meaning: 'meaning-1',
+          exampleSentence: 'word-1',
+        },
+      }),
+      expect.objectContaining({
+        stage: 'S1',
+        taskType: 'multiple_choice',
+      }),
+      expect.objectContaining({
+        stage: 'S2',
+        taskType: 'recall_word',
+      }),
+      expect.objectContaining({
+        stage: 'S3',
+        taskType: 'fill_blank',
+        prompt: { sentence: 'I use ____.' },
+      }),
+      expect.objectContaining({
+        stage: 'S4',
+        taskType: 'sentence_build',
+      }),
+      expect.objectContaining({
+        stage: 'S5',
+        taskType: 'sentence_output',
+        answer: { referenceSentence: 'I can use word-1 every day.' },
+      }),
+    ])
+    expect(wordItems.find((item) => item.stage === 'S4')?.answer).toMatchObject({
+      referenceSentence: 'I can use word-1 every day.',
+    })
+  })
+
+  it('keeps the historical single-sentence stage mapping for v1 source versions', async () => {
+    const repository = createInMemoryContentRepository()
+    const createdAt = '2026-07-01T00:00:00.000Z'
+    const versionId = 'version-legacy'
+
+    await repository.createSourceVersion({
+      source: { id: 'source-legacy', name: 'Legacy source', createdAt },
+      version: {
+        id: versionId,
+        sourceId: 'source-legacy',
+        versionNo: 1,
+        contentRevision: 0,
+        contentModel: 'v1_single_sentence',
+        status: 'draft',
+        createdAt,
+      },
+      words: ['apple', 'pear', 'plum'].map((word, index) => ({
+        id: `word-${String(index + 1)}`,
+        sourceVersionId: versionId,
+        orderIndex: index + 1,
+        word,
+        meaning: `meaning-${String(index + 1)}`,
+        examplePhrase: '',
+        exampleSentence: `I eat ${word}.`,
+        exampleSentenceExtended: '',
+        createdAt,
+      })),
+      groups: [
+        {
+          id: 'group-legacy',
+          sourceVersionId: versionId,
+          groupIndex: 1,
+          startOrderIndex: 1,
+          endOrderIndex: 3,
+          createdAt,
+        },
+      ],
+    })
+    const contentBuilder = createContentBuilder({
+      repository,
+      now: () => new Date('2026-07-01T00:00:00.000Z'),
+    })
+
+    await contentBuilder.buildExerciseItems(versionId)
+
+    const items = (await contentBuilder.listExerciseItems(versionId)).filter(
+      (item) => item.word === 'apple',
+    )
+
+    expect(items.map(({ stage, taskType }) => ({ stage, taskType }))).toEqual([
+      { stage: 'S0', taskType: 'recognize_meaning' },
+      { stage: 'S1', taskType: 'recall_word' },
+      { stage: 'S2', taskType: 'multiple_choice' },
+      { stage: 'S3', taskType: 'fill_blank' },
+      { stage: 'S4', taskType: 'sentence_build' },
+      { stage: 'S5', taskType: 'sentence_output' },
+    ])
+    expect(items[0]?.prompt).toEqual({
+      word: 'apple',
+      meaning: 'meaning-1',
+      exampleSentence: 'I eat apple.',
+    })
+    expect(items[4]?.answer).toEqual(
+      expect.objectContaining({ referenceSentence: 'I eat apple.' }),
+    )
+    expect(items[5]?.answer).toEqual({ referenceSentence: 'I eat apple.' })
   })
 
   it('returns stable, addressable coverage cells for every required exercise identity', async () => {
@@ -243,14 +352,14 @@ describe('admin content building workflow', () => {
     )
 
     if (!item) {
-      throw new Error('Expected an S2 exercise item')
+      throw new Error('Expected an S1 exercise item')
     }
 
     expect(coverage.cells).toHaveLength(30)
     expect(coverage.cells).toContainEqual({
       wordId: item.wordId,
       word: 'word-1',
-      stage: 'S2',
+      stage: 'S1',
       taskType: 'multiple_choice',
       status: 'draft',
       itemId: item.id,
@@ -262,7 +371,7 @@ describe('admin content building workflow', () => {
     expect((await contentBuilder.getCoverage(draft.versionId)).cells).toContainEqual({
       wordId: item.wordId,
       word: 'word-1',
-      stage: 'S2',
+      stage: 'S1',
       taskType: 'multiple_choice',
       status: 'approved',
       itemId: item.id,
@@ -610,7 +719,7 @@ describe('admin content building workflow', () => {
     expect(promptIds.every((pieceId) => !pieceId.includes(sentenceBuild.wordId))).toBe(true)
   })
 
-  it('reports an S2 coverage gap when the source has fewer than three real words', async () => {
+  it('reports an S1 coverage gap when the source has fewer than three real words', async () => {
     const contentBuilder = createContentBuilder({
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
@@ -628,7 +737,7 @@ describe('admin content building workflow', () => {
     expect(coverage.readyToPublish).toBe(false)
     expect(coverage.missingItems).toContainEqual({
       word: 'word-1',
-      stage: 'S2',
+      stage: 'S1',
       taskType: 'multiple_choice',
       reason: 'distractors_required',
     })
@@ -644,7 +753,9 @@ describe('admin content building workflow', () => {
     words[0] = {
       word: 'apple',
       meaning: 'apple 苹果',
+      examplePhrase: 'an apple',
       exampleSentence: 'I ate an apple.',
+      exampleSentenceExtended: 'I ate an apple after lunch.',
     }
 
     const draft = await contentBuilder.importWords({
@@ -669,13 +780,13 @@ describe('admin content building workflow', () => {
         {
           word: 'apple',
           stage: 'S1',
-          taskType: 'recall_word',
+          taskType: 'multiple_choice',
           reason: 'exercise_item_invalid',
         },
         {
           word: 'apple',
           stage: 'S2',
-          taskType: 'multiple_choice',
+          taskType: 'recall_word',
           reason: 'exercise_item_invalid',
         },
       ]),
@@ -692,7 +803,9 @@ describe('admin content building workflow', () => {
     words[0] = {
       word: 'apple',
       meaning: 'ap\u200Bple fruit',
+      examplePhrase: 'an apple',
       exampleSentence: 'I ate an apple.',
+      exampleSentenceExtended: 'I ate an apple after lunch.',
     }
 
     const draft = await contentBuilder.importWords({
@@ -726,7 +839,9 @@ describe('admin content building workflow', () => {
     words[0] = {
       word: 'apple',
       meaning: '苹果',
+      examplePhrase: 'an apple',
       exampleSentence: 'I ate an apple.',
+      exampleSentenceExtended: 'I ate an apple after lunch.',
     }
 
     const draft = await contentBuilder.importWords({
@@ -786,6 +901,79 @@ describe('admin content building workflow', () => {
     })
   })
 
+  it('enforces the progressive model during edit, approval and coverage checks', async () => {
+    const repository = createInMemoryContentRepository()
+    const contentBuilder = createContentBuilder({
+      repository,
+      now: () => new Date('2026-07-17T00:00:00.000Z'),
+    })
+    const draft = await contentBuilder.importWords({
+      sourceName: 'Progressive validation source',
+      words: createWords(5),
+    })
+
+    await contentBuilder.buildExerciseItems(draft.versionId)
+
+    const snapshot = await repository.getSourceVersion(draft.versionId)
+    const s0 = snapshot?.exerciseItems.find(
+      (item) => item.stage === 'S0' && item.taskType === 'recognize_meaning',
+    )
+    const s1 = snapshot?.exerciseItems.find(
+      (item) => item.stage === 'S1' && item.taskType === 'multiple_choice',
+    )
+
+    if (!snapshot || !s0 || !s1) {
+      throw new Error('Expected progressive S0 and S1 items')
+    }
+
+    await expect(
+      contentBuilder.editExerciseItem(s0.id, {
+        prompt: { word: 'word-1', meaning: 'meaning-1', exampleSentence: '' },
+        answer: { word: 'word-1', expectedResponse: 'known' },
+      }),
+    ).rejects.toMatchObject({ code: 'validation_error' })
+
+    await repository.updateExerciseItems(
+      draft.versionId,
+      [
+        {
+          ...s0,
+          prompt: { word: 'word-1', meaning: 'meaning-1', exampleSentence: '' },
+        },
+        {
+          ...s1,
+          taskType: 'recall_word',
+          prompt: { meaning: 'meaning-1' },
+          answer: { word: 'word-1' },
+        },
+      ],
+      snapshot.version.contentRevision,
+    )
+
+    await expect(contentBuilder.approveExerciseItem(s0.id)).rejects.toMatchObject({
+      code: 'validation_error',
+    })
+    await expect(contentBuilder.approveExerciseItem(s1.id)).rejects.toMatchObject({
+      code: 'validation_error',
+    })
+
+    const coverage = await contentBuilder.getCoverage(draft.versionId)
+
+    expect(coverage.readyToPublish).toBe(false)
+    expect(coverage.missingItems).toContainEqual({
+      word: 'word-1',
+      stage: 'S0',
+      taskType: 'recognize_meaning',
+      reason: 'exercise_item_invalid',
+    })
+    expect(coverage.missingItems).toContainEqual({
+      word: 'word-1',
+      stage: 'S1',
+      taskType: 'multiple_choice',
+      reason: 'exercise_item_required',
+    })
+  })
+
   it('rejects editing or approving S5 prompts that reveal the reference sentence', async () => {
     const repository = createInMemoryContentRepository()
     const contentBuilder = createContentBuilder({
@@ -797,7 +985,9 @@ describe('admin content building workflow', () => {
     words[0] = {
       word: 'apple',
       meaning: '苹果',
+      examplePhrase: 'an apple',
       exampleSentence: 'I ate an apple.',
+      exampleSentenceExtended: 'I ate an apple after lunch.',
     }
 
     const draft = await contentBuilder.importWords({
@@ -816,10 +1006,10 @@ describe('admin content building workflow', () => {
     await expect(
       contentBuilder.editExerciseItem(item.id, {
         prompt: {
-          meaning: 'I   ATE an apple.',
+          meaning: 'I   ATE an apple after lunch.',
           instruction: 'Write one complete English sentence.',
         },
-        answer: { referenceSentence: 'I ate an apple.' },
+        answer: { referenceSentence: 'I ate an apple after lunch.' },
       }),
     ).rejects.toMatchObject({ code: 'validation_error' })
     expect(await contentBuilder.getExerciseItem(item.id)).toEqual(item)
@@ -836,7 +1026,7 @@ describe('admin content building workflow', () => {
           ...storedItem,
           prompt: {
             meaning: '苹果',
-            instruction: 'Write this: I ate an apple.',
+            instruction: 'Write this: I ate an apple after lunch.',
           },
         },
       ],
@@ -858,7 +1048,9 @@ describe('admin content building workflow', () => {
     words[0] = {
       word: 'he',
       meaning: 'the hero',
+      examplePhrase: 'he',
       exampleSentence: 'He is the hero.',
+      exampleSentenceExtended: 'He is the hero in this story.',
     }
 
     const draft = await contentBuilder.importWords({
@@ -893,7 +1085,7 @@ describe('admin content building workflow', () => {
 
     words[0] = {
       ...firstWord,
-      exampleSentence: 'word-1',
+      exampleSentenceExtended: 'word-1',
     }
 
     const draft = await contentBuilder.importWords({
@@ -930,7 +1122,9 @@ describe('admin content building workflow', () => {
     words[0] = {
       ...firstWord,
       word: 'go',
-      exampleSentence: 'go go',
+      examplePhrase: 'go',
+      exampleSentence: 'I go',
+      exampleSentenceExtended: 'go go',
     }
 
     const draft = await contentBuilder.importWords({
@@ -1028,7 +1222,7 @@ describe('admin content building workflow', () => {
     )
 
     if (!sourceVersion || !item) {
-      throw new Error('Expected an S2 repository item')
+      throw new Error('Expected an S1 repository item')
     }
 
     await repository.updateExerciseItems(
@@ -1053,7 +1247,7 @@ describe('admin content building workflow', () => {
     expect(coverage.cells).toContainEqual({
       wordId: item.wordId,
       word: 'word-1',
-      stage: 'S2',
+      stage: 'S1',
       taskType: 'multiple_choice',
       status: 'approved',
       itemId: item.id,
@@ -1073,7 +1267,9 @@ describe('admin content building workflow', () => {
     duplicateWords[1] = {
       word: 'word-1',
       meaning: 'meaning-copy',
+      examplePhrase: 'word-1',
       exampleSentence: 'I can use word copy.',
+      exampleSentenceExtended: 'I can use word-1 in a copied sentence.',
     }
 
     await expect(
@@ -1083,7 +1279,9 @@ describe('admin content building workflow', () => {
           {
             word: '',
             meaning: 'meaning',
+            examplePhrase: 'a word',
             exampleSentence: 'I can use a word.',
+            exampleSentenceExtended: 'I can use a word in this sentence.',
           },
         ],
       }),
@@ -1100,14 +1298,26 @@ describe('admin content building workflow', () => {
       contentBuilder.importWords({
         sourceName: 'Unicode duplicate source',
         words: [
-          { word: 'café', meaning: '咖啡', exampleSentence: 'I drink café.' },
-          { word: 'cafe\u0301', meaning: '同一咖啡', exampleSentence: 'I drink cafe\u0301.' },
+          {
+            word: 'café',
+            meaning: '咖啡',
+            examplePhrase: 'un café',
+            exampleSentence: 'I drink café.',
+            exampleSentenceExtended: 'I drink café every morning.',
+          },
+          {
+            word: 'cafe\u0301',
+            meaning: '同一咖啡',
+            examplePhrase: 'un cafe\u0301',
+            exampleSentence: 'I drink cafe\u0301.',
+            exampleSentenceExtended: 'I drink cafe\u0301 every morning.',
+          },
         ],
       }),
     ).rejects.toThrow('Duplicate imported word')
   })
 
-  it('blocks publishing when sentence-based stages are missing required example sentences', async () => {
+  it('rejects a progressive import when any context level is missing', async () => {
     const contentBuilder = createContentBuilder({
       repository: createInMemoryContentRepository(),
       now: () => new Date('2026-07-06T00:00:00.000Z'),
@@ -1124,40 +1334,17 @@ describe('admin content building workflow', () => {
       exampleSentence: '',
     }
 
-    const draft = await contentBuilder.importWords({
-      sourceName: 'Incomplete source',
-      words,
+    await expect(
+      contentBuilder.importWords({
+        sourceName: 'Incomplete source',
+        words,
+      }),
+    ).rejects.toMatchObject({
+      code: 'validation_error',
+      details: {
+        fields: [{ path: 'words.0.exampleSentence', message: 'exampleSentence is required' }],
+      },
     })
-    const coverage = await contentBuilder.buildExerciseItems(draft.versionId)
-
-    expect(coverage.readyToPublish).toBe(false)
-    await approveAllDraftItems(contentBuilder, draft.versionId)
-
-    const approvedCoverage = await contentBuilder.getCoverage(draft.versionId)
-
-    expect(approvedCoverage.missingItems).toEqual([
-      {
-        word: 'word-1',
-        stage: 'S3',
-        taskType: 'fill_blank',
-        reason: 'example_sentence_required',
-      },
-      {
-        word: 'word-1',
-        stage: 'S4',
-        taskType: 'sentence_build',
-        reason: 'example_sentence_required',
-      },
-      {
-        word: 'word-1',
-        stage: 'S5',
-        taskType: 'sentence_output',
-        reason: 'example_sentence_required',
-      },
-    ])
-    await expect(contentBuilder.publishVersion(draft.versionId)).rejects.toThrow(
-      'Source version coverage is incomplete',
-    )
   })
 
   it('reports a coverage gap instead of crashing when an example omits the target word', async () => {
@@ -1203,7 +1390,9 @@ describe('admin content building workflow', () => {
     words[0] = {
       word: 'cat',
       meaning: '猫',
+      examplePhrase: 'a cat',
       exampleSentence: 'Scatter the cards; the cat sleeps.',
+      exampleSentenceExtended: 'Scatter the cards; the cat sleeps nearby.',
     }
 
     const draft = await contentBuilder.importWords({
@@ -1232,7 +1421,9 @@ describe('admin content building workflow', () => {
     words[0] = {
       word: 'apple',
       meaning: '苹果',
+      examplePhrase: 'an apple',
       exampleSentence: 'Apple pie with apple slices.',
+      exampleSentenceExtended: 'Apple pie with apple slices tastes good.',
     }
 
     const draft = await contentBuilder.importWords({
@@ -1261,7 +1452,9 @@ describe('admin content building workflow', () => {
     words[0] = {
       word: 'he',
       meaning: '他',
+      examplePhrase: 'he',
       exampleSentence: 'The sign says HE is ready.',
+      exampleSentenceExtended: 'The sign says HE is ready to begin.',
     }
 
     const draft = await contentBuilder.importWords({
@@ -1290,7 +1483,9 @@ describe('admin content building workflow', () => {
     words[0] = {
       word: 'cat',
       meaning: '猫',
+      examplePhrase: 'a cat',
       exampleSentence: 'Look at (cat), please.',
+      exampleSentenceExtended: 'Look at (cat), please, before it leaves.',
     }
 
     const draft = await contentBuilder.importWords({

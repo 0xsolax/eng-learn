@@ -25,17 +25,17 @@ const rendererCases: { task: LessonTaskDto; selector: string }[] = [
     selector: '[data-response="known"]',
   },
   {
-    task: { ...base, stage: 'S1', taskType: 'recall_word', prompt: { meaning: '苹果' } },
-    selector: 'input',
-  },
-  {
     task: {
       ...base,
-      stage: 'S2',
+      stage: 'S1',
       taskType: 'multiple_choice',
       prompt: { meaning: '苹果', options: ['pear', 'apple', 'peach'] },
     },
     selector: 'fieldset',
+  },
+  {
+    task: { ...base, stage: 'S2', taskType: 'recall_word', prompt: { meaning: '苹果' } },
+    selector: 'input',
   },
   {
     task: {

@@ -21,6 +21,11 @@ const publishedVersion = {
   publishedAt: '2026-07-13T01:00:00.000Z',
 }
 
+const CSV_HEADER =
+  'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech'
+const APPLE_CSV = `${CSV_HEADER}\napple,苹果,An apple,I eat an apple,I eat an apple every day,noun`
+const PEAR_CSV = `${CSV_HEADER}\npear,梨,A pear,I eat a pear,I eat a pear every day,noun`
+
 const setCsvFile = async (wrapper: ReturnType<typeof mount>, contents: string): Promise<void> => {
   const input = wrapper.get('input[type="file"]')
   Object.defineProperty(input.element, 'files', {
@@ -93,8 +98,10 @@ describe('SourceVersionsPage', () => {
     expect(download.attributes('download')).toBe('eng-learn-word-import-template.csv')
     expect(href.startsWith('data:text/csv;charset=utf-8,')).toBe(true)
     expect(decodeURIComponent(href.slice(href.indexOf(',') + 1))).toBe(
-      '\uFEFFword,meaning,exampleSentence,partOfSpeech\r\n',
+      `\uFEFF${CSV_HEADER}\r\n`,
     )
+    expect(wrapper.text()).toContain('examplePhrase')
+    expect(wrapper.text()).toContain('exampleSentenceExtended')
   })
 
   it('keeps a completed import result while the workspace is collapsed and reopened', async () => {
@@ -120,7 +127,7 @@ describe('SourceVersionsPage', () => {
     await wrapper.get('input[name="source-name"]').setValue('Starter words')
     await setCsvFile(
       wrapper,
-      'word,meaning,exampleSentence,partOfSpeech\napple,苹果,I eat an apple.,noun',
+      APPLE_CSV,
     )
     await wrapper.get('form[data-import-form]').trigger('submit')
     await flushPromises()
@@ -199,7 +206,7 @@ describe('SourceVersionsPage', () => {
     await wrapper.get('input[name="source-name"]').setValue('Starter words')
     await setCsvFile(
       wrapper,
-      'word,meaning,exampleSentence,partOfSpeech\napple,苹果,I eat an apple.,noun',
+      APPLE_CSV,
     )
 
     expect(wrapper.get('[data-csv-preview]').text()).toContain('1 个词')
@@ -218,7 +225,9 @@ describe('SourceVersionsPage', () => {
         {
           word: 'apple',
           meaning: '苹果',
-          exampleSentence: 'I eat an apple.',
+          examplePhrase: 'An apple',
+          exampleSentence: 'I eat an apple',
+          exampleSentenceExtended: 'I eat an apple every day',
           partOfSpeech: 'noun',
         },
       ],
@@ -248,7 +257,7 @@ describe('SourceVersionsPage', () => {
     await flushPromises()
     await setCsvFile(
       wrapper,
-      'word,meaning,exampleSentence,partOfSpeech\npear,梨,I eat a pear.,noun',
+      PEAR_CSV,
     )
 
     await wrapper.get('form[data-import-form]').trigger('submit')
@@ -261,7 +270,9 @@ describe('SourceVersionsPage', () => {
         {
           word: 'pear',
           meaning: '梨',
-          exampleSentence: 'I eat a pear.',
+          examplePhrase: 'A pear',
+          exampleSentence: 'I eat a pear',
+          exampleSentenceExtended: 'I eat a pear every day',
           partOfSpeech: 'noun',
         },
       ],
@@ -287,7 +298,7 @@ describe('SourceVersionsPage', () => {
     await wrapper.get('input[name="source-name"]').setValue('Starter words')
     await setCsvFile(
       wrapper,
-      'word,meaning,exampleSentence,partOfSpeech\napple,苹果,I eat an apple.,noun',
+      APPLE_CSV,
     )
     await wrapper.get('form[data-import-form]').trigger('submit')
     await flushPromises()
@@ -362,7 +373,7 @@ describe('SourceVersionsPage', () => {
     await wrapper.get('input[name="source-name"]').setValue('Starter words')
     await setCsvFile(
       wrapper,
-      'word,meaning,exampleSentence,partOfSpeech\napple,苹果,I eat an apple.,noun',
+      APPLE_CSV,
     )
     await wrapper.get('form[data-import-form]').trigger('submit')
     await flushPromises()
@@ -405,7 +416,7 @@ describe('SourceVersionsPage', () => {
     await flushPromises()
     await setCsvFile(
       wrapper,
-      'word,meaning,exampleSentence,partOfSpeech\npear,梨,I eat a pear.,noun',
+      PEAR_CSV,
     )
     await wrapper.get('form[data-import-form]').trigger('submit')
     await flushPromises()
@@ -446,18 +457,14 @@ describe('SourceVersionsPage', () => {
     await Promise.resolve()
 
     secondBuffer.resolve(
-      encodeCsv(
-        'word,meaning,exampleSentence,partOfSpeech\npear,梨,I eat a pear.,noun',
-      ),
+      encodeCsv(PEAR_CSV),
     )
     await secondChange
     await flushPromises()
     expect(wrapper.get('[data-csv-preview]').text()).toContain('pear')
 
     firstBuffer.resolve(
-      encodeCsv(
-        'word,meaning,exampleSentence,partOfSpeech\napple,苹果,I eat an apple.,noun',
-      ),
+      encodeCsv(APPLE_CSV),
     )
     await firstChange
     await flushPromises()
@@ -476,7 +483,9 @@ describe('SourceVersionsPage', () => {
         {
           word: 'pear',
           meaning: '梨',
-          exampleSentence: 'I eat a pear.',
+          examplePhrase: 'A pear',
+          exampleSentence: 'I eat a pear',
+          exampleSentenceExtended: 'I eat a pear every day',
           partOfSpeech: 'noun',
         },
       ],

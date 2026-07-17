@@ -164,13 +164,17 @@ const toImportWords = (
   words: Array<{
     word: string
     meaning: string
+    examplePhrase: string
     exampleSentence: string
+    exampleSentenceExtended: string
     partOfSpeech?: string | undefined
   }>,
 ): ImportWordInput[] =>
   words.map((word) => ({
     word: word.word,
     meaning: word.meaning,
+    examplePhrase: word.examplePhrase,
     exampleSentence: word.exampleSentence,
+    exampleSentenceExtended: word.exampleSentenceExtended,
     ...(word.partOfSpeech ? { partOfSpeech: word.partOfSpeech } : {}),
   }))

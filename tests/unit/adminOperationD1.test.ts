@@ -24,6 +24,7 @@ const migrationPaths = [
   '../../migrations/0006_add_lesson_task_queue.sql',
   '../../migrations/0007_backfill_legacy_lesson_runtime.sql',
   '../../migrations/0008_add_admin_operation_ledger.sql',
+  '../../migrations/0011_add_progressive_context_model.sql',
 ]
 
 describe('D1 admin operation transactions', () => {
@@ -342,7 +343,9 @@ const createWords = () => [
   {
     word: 'apple',
     meaning: '苹果',
+    examplePhrase: 'An apple',
     exampleSentence: 'I eat an apple.',
+    exampleSentenceExtended: 'I eat an apple every day.',
   },
 ]
 

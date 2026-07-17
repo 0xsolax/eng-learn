@@ -113,14 +113,14 @@ describe('course query service', () => {
 
     const lessonTwo = await fixture.runtime.startLesson(created.course.id)
     for (const [index, task] of lessonTwo.tasks.entries()) {
-      if (task.taskType !== 'recall_word') {
-        throw new Error('Expected lesson two to contain recall tasks')
+      if (task.taskType !== 'multiple_choice') {
+        throw new Error('Expected lesson two to contain multiple-choice tasks')
       }
       await fixture.runtime.submitAnswer({
         sessionId: lessonTwo.session.id,
         taskId: task.id,
         submission: {
-          taskType: 'recall_word',
+          taskType: 'multiple_choice',
           answer: `word-${String(index + 1)}`,
         },
       })
@@ -177,7 +177,9 @@ describe('course query service', () => {
       words: Array.from({ length: 10 }, (_, index) => ({
         word: `replacement-${String(index + 1)}`,
         meaning: `replacement meaning ${String(index + 1)}`,
+        examplePhrase: `replacement-${String(index + 1)}`,
         exampleSentence: `I use replacement-${String(index + 1)}.`,
+        exampleSentenceExtended: `I use replacement-${String(index + 1)} every day.`,
       })),
     })
     await fixture.builder.buildExerciseItems(nextVersion.versionId)
@@ -357,7 +359,9 @@ const createFixture = async (wordCount = 10) => {
     words: Array.from({ length: wordCount }, (_, index) => ({
       word: `word-${String(index + 1)}`,
       meaning: `meaning-${String(index + 1)}`,
-      exampleSentence: `I can use word-${String(index + 1)}.`,
+      examplePhrase: `word-${String(index + 1)}`,
+      exampleSentence: `I use word-${String(index + 1)}.`,
+      exampleSentenceExtended: `I can use word-${String(index + 1)} every day.`,
     })),
   })
   await builder.buildExerciseItems(imported.versionId)

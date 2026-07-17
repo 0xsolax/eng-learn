@@ -503,7 +503,7 @@ test('@admin completes the content workbench with keyboard-only critical actions
     name: 'keyboard-import.csv',
     mimeType: 'text/csv',
     buffer: Buffer.from(
-      'word,meaning,exampleSentence,partOfSpeech\napple,苹果,An apple a day.,noun\n',
+      'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech\napple,苹果,An apple,I eat an apple,I eat an apple every day,noun\n',
     ),
   })
   await expect(page.locator('[data-csv-preview]')).toContainText('预览通过 · 1 个词')
@@ -889,7 +889,7 @@ test('@controls keeps state meaning visible when Chromium removes color', async 
     expect(await errorMarker.evaluate((element) => getComputedStyle(element).transform)).not.toBe('none')
 
     await page.goto('/tests/e2e/ui/fixtures/task-renderers.html')
-    const selectedChoice = page.locator('[data-renderer="s2"] input[value="apple"]')
+    const selectedChoice = page.locator('[data-renderer="s1"] input[value="apple"]')
     await selectedChoice.check()
     await expect(selectedChoice).toBeChecked()
     expect((await selectedChoice.boundingBox())?.width).toBeGreaterThanOrEqual(20)
@@ -952,13 +952,13 @@ test('@renderers keep six task types keyboard-operable and answer-safe', async (
   expect(await page.content()).not.toContain('correct-position-')
   expect(await page.content()).not.toContain('PRIVATE REFERENCE SENTENCE')
 
-  for (const option of await page.locator('[data-renderer="s2"] .choice-row').all()) {
+  for (const option of await page.locator('[data-renderer="s1"] .choice-row').all()) {
     expect((await option.boundingBox())?.height).toBeGreaterThanOrEqual(56)
   }
   for (const response of await page.locator('[data-renderer="s0"] button').all()) {
     expect((await response.boundingBox())?.height).toBeGreaterThanOrEqual(56)
   }
-  expect((await page.locator('[data-renderer="s1"] input').boundingBox())?.height)
+  expect((await page.locator('[data-renderer="s2"] input').boundingBox())?.height)
     .toBeGreaterThanOrEqual(52)
   expect((await page.locator('[data-renderer="s3"] input').boundingBox())?.height)
     .toBeGreaterThanOrEqual(52)
@@ -968,13 +968,13 @@ test('@renderers keep six task types keyboard-operable and answer-safe', async (
     expect(bounds?.width).toBeGreaterThanOrEqual(48)
   }
 
-  const recallInput = page.locator('[data-renderer="s1"] input')
+  const recallInput = page.locator('[data-renderer="s2"] input')
   await recallInput.focus()
   await page.keyboard.type('apple')
   await page.keyboard.press('Enter')
   await expect(recallInput).toBeDisabled()
 
-  const choice = page.locator('[data-renderer="s2"] input[value="apple"]')
+  const choice = page.locator('[data-renderer="s1"] input[value="apple"]')
   await choice.focus()
   await page.keyboard.press('Space')
   await expect(choice).toBeChecked()

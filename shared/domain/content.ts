@@ -1,5 +1,7 @@
 export type SourceVersionStatus = 'draft' | 'published' | 'archived'
 
+export type ContentModel = 'v1_single_sentence' | 'v2_progressive_context'
+
 export type ExerciseItemStatus = 'draft' | 'approved' | 'disabled'
 
 export type WordStage = 'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5'
@@ -15,7 +17,9 @@ export type TaskType =
 export type ImportWordInput = {
   word: string
   meaning: string
+  examplePhrase: string
   exampleSentence: string
+  exampleSentenceExtended: string
   partOfSpeech?: string
 }
 

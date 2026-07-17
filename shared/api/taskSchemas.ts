@@ -111,7 +111,7 @@ export const lessonTaskSchema = z.discriminatedUnion('taskType', [
   z
     .object({
       ...lessonTaskBase,
-      stage: z.literal('S1'),
+      stage: z.union([z.literal('S1'), z.literal('S2')]),
       taskType: z.literal('recall_word'),
       prompt: recallWordPromptSchema,
     })
@@ -119,7 +119,7 @@ export const lessonTaskSchema = z.discriminatedUnion('taskType', [
   z
     .object({
       ...lessonTaskBase,
-      stage: z.literal('S2'),
+      stage: z.union([z.literal('S1'), z.literal('S2')]),
       taskType: z.literal('multiple_choice'),
       prompt: multipleChoicePromptSchema,
     })
@@ -262,7 +262,7 @@ export const exerciseItemContentSchema = z
     z
       .object({
         ...exerciseItemContentBase,
-        stage: z.literal('S1'),
+        stage: z.union([z.literal('S1'), z.literal('S2')]),
         taskType: z.literal('recall_word'),
         prompt: recallWordPromptSchema,
         answer: z.object({ word: nonEmptyText }).strict(),
@@ -271,7 +271,7 @@ export const exerciseItemContentSchema = z
     z
       .object({
         ...exerciseItemContentBase,
-        stage: z.literal('S2'),
+        stage: z.union([z.literal('S1'), z.literal('S2')]),
         taskType: z.literal('multiple_choice'),
         prompt: multipleChoicePromptSchema,
         answer: z.object({ word: nonEmptyText }).strict(),

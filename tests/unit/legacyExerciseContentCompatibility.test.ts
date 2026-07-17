@@ -30,6 +30,7 @@ const currentMigrationPaths = [
   '../../migrations/0007_backfill_legacy_lesson_runtime.sql',
   '../../migrations/0008_add_admin_operation_ledger.sql',
   '../../migrations/0009_add_lesson_queue_policy_v2.sql',
+  '../../migrations/0011_add_progressive_context_model.sql',
 ]
 
 type SqliteD1Statement = {

@@ -6,7 +6,14 @@ import { canonicalizeLearningText } from '@shared/api/taskContentSafety'
 import Papa from 'papaparse'
 import type { z } from 'zod'
 
-const CSV_HEADERS = ['word', 'meaning', 'exampleSentence', 'partOfSpeech'] as const
+const CSV_HEADERS = [
+  'word',
+  'meaning',
+  'examplePhrase',
+  'exampleSentence',
+  'exampleSentenceExtended',
+  'partOfSpeech',
+] as const
 const MAX_CSV_BYTES = 256 * 1024
 const MAX_DATA_ROWS = 500
 
@@ -119,10 +126,20 @@ export const parseAdminCsv = async (file: File): Promise<CsvImportResult> => {
 
   const issues: CsvImportIssue[] = []
   const seenWords = new Map<string, number>()
-  const words = rows.map(([rawWord = '', rawMeaning = '', exampleSentence = '', rawPart = ''], index) => {
+  const words = rows.map(([
+    rawWord = '',
+    rawMeaning = '',
+    rawExamplePhrase = '',
+    rawExampleSentence = '',
+    rawExampleSentenceExtended = '',
+    rawPart = '',
+  ], index) => {
     const row = index + 2
     const word = rawWord.trim()
     const meaning = rawMeaning.trim()
+    const examplePhrase = rawExamplePhrase.trim()
+    const exampleSentence = rawExampleSentence.trim()
+    const exampleSentenceExtended = rawExampleSentenceExtended.trim()
     const partOfSpeech = rawPart.trim()
 
     if (!word) {
@@ -136,11 +153,37 @@ export const parseAdminCsv = async (file: File): Promise<CsvImportResult> => {
         field: 'meaning',
       })
     }
+    if (!examplePhrase) {
+      issues.push({
+        code: 'required_field',
+        message: 'examplePhrase is required',
+        row,
+        field: 'examplePhrase',
+      })
+    }
+    if (!exampleSentence) {
+      issues.push({
+        code: 'required_field',
+        message: 'exampleSentence is required',
+        row,
+        field: 'exampleSentence',
+      })
+    }
+    if (!exampleSentenceExtended) {
+      issues.push({
+        code: 'required_field',
+        message: 'exampleSentenceExtended is required',
+        row,
+        field: 'exampleSentenceExtended',
+      })
+    }
 
     const boundedFields = {
       word,
       meaning,
+      examplePhrase,
       exampleSentence,
+      exampleSentenceExtended,
       partOfSpeech,
     }
 
@@ -175,7 +218,9 @@ export const parseAdminCsv = async (file: File): Promise<CsvImportResult> => {
     return {
       word,
       meaning,
+      examplePhrase,
       exampleSentence,
+      exampleSentenceExtended,
       ...(partOfSpeech ? { partOfSpeech } : {}),
     }
   })

@@ -133,14 +133,22 @@ export type ApiError = z.infer<typeof apiErrorSchema>
 export const IMPORT_FIELD_LIMITS = {
   word: 120,
   meaning: 500,
+  examplePhrase: 2_000,
   exampleSentence: 2_000,
+  exampleSentenceExtended: 2_000,
   partOfSpeech: 64,
 } as const
 
 export const importWordRequestSchema = z.object({
   word: z.string().trim().min(1).max(IMPORT_FIELD_LIMITS.word),
   meaning: z.string().trim().min(1).max(IMPORT_FIELD_LIMITS.meaning),
-  exampleSentence: z.string().max(IMPORT_FIELD_LIMITS.exampleSentence),
+  examplePhrase: z.string().trim().min(1).max(IMPORT_FIELD_LIMITS.examplePhrase),
+  exampleSentence: z.string().trim().min(1).max(IMPORT_FIELD_LIMITS.exampleSentence),
+  exampleSentenceExtended: z
+    .string()
+    .trim()
+    .min(1)
+    .max(IMPORT_FIELD_LIMITS.exampleSentenceExtended),
   partOfSpeech: z.string().trim().min(1).max(IMPORT_FIELD_LIMITS.partOfSpeech).optional(),
 }).strict()
 

@@ -17,7 +17,9 @@ const WORDS = [
   {
     word: 'apple',
     meaning: '苹果',
+    examplePhrase: 'An apple',
     exampleSentence: 'I eat an apple.',
+    exampleSentenceExtended: 'I eat an apple every day.',
     partOfSpeech: 'noun',
   },
 ]

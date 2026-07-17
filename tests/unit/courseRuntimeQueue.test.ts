@@ -697,7 +697,9 @@ const createFixture = async (
     words: Array.from({ length: wordCount }, (_, index) => ({
       word: `word-${String(index + 1)}`,
       meaning: `meaning-${String(index + 1)}`,
-      exampleSentence: `I can use word-${String(index + 1)} here.`,
+      examplePhrase: `word-${String(index + 1)}`,
+      exampleSentence: `I use word-${String(index + 1)} here.`,
+      exampleSentenceExtended: `I can use word-${String(index + 1)} here every day.`,
     })),
   })
 

@@ -22,6 +22,7 @@ const migrationPaths = [
   '../../migrations/0006_add_lesson_task_queue.sql',
   '../../migrations/0007_backfill_legacy_lesson_runtime.sql',
   '../../migrations/0008_add_admin_operation_ledger.sql',
+  '../../migrations/0011_add_progressive_context_model.sql',
 ]
 
 type SqliteD1Statement = {
@@ -203,7 +204,9 @@ const createWords = (count: number): ImportWordInput[] =>
     return {
       word: `word-${label}`,
       meaning: `meaning-${label}`,
-      exampleSentence: `I can use word-${label}.`,
+      examplePhrase: `word-${label}`,
+      exampleSentence: `I use word-${label}.`,
+      exampleSentenceExtended: `I can use word-${label} every day.`,
       partOfSpeech: 'noun',
     }
   })
@@ -215,18 +218,31 @@ const createNearTwoMiBWords = (): ImportWordInput[] =>
     return {
       word,
       meaning: '义'.repeat(80),
-      exampleSentence: `${word} ${'例'.repeat(1_200)} is ready.`,
+      examplePhrase: word,
+      exampleSentence: `I use ${word}.`,
+      exampleSentenceExtended: `${word} ${'例'.repeat(1_200)} is ready.`,
       partOfSpeech: 'noun',
     }
   })
 
 const createCsvAtByteLimit = (): File => {
-  const header = 'word,meaning,exampleSentence,partOfSpeech'
+  const header =
+    'word,meaning,examplePhrase,exampleSentence,exampleSentenceExtended,partOfSpeech'
+  let paddingBytes = 256 * 1024 - new TextEncoder().encode([
+    header,
+    ...Array.from(
+      { length: 500 },
+      (_, index) => `word-${String(index + 1)},${'m'.repeat(500)},p,s,e,noun`,
+    ),
+  ].join('\n')).byteLength
   const rows = Array.from({ length: 500 }, (_, index) => {
-    const exampleLength = index < 2 ? 2_000 : index === 2 ? 211 : 0
+    const padding = Math.min(paddingBytes, 1_999)
 
-    return `word-${String(index + 1)},${'m'.repeat(500)},${'e'.repeat(exampleLength)},noun`
+    paddingBytes -= padding
+    return `word-${String(index + 1)},${'m'.repeat(500)},p,s,${'e'.repeat(padding + 1)},noun`
   })
+
+  if (paddingBytes !== 0) throw new Error('Could not construct an exact CSV byte fixture')
 
   return new File(
     [new TextEncoder().encode([header, ...rows].join('\n'))],
@@ -248,6 +264,28 @@ const createBuilderFixture = () => {
 }
 
 describe('D1 content build query budget', () => {
+  it('round-trips the v2 content model and all three context levels through D1', async () => {
+    const { database, builder, repository } = createBuilderFixture()
+    const [word] = createWords(1)
+
+    if (!word) throw new Error('Expected one progressive word')
+
+    const imported = await builder.importWords({
+      sourceName: 'Progressive D1 source',
+      words: [word],
+    })
+    const snapshot = await repository.getSourceVersion(imported.versionId)
+
+    expect(snapshot?.version.contentModel).toBe('v2_progressive_context')
+    expect(snapshot?.words[0]).toMatchObject({
+      examplePhrase: word.examplePhrase,
+      exampleSentence: word.exampleSentence,
+      exampleSentenceExtended: word.exampleSentenceExtended,
+    })
+
+    database.close()
+  })
+
   it('imports a 500-row CSV at the 256 KiB boundary within the D1 Free query budget', async () => {
     const file = createCsvAtByteLimit()
     const parsed = await parseAdminCsv(file)
@@ -366,7 +404,7 @@ describe('D1 content build query budget', () => {
       expect({
         buildQueryCount: buildMetrics.queryCount,
         approveQueryCount: approveMetrics.queryCount,
-      }).toEqual({ buildQueryCount: 33, approveQueryCount: 28 })
+      }).toEqual({ buildQueryCount: 26, approveQueryCount: 21 })
 
       database.close()
     },
