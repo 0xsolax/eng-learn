@@ -1,5 +1,7 @@
+import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
 import {
+  assertProductionLessonQueueWriteMode,
   assertRemoteD1MigrationParity,
   createRemoteD1ReadCommands,
   parseRemoteD1Info,
@@ -27,6 +29,43 @@ const LOCAL_MIGRATIONS = [
 ]
 
 describe('remote D1 migration release gate', () => {
+  it('allows production release only when the lesson queue write mode is explicitly v2', () => {
+    const invalidConfigurations = [
+      ['missing vars', '{}'],
+      ['missing mode', '{ "vars": {} }'],
+      ['legacy mode', '{ "vars": { "LESSON_QUEUE_WRITE_MODE": "legacy_v1" } }'],
+      ['disabled mode', '{ "vars": { "LESSON_QUEUE_WRITE_MODE": "disabled" } }'],
+      ['empty mode', '{ "vars": { "LESSON_QUEUE_WRITE_MODE": "" } }'],
+      ['unknown mode', '{ "vars": { "LESSON_QUEUE_WRITE_MODE": "future" } }'],
+    ] as const
+
+    for (const [label, contents] of invalidConfigurations) {
+      expect(
+        () => {
+          assertProductionLessonQueueWriteMode(parseWranglerJsonc(contents))
+        },
+        label,
+      ).toThrow(/LESSON_QUEUE_WRITE_MODE.*v2/u)
+    }
+
+    expect(() => {
+      assertProductionLessonQueueWriteMode(
+        parseWranglerJsonc('{ "vars": { "LESSON_QUEUE_WRITE_MODE": "v2" } }'),
+      )
+    }).not.toThrow()
+  })
+
+  it('keeps the committed production lesson queue write mode at v2', async () => {
+    const contents = await readFile(
+      new URL('../../wrangler.jsonc', import.meta.url),
+      'utf8',
+    )
+
+    expect(() => {
+      assertProductionLessonQueueWriteMode(parseWranglerJsonc(contents))
+    }).not.toThrow()
+  })
+
   it('parses the production target from JSONC and accepts exact migration parity', () => {
     const target = resolveRemoteD1MigrationTarget(parseWranglerJsonc(CONFIG))
     const info = parseRemoteD1Info(JSON.stringify({

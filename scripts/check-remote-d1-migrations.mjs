@@ -21,6 +21,19 @@ export const parseWranglerJsonc = (contents) => {
   }
 }
 
+export const assertProductionLessonQueueWriteMode = (config) => {
+  const writeMode =
+    isRecord(config) && isRecord(config.vars)
+      ? config.vars.LESSON_QUEUE_WRITE_MODE
+      : undefined
+
+  if (writeMode !== 'v2') {
+    throw new Error(
+      'wrangler.jsonc production LESSON_QUEUE_WRITE_MODE must be exactly v2',
+    )
+  }
+}
+
 export const resolveRemoteD1MigrationTarget = (config) => {
   if (!isRecord(config) || !ACCOUNT_ID.test(config.account_id ?? '')) {
     throw new Error('wrangler.jsonc has no valid production account_id')
@@ -169,6 +182,7 @@ export const createRemoteD1ReadCommands = (target, configPath) => [
 
 export const checkRemoteD1Migrations = async () => {
   const config = parseWranglerJsonc(await readFile(wranglerConfigPath, 'utf8'))
+  assertProductionLessonQueueWriteMode(config)
   const target = resolveRemoteD1MigrationTarget(config)
   const migrationsDirectory = resolve(repositoryRoot, target.migrationsDirectory)
   const repositoryPrefix = `${repositoryRoot}${sep}`

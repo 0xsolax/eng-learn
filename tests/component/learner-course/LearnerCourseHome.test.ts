@@ -1,6 +1,10 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { describe, expect, it, vi } from 'vitest'
-import { ApiFailureError, InvalidApiResponseError } from '@/api/errors'
+import {
+  ApiFailureError,
+  ApiNetworkError,
+  InvalidApiResponseError,
+} from '@/api/errors'
 import LearnerCourseHome from '@/features/learner-course/LearnerCourseHome.vue'
 
 const course = {
@@ -141,6 +145,57 @@ describe('LearnerCourseHome', () => {
     expect(alert).not.toContain('meaning_reveals_answer')
     expect(alert).not.toContain('apple')
     expect(alert).not.toContain('检查网络')
+  })
+
+  it('points to course configuration when the current lesson is unavailable', async () => {
+    const api = {
+      getCourseHome: vi.fn().mockResolvedValue(courseHome),
+      startLesson: vi.fn().mockRejectedValue(
+        new ApiFailureError(409, {
+          code: 'course_unavailable',
+          message: 'New lesson sessions are disabled for LESSON_QUEUE_WRITE_MODE',
+        }),
+      ),
+    }
+    const wrapper = mount(LearnerCourseHome, { props: { api } })
+    await flushPromises()
+
+    await wrapper.get('[data-action="start-lesson"]').trigger('click')
+    await flushPromises()
+
+    const alert = wrapper.get('[role="alert"]').text()
+    expect(alert).toContain('当前课程暂时无法开始')
+    expect(alert).toContain('联系课程管理员检查课时配置')
+    expect(alert).not.toContain('检查网络')
+    expect(alert).not.toContain('LESSON_QUEUE_WRITE_MODE')
+  })
+
+  it.each([
+    [
+      'network failure',
+      new ApiNetworkError(new TypeError('Failed to fetch')),
+      '暂时无法开始课时，请检查网络后重试',
+    ],
+    [
+      'invalid response',
+      new InvalidApiResponseError(502),
+      '暂时无法开始课时，请稍后重试',
+    ],
+    ['unexpected failure', new Error('unexpected'), '暂时无法开始课时，请稍后重试'],
+  ])('classifies %s without exposing internal details', async (_, error, message) => {
+    const api = {
+      getCourseHome: vi.fn().mockResolvedValue(courseHome),
+      startLesson: vi.fn().mockRejectedValue(error),
+    }
+    const wrapper = mount(LearnerCourseHome, { props: { api } })
+    await flushPromises()
+
+    await wrapper.get('[data-action="start-lesson"]').trigger('click')
+    await flushPromises()
+
+    const alert = wrapper.get('[role="alert"]').text()
+    expect(alert).toContain(message)
+    expect(alert).not.toContain(error.message)
   })
 
   it('turns an expired cookie into an explicit return-to-code action', async () => {

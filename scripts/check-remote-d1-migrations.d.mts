@@ -18,6 +18,8 @@ export type RemoteD1Migration = {
 
 export function parseWranglerJsonc(contents: string): unknown
 
+export function assertProductionLessonQueueWriteMode(config: unknown): void
+
 export function resolveRemoteD1MigrationTarget(
   config: unknown,
 ): RemoteD1MigrationTarget

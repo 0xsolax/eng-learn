@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { ApiFailureError } from '@/api/errors'
+import { ApiFailureError, ApiNetworkError } from '@/api/errors'
 import { isLearnerSessionAccessError } from '@/api/learnerSessionErrors'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
@@ -40,8 +40,15 @@ const startLesson = async (): Promise<void> => {
       emit('access-required')
     } else if (isLegacyContentError(error)) {
       startError.value = '本课内容暂时无法使用，请联系课程管理员处理后再试'
-    } else {
+    } else if (
+      error instanceof ApiFailureError &&
+      error.code === 'course_unavailable'
+    ) {
+      startError.value = '当前课程暂时无法开始，请联系课程管理员检查课时配置后再试'
+    } else if (error instanceof ApiNetworkError) {
       startError.value = '暂时无法开始课时，请检查网络后重试'
+    } else {
+      startError.value = '暂时无法开始课时，请稍后重试'
     }
   } finally {
     starting.value = false
