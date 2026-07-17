@@ -16,8 +16,13 @@ const temporaryRoot = await mkdtemp(join(tmpdir(), 'eng-learn-stack-e2e-'))
 const projectRoot = join(temporaryRoot, 'project')
 const stateRoot = join(temporaryRoot, 'state')
 const outputRoot = join(temporaryRoot, 'test-results')
-const progressiveContextMigration = '0011_add_progressive_context_model.sql'
-const pendingMigrationPath = join(temporaryRoot, progressiveContextMigration)
+const pendingMigrations = [
+  '0011_add_progressive_context_model.sql',
+  '0012_add_exercise_review_feedback.sql',
+]
+const pendingMigrationPaths = new Map(
+  pendingMigrations.map((migration) => [migration, join(temporaryRoot, migration)]),
+)
 const dbSentinel = randomUUID()
 const adminUsername = 'e2e-admin'
 const adminPassword = `E2E-${randomBytes(24).toString('base64url')}`
@@ -226,10 +231,11 @@ try {
       force: false,
     })
   }
-  await rename(
-    join(projectRoot, 'migrations', progressiveContextMigration),
-    pendingMigrationPath,
-  )
+  for (const migration of pendingMigrations) {
+    const pendingPath = pendingMigrationPaths.get(migration)
+    if (!pendingPath) throw new Error(`Missing pending path for ${migration}`)
+    await rename(join(projectRoot, 'migrations', migration), pendingPath)
+  }
   await symlink(join(repositoryRoot, 'node_modules'), join(projectRoot, 'node_modules'), 'dir')
   const devVarsPath = join(projectRoot, '.dev.vars')
   await writeFile(devVarsPath, `ADMIN_AUTH_CONFIG=${adminAuthConfig}\n`, {
@@ -281,7 +287,11 @@ try {
   )
   await stopWorker()
 
-  await rename(pendingMigrationPath, join(projectRoot, 'migrations', progressiveContextMigration))
+  for (const migration of pendingMigrations) {
+    const pendingPath = pendingMigrationPaths.get(migration)
+    if (!pendingPath) throw new Error(`Missing pending path for ${migration}`)
+    await rename(pendingPath, join(projectRoot, 'migrations', migration))
+  }
   await run(wrangler, [
     'd1',
     'migrations',

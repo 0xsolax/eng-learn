@@ -1,6 +1,7 @@
 import type {
   ContentModel,
   ExerciseItemStatus,
+  ExerciseReviewState,
   SourceVersionSummary,
   SourceVersionStatus,
   TaskType,
@@ -70,6 +71,43 @@ export type ExerciseItemRecord = {
   createdAt: string
 }
 
+export type ExerciseReviewFeedbackRecord = {
+  exerciseItemId: string
+  feedbackText: string
+  requestedAt: string
+}
+
+export type ExerciseReviewWindowItemRecord = {
+  id: string
+  wordId: string
+  word: string
+  wordOrderIndex: number
+  position: number
+  stage: WordStage
+  taskType: TaskType
+  prompt: unknown
+  status: ExerciseItemStatus
+  reviewState: ExerciseReviewState
+  feedback?: ExerciseReviewFeedbackRecord
+}
+
+export type ExerciseReviewWindowRecord = {
+  sourceVersionId: string
+  sourceName: string
+  versionNo: number
+  contentRevision: number
+  status: SourceVersionStatus
+  totalCount: number
+  approvedCount: number
+  pendingCount: number
+  needsReworkCount: number
+  disabledCount: number
+  firstItemId?: string
+  previousItemId?: string
+  nextItemId?: string
+  current?: ExerciseReviewWindowItemRecord
+}
+
 export type SourceVersionSnapshot = {
   source: SourceRecord
   version: SourceVersionRecord
@@ -101,6 +139,18 @@ export type ContentRepository = {
   ): Promise<number>
   getExerciseItem(itemId: string): Promise<ExerciseItemRecord | undefined>
   getExerciseItems(itemIds: string[]): Promise<ExerciseItemRecord[]>
+  getExerciseReviewWindow(
+    versionId: string,
+    itemId?: string,
+  ): Promise<ExerciseReviewWindowRecord | undefined>
+  getExerciseReviewFeedback(itemIds: string[]): Promise<ExerciseReviewFeedbackRecord[]>
+  requestExerciseItemRework(
+    versionId: string,
+    itemId: string,
+    feedbackText: string,
+    requestedAt: string,
+    expectedRevision: number,
+  ): Promise<number>
   updateExerciseItems(
     versionId: string,
     items: ExerciseItemRecord[],

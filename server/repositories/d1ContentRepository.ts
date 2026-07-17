@@ -9,6 +9,8 @@ import type {
   ContentRepository,
   CreateSourceVersionInput,
   ExerciseItemRecord,
+  ExerciseReviewFeedbackRecord,
+  ExerciseReviewWindowItemRecord,
   SourceRecord,
   SourceVersionRecord,
   SourceVersionSnapshot,
@@ -16,6 +18,7 @@ import type {
   WordRecord,
 } from './contentRepository'
 import { parsePersistedExerciseItemContent } from './persistedExerciseContent'
+import { taskRenderSchema } from '../../shared/api/taskSchemas'
 import {
   createD1AdminOperationInsert,
   createD1AdminOperationLedger,
@@ -87,6 +90,45 @@ type SourceVersionSummaryRow = {
   approved_item_count: number
   created_at: string
   published_at: string | null
+}
+
+type ExerciseReviewVersionRow = {
+  source_version_id: string
+  source_name: string
+  version_no: number
+  content_revision: number
+  status: SourceVersionStatus
+}
+
+type ExerciseReviewStatsRow = {
+  total_count: number
+  approved_count: number
+  pending_count: number
+  needs_rework_count: number
+  disabled_count: number
+}
+
+type ExerciseReviewCurrentRow = {
+  id: string
+  word_id: string
+  word: string
+  word_order_index: number
+  position: number
+  stage: WordStage
+  task_type: TaskType
+  prompt_json: string
+  status: 'draft' | 'approved' | 'disabled'
+  review_state: 'pending_review' | 'needs_rework' | 'approved' | 'disabled'
+  feedback_text: string | null
+  requested_at: string | null
+  previous_item_id: string | null
+  next_item_id: string | null
+}
+
+type ExerciseReviewFeedbackRow = {
+  exercise_item_id: string
+  feedback_text: string
+  requested_at: string
 }
 
 export const D1_BULK_JSON_MAX_BYTES = 512 * 1024
@@ -327,7 +369,7 @@ export const createD1ContentRepository = (db: D1Database): ContentRepository => 
     if (
       revisionResult?.meta.changes !== 1 ||
       itemResults.some(
-        (result, index) => result.meta.changes !== itemChunks[index]?.rowCount,
+        (result, index) => result.meta.changes < (itemChunks[index]?.rowCount ?? 0),
       )
     ) {
       await throwWriteConflict(db, versionId)
@@ -376,6 +418,250 @@ export const createD1ContentRepository = (db: D1Database): ContentRepository => 
     })
   },
 
+  async getExerciseReviewWindow(versionId: string, itemId?: string) {
+    const readVersion = () =>
+      db
+        .prepare(
+        `SELECT
+          versions.id AS source_version_id,
+          sources.name AS source_name,
+          versions.version_no,
+          versions.content_revision,
+          versions.status
+        FROM source_versions AS versions
+        INNER JOIN word_sources AS sources ON sources.id = versions.source_id
+        WHERE versions.id = ?`,
+        )
+        .bind(versionId)
+        .first<ExerciseReviewVersionRow>()
+
+    const version = await readVersion()
+
+    if (!version) return undefined
+
+    const [stats, firstItem, current] = await Promise.all([
+      db
+        .prepare(
+          `SELECT
+            COUNT(*) AS total_count,
+            COALESCE(SUM(CASE WHEN items.status = 'approved' THEN 1 ELSE 0 END), 0) AS approved_count,
+            COALESCE(SUM(CASE WHEN items.status = 'draft' AND feedback.exercise_item_id IS NULL THEN 1 ELSE 0 END), 0) AS pending_count,
+            COALESCE(SUM(CASE WHEN items.status = 'draft' AND feedback.exercise_item_id IS NOT NULL THEN 1 ELSE 0 END), 0) AS needs_rework_count,
+            COALESCE(SUM(CASE WHEN items.status = 'disabled' THEN 1 ELSE 0 END), 0) AS disabled_count
+          FROM exercise_items AS items
+          LEFT JOIN exercise_item_review_feedback AS feedback
+            ON feedback.exercise_item_id = items.id
+          WHERE items.source_version_id = ?`,
+        )
+        .bind(versionId)
+        .first<ExerciseReviewStatsRow>(),
+      db
+        .prepare(
+          `SELECT items.id
+          FROM exercise_items AS items
+          INNER JOIN words ON words.id = items.word_id
+          WHERE items.source_version_id = ?
+          ORDER BY words.order_index ASC, items.stage ASC
+          LIMIT 1`,
+        )
+        .bind(versionId)
+        .first<{ id: string }>(),
+      db
+        .prepare(
+          `WITH ordered AS (
+            SELECT
+              items.id,
+              items.word_id,
+              words.word,
+              words.order_index AS word_order_index,
+              ROW_NUMBER() OVER (
+                ORDER BY words.order_index ASC, items.stage ASC
+              ) AS position,
+              items.stage,
+              items.task_type,
+              items.prompt_json,
+              items.status,
+              CASE
+                WHEN items.status = 'approved' THEN 'approved'
+                WHEN items.status = 'disabled' THEN 'disabled'
+                WHEN feedback.exercise_item_id IS NOT NULL THEN 'needs_rework'
+                ELSE 'pending_review'
+              END AS review_state,
+              feedback.feedback_text,
+              feedback.requested_at,
+              LAG(items.id) OVER (
+                ORDER BY words.order_index ASC, items.stage ASC
+              ) AS previous_item_id,
+              LEAD(items.id) OVER (
+                ORDER BY words.order_index ASC, items.stage ASC
+              ) AS next_item_id
+            FROM exercise_items AS items
+            INNER JOIN words ON words.id = items.word_id
+            LEFT JOIN exercise_item_review_feedback AS feedback
+              ON feedback.exercise_item_id = items.id
+            WHERE items.source_version_id = ?1
+          )
+          SELECT * FROM ordered
+          WHERE (?2 IS NOT NULL AND id = ?2)
+            OR (?2 IS NULL AND review_state <> 'approved')
+          ORDER BY CASE review_state
+            WHEN 'pending_review' THEN 0
+            WHEN 'needs_rework' THEN 1
+            WHEN 'disabled' THEN 2
+            ELSE 3
+          END, position ASC
+          LIMIT 1`,
+        )
+        .bind(versionId, itemId ?? null)
+        .first<ExerciseReviewCurrentRow>(),
+    ])
+
+    const counts = stats ?? {
+      total_count: 0,
+      approved_count: 0,
+      pending_count: 0,
+      needs_rework_count: 0,
+      disabled_count: 0,
+    }
+
+    const confirmedVersion = await readVersion()
+    if (!confirmedVersion) {
+      throw new Error(`Source version ${versionId} is missing`)
+    }
+    if (
+      confirmedVersion.content_revision !== version.content_revision ||
+      confirmedVersion.status !== version.status
+    ) {
+      if (confirmedVersion.status !== 'draft') {
+        throw new DomainError(
+          'source_version_immutable',
+          'Published source versions are immutable',
+        )
+      }
+      throw new DomainError(
+        'conflict',
+        'Source version changed while reading the review window',
+      )
+    }
+
+    return {
+      sourceVersionId: version.source_version_id,
+      sourceName: version.source_name,
+      versionNo: version.version_no,
+      contentRevision: version.content_revision,
+      status: version.status,
+      totalCount: counts.total_count,
+      approvedCount: counts.approved_count,
+      pendingCount: counts.pending_count,
+      needsReworkCount: counts.needs_rework_count,
+      disabledCount: counts.disabled_count,
+      ...(firstItem ? { firstItemId: firstItem.id } : {}),
+      ...(current?.previous_item_id ? { previousItemId: current.previous_item_id } : {}),
+      ...(current?.next_item_id ? { nextItemId: current.next_item_id } : {}),
+      ...(current ? { current: mapExerciseReviewWindowItem(current) } : {}),
+    }
+  },
+
+  async getExerciseReviewFeedback(itemIds: string[]) {
+    const uniqueItemIds = Array.from(new Set(itemIds))
+    const feedbackById = new Map<string, ExerciseReviewFeedbackRecord>()
+
+    for (const chunk of serializeJsonChunks(uniqueItemIds)) {
+      const rows = await db
+        .prepare(
+          `SELECT exercise_item_id, feedback_text, requested_at
+          FROM exercise_item_review_feedback
+          WHERE exercise_item_id IN (SELECT value FROM json_each(?))`,
+        )
+        .bind(chunk.json)
+        .all<ExerciseReviewFeedbackRow>()
+
+      for (const row of rows.results) {
+        feedbackById.set(row.exercise_item_id, mapExerciseReviewFeedback(row))
+      }
+    }
+
+    return uniqueItemIds.flatMap((itemId) => {
+      const feedback = feedbackById.get(itemId)
+
+      return feedback ? [feedback] : []
+    })
+  },
+
+  async requestExerciseItemRework(
+    versionId: string,
+    itemId: string,
+    feedbackText: string,
+    requestedAt: string,
+    expectedRevision: number,
+  ) {
+    let results: D1Result[]
+
+    try {
+      results = await db.batch([
+        db
+          .prepare(
+            `UPDATE exercise_items
+            SET status = 'draft'
+            WHERE id = ?1 AND source_version_id = ?2
+              AND EXISTS (
+                SELECT 1 FROM source_versions
+                WHERE id = ?2 AND status = 'draft' AND content_revision = ?3
+              )`,
+          )
+          .bind(itemId, versionId, expectedRevision),
+        db
+          .prepare(
+            `INSERT INTO exercise_item_review_feedback (
+              exercise_item_id, feedback_text, requested_at
+            )
+            SELECT ?1, ?2, ?3
+            WHERE EXISTS (
+              SELECT 1
+              FROM exercise_items AS items
+              INNER JOIN source_versions AS versions
+                ON versions.id = items.source_version_id
+              WHERE items.id = ?1
+                AND items.source_version_id = ?4
+                AND items.status = 'draft'
+                AND versions.status = 'draft'
+                AND versions.content_revision = ?5
+            )
+            ON CONFLICT(exercise_item_id) DO UPDATE SET
+              feedback_text = excluded.feedback_text,
+              requested_at = excluded.requested_at`,
+          )
+          .bind(itemId, feedbackText, requestedAt, versionId, expectedRevision),
+        db
+          .prepare(
+            `UPDATE source_versions
+            SET content_revision = content_revision + 1
+            WHERE id = ?1 AND status = 'draft' AND content_revision = ?2
+              AND EXISTS (
+                SELECT 1
+                FROM exercise_items AS items
+                INNER JOIN exercise_item_review_feedback AS feedback
+                  ON feedback.exercise_item_id = items.id
+                WHERE items.id = ?3
+                  AND items.source_version_id = ?1
+                  AND items.status = 'draft'
+                  AND feedback.feedback_text = ?4
+                  AND feedback.requested_at = ?5
+              )`,
+          )
+          .bind(versionId, expectedRevision, itemId, feedbackText, requestedAt),
+      ])
+    } catch (error) {
+      throw mapExerciseReviewWriteError(error)
+    }
+
+    if (results.some((result) => result.meta.changes !== 1)) {
+      await throwWriteConflict(db, versionId)
+    }
+
+    return expectedRevision + 1
+  },
+
   async updateExerciseItems(
     versionId: string,
     items: ExerciseItemRecord[],
@@ -410,21 +696,27 @@ export const createD1ContentRepository = (db: D1Database): ContentRepository => 
       ),
     )
 
-    const results = await db.batch([
-      ...itemStatements,
-      db
-        .prepare(
-          `UPDATE source_versions
-          SET content_revision = content_revision + 1
-          WHERE id = ?1 AND status = 'draft' AND content_revision = ?2
-            AND (
-              SELECT COUNT(*) FROM exercise_items
-              WHERE source_version_id = ?1
-                AND id IN (SELECT value FROM json_each(?3))
-            ) = json_array_length(?3)`,
-        )
-        .bind(versionId, expectedRevision, allItemIdsJson),
-    ])
+    let results: D1Result[]
+
+    try {
+      results = await db.batch([
+        ...itemStatements,
+        db
+          .prepare(
+            `UPDATE source_versions
+            SET content_revision = content_revision + 1
+            WHERE id = ?1 AND status = 'draft' AND content_revision = ?2
+              AND (
+                SELECT COUNT(*) FROM exercise_items
+                WHERE source_version_id = ?1
+                  AND id IN (SELECT value FROM json_each(?3))
+              ) = json_array_length(?3)`,
+          )
+          .bind(versionId, expectedRevision, allItemIdsJson),
+      ])
+    } catch (error) {
+      throw mapExerciseReviewWriteError(error)
+    }
 
     const itemResults = results.slice(0, itemStatements.length)
     const revisionResult = results.at(-1)
@@ -432,7 +724,7 @@ export const createD1ContentRepository = (db: D1Database): ContentRepository => 
     if (
       revisionResult?.meta.changes !== 1 ||
       itemResults.some(
-        (result, index) => result.meta.changes !== itemChunks[index]?.rowCount,
+        (result, index) => result.meta.changes < (itemChunks[index]?.rowCount ?? 0),
       )
     ) {
       await throwWriteConflict(db, versionId)
@@ -448,13 +740,22 @@ export const createD1ContentRepository = (db: D1Database): ContentRepository => 
   ) {
     const result = await db
       .prepare(
-        'UPDATE source_versions SET status = ?, published_at = ? WHERE id = ? AND status = ? AND content_revision = ?',
+        `UPDATE source_versions
+        SET status = ?, published_at = ?
+        WHERE id = ? AND status = ? AND content_revision = ?
+          AND NOT EXISTS (
+            SELECT 1
+            FROM exercise_items AS items
+            INNER JOIN exercise_item_review_feedback AS feedback
+              ON feedback.exercise_item_id = items.id
+            WHERE items.source_version_id = source_versions.id
+          )`,
       )
       .bind('published', publishedAt, versionId, 'draft', expectedRevision)
       .run()
 
     if (result.meta.changes !== 1) {
-      await throwWriteConflict(db, versionId)
+      await throwWriteConflict(db, versionId, true)
     }
 
     const row = await db
@@ -880,6 +1181,47 @@ const mapExerciseItem = (
   }
 }
 
+const mapExerciseReviewWindowItem = (
+  row: ExerciseReviewCurrentRow,
+): ExerciseReviewWindowItemRecord => {
+  const task = taskRenderSchema.parse({
+    id: row.id,
+    stage: row.stage,
+    taskType: row.task_type,
+    prompt: JSON.parse(row.prompt_json) as unknown,
+  })
+  const feedback =
+    row.feedback_text && row.requested_at
+      ? {
+          exerciseItemId: row.id,
+          feedbackText: row.feedback_text,
+          requestedAt: row.requested_at,
+        }
+      : undefined
+
+  return {
+    id: task.id,
+    wordId: row.word_id,
+    word: row.word,
+    wordOrderIndex: row.word_order_index,
+    position: row.position,
+    stage: task.stage,
+    taskType: task.taskType,
+    prompt: task.prompt,
+    status: row.status,
+    reviewState: row.review_state,
+    ...(feedback ? { feedback } : {}),
+  }
+}
+
+const mapExerciseReviewFeedback = (
+  row: ExerciseReviewFeedbackRow,
+): ExerciseReviewFeedbackRecord => ({
+  exerciseItemId: row.exercise_item_id,
+  feedbackText: row.feedback_text,
+  requestedAt: row.requested_at,
+})
+
 const requireDraftRevision = async (
   db: D1Database,
   versionId: string,
@@ -906,7 +1248,11 @@ const requireDraftRevision = async (
   }
 }
 
-const throwWriteConflict = async (db: D1Database, versionId: string): Promise<never> => {
+const throwWriteConflict = async (
+  db: D1Database,
+  versionId: string,
+  checkOpenFeedback = false,
+): Promise<never> => {
   const row = await db
     .prepare('SELECT status FROM source_versions WHERE id = ?')
     .bind(versionId)
@@ -923,5 +1269,44 @@ const throwWriteConflict = async (db: D1Database, versionId: string): Promise<ne
     )
   }
 
+  if (checkOpenFeedback) {
+    const feedback = await db
+      .prepare(
+        `SELECT 1
+        FROM exercise_item_review_feedback AS feedback
+        INNER JOIN exercise_items AS items ON items.id = feedback.exercise_item_id
+        WHERE items.source_version_id = ?
+        LIMIT 1`,
+      )
+      .bind(versionId)
+      .first<{ 1: number }>()
+
+    if (feedback) {
+      throw new DomainError(
+        'review_feedback_open',
+        'Source version has unresolved review feedback',
+      )
+    }
+  }
+
   throw new DomainError('conflict', 'Source version changed concurrently')
+}
+
+const mapExerciseReviewWriteError = (error: unknown): Error => {
+  const messages: string[] = []
+  let current: unknown = error
+
+  while (current instanceof Error) {
+    messages.push(current.message)
+    current = current.cause
+  }
+
+  if (messages.some((message) => message.includes('exercise_item_review_feedback_open'))) {
+    return new DomainError(
+      'review_feedback_open',
+      'Exercise item has unresolved review feedback',
+    )
+  }
+
+  return error instanceof Error ? error : new Error('Exercise review write failed')
 }

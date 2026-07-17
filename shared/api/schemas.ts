@@ -67,6 +67,7 @@ const simpleApiErrorSchema = z
       'task_type_mismatch',
       's5_preview_required',
       'report_unavailable',
+      'review_feedback_open',
       'course_unavailable',
       'conflict',
       'credential_conflict',

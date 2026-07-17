@@ -33,6 +33,7 @@ const DOMAIN_ERROR_STATUS: Record<ApiError['code'], number> = {
   payload_too_large: 413,
   queue_invariant_violation: 409,
   report_unavailable: 409,
+  review_feedback_open: 409,
   schema_not_ready: 503,
   s5_preview_required: 409,
   source_draft_exists: 409,

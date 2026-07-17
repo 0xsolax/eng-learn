@@ -301,6 +301,42 @@ test('@admin keeps a dense segmented workspace across admin viewports', async ({
       return
     }
 
+    if (key === 'GET /api/admin/source-versions/version-1/review') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          data: {
+            sourceVersionId: 'version-1',
+            sourceName: 'Starter words',
+            versionNo: 1,
+            contentRevision: 0,
+            totalCount: 1,
+            approvedCount: 0,
+            pendingCount: 1,
+            needsReworkCount: 0,
+            disabledCount: 0,
+            allApproved: false,
+            firstItemId: 'item-1',
+            current: {
+              id: 'item-1',
+              wordId: 'word-1',
+              word: 'apple',
+              wordOrderIndex: 1,
+              position: 1,
+              status: 'draft',
+              reviewState: 'pending_review',
+              stage: 'S1',
+              taskType: 'recall_word',
+              prompt: { meaning: '苹果' },
+            },
+          },
+        }),
+      })
+      return
+    }
+
     await route.abort('failed')
   })
   await page.route('**/api/app/**', async (route) => {
@@ -367,7 +403,7 @@ test('@admin keeps a dense segmented workspace across admin viewports', async ({
   await page.goto('/admin/source-versions/version-1')
   await expect(page.getByRole('heading', { level: 1, name: '版本 v1' })).toBeVisible()
   await expectNoSeriousAccessibilityViolations(page)
-  const reviewLink = page.getByRole('link', { name: '先查看' })
+  const reviewLink = page.getByRole('link', { name: '进入审阅模式' })
   if ((viewportWidth ?? 0) < 480) {
     await expect(reviewLink).toHaveCount(0)
   } else {

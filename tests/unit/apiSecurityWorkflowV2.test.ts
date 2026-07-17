@@ -167,6 +167,34 @@ describe('worker learner session security contract', () => {
   })
 })
 
+describe('worker admin review security contract', () => {
+  it('requires administrator identity and exact write origin on review endpoints', async () => {
+    const app = createTestWorkerApp({
+      adminIdentity: { id: 'admin-1', email: 'admin@example.test' },
+      allowedOrigin: ORIGIN,
+    })
+    const unauthenticated = await app.fetch(
+      new Request(`${ORIGIN}/api/admin/source-versions/version-1/review`),
+    )
+    expect(unauthenticated.status).toBe(401)
+    expect(await readErrorCode(unauthenticated)).toBe('unauthorized')
+
+    const wrongOrigin = await app.fetch(
+      new Request(`${ORIGIN}/api/admin/exercise-items/item-1/review/decision`, {
+        method: 'POST',
+        headers: {
+          'cf-access-jwt-assertion': 'controlled-test-assertion',
+          'content-type': 'application/json',
+          origin: 'https://attacker.example',
+        },
+        body: JSON.stringify({ action: 'approve', expectedContentRevision: 0 }),
+      }),
+    )
+    expect(wrongOrigin.status).toBe(403)
+    expect(await readErrorCode(wrongOrigin)).toBe('origin_forbidden')
+  })
+})
+
 const createPublishedCourseFixture = async () => {
   const app = createTestWorkerApp({
     adminIdentity: { id: 'admin-1', email: 'admin@example.test' },

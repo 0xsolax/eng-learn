@@ -87,6 +87,62 @@ export const sentenceOutputPreviewStateSchema = z
   })
   .strict()
 
+const taskRenderBase = {
+  id: nonEmptyText,
+}
+
+export const taskRenderSchema = z.discriminatedUnion('taskType', [
+  z
+    .object({
+      ...taskRenderBase,
+      stage: z.literal('S0'),
+      taskType: z.literal('recognize_meaning'),
+      prompt: recognizeMeaningPromptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...taskRenderBase,
+      stage: z.union([z.literal('S1'), z.literal('S2')]),
+      taskType: z.literal('recall_word'),
+      prompt: recallWordPromptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...taskRenderBase,
+      stage: z.union([z.literal('S1'), z.literal('S2')]),
+      taskType: z.literal('multiple_choice'),
+      prompt: multipleChoicePromptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...taskRenderBase,
+      stage: z.literal('S3'),
+      taskType: z.literal('fill_blank'),
+      prompt: fillBlankPromptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...taskRenderBase,
+      stage: z.literal('S4'),
+      taskType: z.literal('sentence_build'),
+      prompt: sentenceBuildPromptSchema,
+    })
+    .strict(),
+  z
+    .object({
+      ...taskRenderBase,
+      stage: z.literal('S5'),
+      taskType: z.literal('sentence_output'),
+      prompt: sentenceOutputPromptSchema,
+      preview: sentenceOutputPreviewStateSchema.optional(),
+    })
+    .strict(),
+])
+
 const lessonTaskBase = {
   id: nonEmptyText,
   sessionId: nonEmptyText,
@@ -364,6 +420,7 @@ export const exerciseItemContentSchema = z
   })
 
 export type LessonTaskDto = z.infer<typeof lessonTaskSchema>
+export type TaskRenderDto = z.infer<typeof taskRenderSchema>
 export type LessonTaskRole = z.infer<typeof lessonTaskRoleSchema>
 export type SubmitTaskAnswerRequest = z.infer<typeof submitTaskAnswerRequestSchema>
 export type ExerciseItemContent = z.infer<typeof exerciseItemContentSchema>

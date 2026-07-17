@@ -170,6 +170,73 @@ describe('D1 content repository lifecycle writes', () => {
     })
   })
 
+  it('accepts trigger side-effect changes after every guarded exercise row is updated', async () => {
+    const { db } = createRecordingD1([], { batchChanges: [2, 1] })
+    const repository = createD1ContentRepository(db)
+
+    await expect(
+      repository.updateExerciseItems('version-1', [createExerciseItem()], 4),
+    ).resolves.toBe(5)
+  })
+
+  it('fails a torn review-window read when the content revision changes between queries', async () => {
+    const version = {
+      source_version_id: 'version-1',
+      source_name: 'Review source',
+      version_no: 1,
+      content_revision: 7,
+      status: 'draft',
+    }
+    const { db } = createRecordingD1([
+      version,
+      {
+        total_count: 0,
+        approved_count: 0,
+        pending_count: 0,
+        needs_rework_count: 0,
+        disabled_count: 0,
+      },
+      null,
+      null,
+      { ...version, content_revision: 8 },
+    ])
+    const repository = createD1ContentRepository(db)
+
+    await expect(repository.getExerciseReviewWindow('version-1')).rejects.toMatchObject({
+      code: 'conflict',
+      message: 'Source version changed while reading the review window',
+    })
+  })
+
+  it('fails a review-window read when the version is published between queries', async () => {
+    const version = {
+      source_version_id: 'version-1',
+      source_name: 'Review source',
+      version_no: 1,
+      content_revision: 7,
+      status: 'draft',
+    }
+    const { db } = createRecordingD1([
+      version,
+      {
+        total_count: 0,
+        approved_count: 0,
+        pending_count: 0,
+        needs_rework_count: 0,
+        disabled_count: 0,
+      },
+      null,
+      null,
+      { ...version, status: 'published' },
+    ])
+    const repository = createD1ContentRepository(db)
+
+    await expect(repository.getExerciseReviewWindow('version-1')).rejects.toMatchObject({
+      code: 'source_version_immutable',
+      message: 'Published source versions are immutable',
+    })
+  })
+
   it.each(['published', 'archived'] as const)(
     'classifies a zero-row CAS write against a %s version as immutable',
     async (status) => {

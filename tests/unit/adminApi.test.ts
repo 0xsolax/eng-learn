@@ -293,6 +293,127 @@ describe('admin API client', () => {
     )
   })
 
+  it('reads a prompt-only review window with encoded version and item ids', async () => {
+    const reviewWindow = {
+      sourceVersionId: 'version-1',
+      sourceName: 'Starter words',
+      versionNo: 1,
+      contentRevision: 7,
+      totalCount: 1,
+      approvedCount: 0,
+      pendingCount: 1,
+      needsReworkCount: 0,
+      disabledCount: 0,
+      allApproved: false,
+      firstItemId: 'item-1',
+      current: {
+        id: 'item-1',
+        wordId: 'word-1',
+        word: 'apple',
+        wordOrderIndex: 1,
+        position: 1,
+        stage: 'S1',
+        taskType: 'recall_word',
+        status: 'draft',
+        reviewState: 'pending_review',
+        prompt: { meaning: '苹果' },
+      },
+    } as const
+    const fetchImpl = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValue(Response.json({ ok: true, data: reviewWindow }))
+    const api = createAdminApi(createHttpClient(fetchImpl))
+
+    await expect(
+      api.getExerciseReviewWindow('version/1', 'item?1'),
+    ).resolves.toEqual(reviewWindow)
+    expect(fetchImpl).toHaveBeenCalledWith(
+      '/api/admin/source-versions/version%2F1/review?itemId=item%3F1',
+      {
+        credentials: 'same-origin',
+        headers: { 'x-requested-with': 'XMLHttpRequest' },
+        method: 'GET',
+      },
+    )
+  })
+
+  it('uses strict admin-only review preview, evaluate, and decision writes', async () => {
+    const preview = {
+      exerciseItemId: 'item-1',
+      referenceSentence: 'I eat an apple.',
+      revealedAt: '2026-07-17T00:00:00.000Z',
+    }
+    const evaluation = {
+      exerciseItemId: 'item-1',
+      score: 2,
+      correct: true,
+      feedback: { taskType: 'recall_word', correctAnswer: 'apple' },
+    }
+    const decision = {
+      exerciseItemId: 'item-1',
+      sourceVersionId: 'version-1',
+      action: 'approve',
+      status: 'approved',
+      reviewState: 'approved',
+      contentRevision: 8,
+    }
+    const fetchImpl = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValueOnce(Response.json({ ok: true, data: preview }))
+      .mockResolvedValueOnce(Response.json({ ok: true, data: evaluation }))
+      .mockResolvedValueOnce(Response.json({ ok: true, data: decision }))
+    const api = createAdminApi(createHttpClient(fetchImpl))
+
+    await api.previewExerciseReview('item-1', {
+      expectedContentRevision: 7,
+      taskType: 'sentence_output',
+      draft: ' I eat an apple. ',
+    })
+    await api.evaluateExerciseReview('item-1', {
+      expectedContentRevision: 7,
+      submission: { taskType: 'recall_word', answer: ' apple ' },
+    })
+    await api.decideExerciseReview('item-1', {
+      action: 'approve',
+      expectedContentRevision: 7,
+    })
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(1, '/api/admin/exercise-items/item-1/review/preview', {
+      credentials: 'same-origin',
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-requested-with': 'XMLHttpRequest',
+      },
+      body: JSON.stringify({
+        expectedContentRevision: 7,
+        taskType: 'sentence_output',
+        draft: 'I eat an apple.',
+      }),
+    })
+    expect(fetchImpl).toHaveBeenNthCalledWith(2, '/api/admin/exercise-items/item-1/review/evaluate', {
+      credentials: 'same-origin',
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-requested-with': 'XMLHttpRequest',
+      },
+      body: JSON.stringify({
+        expectedContentRevision: 7,
+        submission: { taskType: 'recall_word', answer: 'apple' },
+      }),
+    })
+    expect(fetchImpl).toHaveBeenNthCalledWith(3, '/api/admin/exercise-items/item-1/review/decision', {
+      credentials: 'same-origin',
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-requested-with': 'XMLHttpRequest',
+      },
+      body: JSON.stringify({ action: 'approve', expectedContentRevision: 7 }),
+    })
+  })
+
   it('edits an exercise with the shared content contract and validates the result', async () => {
     const command = {
       content: {

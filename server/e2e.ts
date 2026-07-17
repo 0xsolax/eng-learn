@@ -66,6 +66,13 @@ export default {
       )
     }
 
+    if (url.pathname === '/api/e2e/review-runtime-evidence') {
+      return Response.json(
+        { ok: true, data: await readReviewRuntimeEvidence(env.DB) },
+        { headers: { 'cache-control': 'no-store' } },
+      )
+    }
+
     if (!application || applicationRunId !== env.E2E_RUN_ID) {
       application = createE2EApplication(env)
       applicationRunId = env.E2E_RUN_ID
@@ -161,6 +168,25 @@ const countRows = async (db: D1Database, query: string, ...bindings: unknown[]) 
   const row = await statement.first<{ row_count: number }>()
 
   return row?.row_count ?? 0
+}
+
+const readReviewRuntimeEvidence = async (db: D1Database) => {
+  const [courses, lessonSessions, lessonTasks, reviewLogs, userWordStates] =
+    await Promise.all([
+      readOrderedRows(db, 'courses'),
+      readOrderedRows(db, 'lesson_sessions'),
+      readOrderedRows(db, 'lesson_tasks'),
+      readOrderedRows(db, 'review_logs'),
+      readOrderedRows(db, 'user_word_states'),
+    ])
+
+  return { courses, lessonSessions, lessonTasks, reviewLogs, userWordStates }
+}
+
+const readOrderedRows = async (db: D1Database, table: string) => {
+  const result = await db.prepare(`SELECT * FROM ${table} ORDER BY id`).all()
+
+  return result.results
 }
 
 const createE2EApplication = (env: E2EEnv): WorkerApp => {

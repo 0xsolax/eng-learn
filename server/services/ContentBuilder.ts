@@ -14,6 +14,17 @@ import type {
   WordStage,
 } from '../../shared/domain/content'
 import { exerciseItemContentSchema } from '../../shared/api/taskSchemas'
+import type {
+  ExerciseReviewDecisionRequest,
+  ExerciseReviewDecisionResult,
+  ExerciseReviewEvaluateRequest,
+  ExerciseReviewEvaluateResult,
+  ExerciseReviewPreviewRequest,
+  ExerciseReviewPreviewResult,
+  ExerciseReviewWindowDto,
+} from '../../shared/api/contentSchemas'
+import { exerciseReviewWindowSchema } from '../../shared/api/contentSchemas'
+import { isPassingReviewScore } from '../../shared/domain/course'
 import {
   canonicalizeLearningText,
   containsUnicodeWholeToken,
@@ -38,6 +49,7 @@ import {
   prepareSourceVersionImportOperation,
   type PreparedAdminOperation,
 } from './adminOperation'
+import { evaluateTaskSubmission } from './taskEvaluation'
 
 const GROUP_SIZE = 5
 
@@ -107,6 +119,22 @@ export type ContentBuilder = {
   getCoverage(sourceVersionId: string): Promise<BuildCoverage>
   listExerciseItems(sourceVersionId: string): Promise<ExerciseItemView[]>
   getExerciseItem(itemId: string): Promise<ExerciseItemView>
+  getExerciseReviewWindow(
+    sourceVersionId: string,
+    itemId?: string,
+  ): Promise<ExerciseReviewWindowDto>
+  previewExerciseReview(
+    itemId: string,
+    input: ExerciseReviewPreviewRequest,
+  ): Promise<ExerciseReviewPreviewResult>
+  evaluateExerciseReview(
+    itemId: string,
+    input: ExerciseReviewEvaluateRequest,
+  ): Promise<ExerciseReviewEvaluateResult>
+  decideExerciseReview(
+    itemId: string,
+    input: ExerciseReviewDecisionRequest,
+  ): Promise<ExerciseReviewDecisionResult>
   editExerciseItem(itemId: string, input: { prompt: unknown; answer: unknown }): Promise<ExerciseItemView>
   approveExerciseItem(itemId: string): Promise<void>
   approveExerciseItems(itemIds: string[]): Promise<void>
@@ -214,8 +242,13 @@ export const createContentBuilder = ({
   }
 
   const getExerciseItemView = async (itemId: string): Promise<ExerciseItemView> => {
-    const item = await requireExerciseItem(repository, itemId)
-    const snapshot = await requireSourceVersion(repository, item.sourceVersionId)
+    const locatedItem = await requireExerciseItem(repository, itemId)
+    const snapshot = await requireSourceVersion(repository, locatedItem.sourceVersionId)
+    const item = snapshot.exerciseItems.find((candidate) => candidate.id === itemId)
+
+    if (!item) {
+      throw new DomainError('not_found', `Exercise item ${itemId} is missing`)
+    }
 
     return toExerciseItemView(snapshot, item)
   }
@@ -227,9 +260,9 @@ export const createContentBuilder = ({
 
     const uniqueItemIds = Array.from(new Set(itemIds))
     const storedItems = await repository.getExerciseItems(uniqueItemIds)
-    const itemsById = new Map(storedItems.map((item) => [item.id, item]))
-    const items = uniqueItemIds.map((itemId) => {
-      const item = itemsById.get(itemId)
+    const storedItemsById = new Map(storedItems.map((item) => [item.id, item]))
+    const locatedItems = uniqueItemIds.map((itemId) => {
+      const item = storedItemsById.get(itemId)
 
       if (!item) {
         throw new DomainError('not_found', `Exercise item ${itemId} is missing`)
@@ -237,13 +270,13 @@ export const createContentBuilder = ({
 
       return item
     })
-    const sourceVersionIds = new Set(items.map((item) => item.sourceVersionId))
+    const sourceVersionIds = new Set(locatedItems.map((item) => item.sourceVersionId))
 
     if (sourceVersionIds.size !== 1) {
       throw validationError('itemIds', 'Batch approval requires one source version')
     }
 
-    const sourceVersionId = items[0]?.sourceVersionId
+    const sourceVersionId = locatedItems[0]?.sourceVersionId
 
     if (!sourceVersionId) {
       throw validationError('itemIds', 'At least one exercise item is required')
@@ -252,6 +285,24 @@ export const createContentBuilder = ({
     const snapshot = await requireSourceVersion(repository, sourceVersionId)
 
     requireDraft(snapshot.version.status)
+
+    const snapshotItemsById = new Map(snapshot.exerciseItems.map((item) => [item.id, item]))
+    const items = uniqueItemIds.map((itemId) => {
+      const item = snapshotItemsById.get(itemId)
+
+      if (!item) {
+        throw new DomainError('not_found', `Exercise item ${itemId} is missing`)
+      }
+
+      return item
+    })
+
+    if ((await repository.getExerciseReviewFeedback(uniqueItemIds)).length > 0) {
+      throw new DomainError(
+        'review_feedback_open',
+        'Exercise item has unresolved review feedback',
+      )
+    }
 
     for (const item of items) {
       if (item.status !== 'draft') {
@@ -467,6 +518,210 @@ export const createContentBuilder = ({
       return getExerciseItemView(itemId)
     },
 
+    async getExerciseReviewWindow(sourceVersionId, itemId) {
+      const window = await repository.getExerciseReviewWindow(sourceVersionId, itemId)
+
+      if (!window) {
+        throw new DomainError('not_found', `Source version ${sourceVersionId} is missing`)
+      }
+
+      requireDraft(window.status)
+
+      if (itemId && !window.current) {
+        throw new DomainError('not_found', `Exercise item ${itemId} is missing`)
+      }
+
+      return exerciseReviewWindowSchema.parse({
+        sourceVersionId: window.sourceVersionId,
+        sourceName: window.sourceName,
+        versionNo: window.versionNo,
+        contentRevision: window.contentRevision,
+        totalCount: window.totalCount,
+        approvedCount: window.approvedCount,
+        pendingCount: window.pendingCount,
+        needsReworkCount: window.needsReworkCount,
+        disabledCount: window.disabledCount,
+        allApproved: window.totalCount > 0 && window.approvedCount === window.totalCount,
+        ...(window.firstItemId ? { firstItemId: window.firstItemId } : {}),
+        ...(window.previousItemId ? { previousItemId: window.previousItemId } : {}),
+        ...(window.nextItemId ? { nextItemId: window.nextItemId } : {}),
+        ...(window.current
+          ? {
+              current: {
+                id: window.current.id,
+                wordId: window.current.wordId,
+                word: window.current.word,
+                wordOrderIndex: window.current.wordOrderIndex,
+                position: window.current.position,
+                stage: window.current.stage,
+                taskType: window.current.taskType,
+                prompt: window.current.prompt,
+                status: window.current.status,
+                reviewState: window.current.reviewState,
+                ...(window.current.feedback
+                  ? {
+                      feedback: {
+                        text: window.current.feedback.feedbackText,
+                        requestedAt: window.current.feedback.requestedAt,
+                      },
+                    }
+                  : {}),
+              },
+            }
+          : {}),
+      })
+    },
+
+    async previewExerciseReview(itemId, input) {
+      const { content } = await requireReviewExerciseContext(
+        repository,
+        itemId,
+        input.expectedContentRevision,
+      )
+
+      if (content.taskType !== 'sentence_output') {
+        throw new DomainError(
+          'task_type_mismatch',
+          'Task submission type does not match the exercise item',
+        )
+      }
+
+      return {
+        exerciseItemId: itemId,
+        referenceSentence: content.answer.referenceSentence,
+        revealedAt: timestamp(),
+      }
+    },
+
+    async evaluateExerciseReview(itemId, input) {
+      const { content } = await requireReviewExerciseContext(
+        repository,
+        itemId,
+        input.expectedContentRevision,
+      )
+      const evaluation = evaluateTaskSubmission(content, input.submission)
+
+      return {
+        exerciseItemId: itemId,
+        score: evaluation.score,
+        correct: isPassingReviewScore(evaluation.score),
+        feedback: evaluation.feedback,
+      }
+    },
+
+    async decideExerciseReview(itemId, input) {
+      const { item, snapshot, word } = await requireReviewExerciseContext(
+        repository,
+        itemId,
+        input.expectedContentRevision,
+      )
+
+      switch (input.action) {
+        case 'approve': {
+          if (item.status !== 'draft') {
+            throw new DomainError('conflict', `Exercise item ${item.id} is not a draft`)
+          }
+
+          if ((await repository.getExerciseReviewFeedback([item.id])).length > 0) {
+            throw new DomainError(
+              'review_feedback_open',
+              'Exercise item has unresolved review feedback',
+            )
+          }
+
+          const contentRevision = await repository.updateExerciseItems(
+            item.sourceVersionId,
+            [{ ...item, status: 'approved' }],
+            input.expectedContentRevision,
+          )
+
+          return {
+            exerciseItemId: item.id,
+            sourceVersionId: snapshot.version.id,
+            action: 'approve',
+            status: 'approved',
+            reviewState: 'approved',
+            contentRevision,
+          }
+        }
+        case 'request_rework': {
+          const feedbackText = input.feedback.trim()
+
+          if (feedbackText.length < 1 || feedbackText.length > 2_000) {
+            throw validationError('feedback', 'Feedback must contain 1 to 2000 characters')
+          }
+
+          const contentRevision = await repository.requestExerciseItemRework(
+            item.sourceVersionId,
+            item.id,
+            feedbackText,
+            timestamp(),
+            input.expectedContentRevision,
+          )
+
+          return {
+            exerciseItemId: item.id,
+            sourceVersionId: snapshot.version.id,
+            action: 'request_rework',
+            status: 'draft',
+            reviewState: 'needs_rework',
+            contentRevision,
+          }
+        }
+        case 'correct': {
+          if (
+            input.content.stage !== item.stage ||
+            input.content.taskType !== item.taskType
+          ) {
+            throw new DomainError(
+              'task_type_mismatch',
+              'Exercise task type cannot be changed',
+            )
+          }
+
+          const correctedContent = parseExerciseContent(
+            {
+              ...item,
+              prompt: input.content.prompt,
+              answer: input.content.answer,
+            },
+            word,
+            snapshot.words,
+            snapshot.version.contentModel,
+          )
+
+          if (
+            JSON.stringify(item.prompt) === JSON.stringify(correctedContent.prompt) &&
+            JSON.stringify(item.answer) === JSON.stringify(correctedContent.answer)
+          ) {
+            throw new DomainError('conflict', 'Exercise correction must change content')
+          }
+
+          const contentRevision = await repository.updateExerciseItems(
+            item.sourceVersionId,
+            [
+              {
+                ...item,
+                prompt: correctedContent.prompt,
+                answer: correctedContent.answer,
+                status: 'draft',
+              },
+            ],
+            input.expectedContentRevision,
+          )
+
+          return {
+            exerciseItemId: item.id,
+            sourceVersionId: snapshot.version.id,
+            action: 'correct',
+            status: 'draft',
+            reviewState: 'pending_review',
+            contentRevision,
+          }
+        }
+      }
+    },
+
     async editExerciseItem(itemId, input) {
       const item = await requireExerciseItem(repository, itemId)
       const snapshot = await requireSourceVersion(repository, item.sourceVersionId)
@@ -515,13 +770,23 @@ export const createContentBuilder = ({
     },
 
     async disableExerciseItem(itemId) {
-      const item = await requireExerciseItem(repository, itemId)
-      const snapshot = await requireSourceVersion(repository, item.sourceVersionId)
+      const locatedItem = await requireExerciseItem(repository, itemId)
+      const snapshot = await requireSourceVersion(repository, locatedItem.sourceVersionId)
 
       requireDraft(snapshot.version.status)
 
+      const item = snapshot.exerciseItems.find((candidate) => candidate.id === itemId)
+      if (!item) throw new DomainError('not_found', `Exercise item ${itemId} is missing`)
+
       if (item.status === 'disabled') {
         throw new DomainError('conflict', `Exercise item ${item.id} is already disabled`)
+      }
+
+      if ((await repository.getExerciseReviewFeedback([item.id])).length > 0) {
+        throw new DomainError(
+          'review_feedback_open',
+          'Exercise item has unresolved review feedback',
+        )
       }
 
       await repository.updateExerciseItems(
@@ -556,6 +821,17 @@ export const createContentBuilder = ({
 
       requireDraft(snapshot.version.status)
 
+      if (
+        (await repository.getExerciseReviewFeedback(
+          snapshot.exerciseItems.map((item) => item.id),
+        )).length > 0
+      ) {
+        throw new DomainError(
+          'review_feedback_open',
+          'Source version has unresolved review feedback',
+        )
+      }
+
       const missingItems = toCoverage(snapshot).missingItems
 
       if (missingItems.length > 0) {
@@ -581,6 +857,34 @@ export const createContentBuilder = ({
 const requireDraft = (status: string): void => {
   if (status !== 'draft') {
     throw new DomainError('source_version_immutable', 'Published source versions are immutable')
+  }
+}
+
+const requireReviewExerciseContext = async (
+  repository: ContentRepository,
+  itemId: string,
+  expectedContentRevision: number,
+) => {
+  const locatedItem = await requireExerciseItem(repository, itemId)
+  const snapshot = await requireSourceVersion(repository, locatedItem.sourceVersionId)
+
+  requireDraft(snapshot.version.status)
+
+  if (snapshot.version.contentRevision !== expectedContentRevision) {
+    throw new DomainError('conflict', 'Source version changed concurrently')
+  }
+
+  const item = snapshot.exerciseItems.find((candidate) => candidate.id === itemId)
+  if (!item) throw new DomainError('not_found', `Exercise item ${itemId} is missing`)
+
+  const word = snapshot.words.find((candidate) => candidate.id === item.wordId)
+  if (!word) throw new Error(`Word ${item.wordId} is missing`)
+
+  return {
+    item,
+    snapshot,
+    word,
+    content: parseExerciseContent(item, word, snapshot.words, snapshot.version.contentModel),
   }
 }
 

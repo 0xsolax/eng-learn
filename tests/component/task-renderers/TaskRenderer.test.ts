@@ -1,7 +1,7 @@
 import { mount } from '@vue/test-utils'
 import { describe, expect, it } from 'vitest'
 import TaskRenderer from '@/components/task-renderers/TaskRenderer.vue'
-import type { LessonTaskDto } from '@shared/api/taskSchemas'
+import type { LessonTaskDto, TaskRenderDto } from '@shared/api/taskSchemas'
 
 const base = {
   id: 'task-1',
@@ -67,6 +67,18 @@ const rendererCases: { task: LessonTaskDto; selector: string }[] = [
 ]
 
 describe('TaskRenderer', () => {
+  it('renders an admin review task without invented course or session fields', () => {
+    const task: TaskRenderDto = {
+      id: 'item-1',
+      stage: 'S2',
+      taskType: 'recall_word',
+      prompt: { meaning: '苹果' },
+    }
+    const wrapper = mount(TaskRenderer, { props: { task } })
+
+    expect(wrapper.find('input').exists()).toBe(true)
+  })
+
   it.each(rendererCases)('renders every discriminated lesson task type', ({ task, selector }) => {
     const wrapper = mount(TaskRenderer, { props: { task } })
 
@@ -150,14 +162,13 @@ describe('TaskRenderer', () => {
 
     await wrapper.get('input').setValue('apple')
     await wrapper.get('form').trigger('submit')
-    await wrapper.setProps({
-      task: {
-        ...firstTask,
-        id: 'task-2',
-        orderIndex: 2,
-        prompt: { meaning: '梨' },
-      },
-    })
+    const nextTask: LessonTaskDto = {
+      ...firstTask,
+      id: 'task-2',
+      orderIndex: 2,
+      prompt: { meaning: '梨' },
+    }
+    await wrapper.setProps({ task: nextTask })
 
     expect((wrapper.get('input').element as HTMLInputElement).value).toBe('')
     expect(wrapper.get('input').attributes('disabled')).toBeUndefined()

@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import type {
   AdminExerciseItemDto,
   BuildCoverageDto,
+  ExerciseReviewWindowDto,
   SourceVersionDetailDto,
 } from '@shared/api/contentSchemas'
 import { MAX_BATCH_APPROVAL_ITEMS } from '@shared/api/contentSchemas'
@@ -19,6 +20,7 @@ type VersionDetailApi = Pick<
   | 'buildSourceVersion'
   | 'discardSourceVersion'
   | 'getCoverage'
+  | 'getExerciseReviewWindow'
   | 'getSourceVersion'
   | 'listExerciseItems'
   | 'publishSourceVersion'
@@ -45,10 +47,10 @@ const pageState = ref<PageState>('loading')
 const detail = ref<SourceVersionDetailDto | null>(null)
 const coverage = ref<BuildCoverageDto | null>(null)
 const exerciseItems = ref<AdminExerciseItemDto[]>([])
+const reviewSummary = ref<ExerciseReviewWindowDto | null>(null)
 const actionState = ref<ActionState>('idle')
 const actionError = ref('')
 const actionSuccess = ref('')
-const selectedItemIds = ref<string[]>([])
 const showOnlyGaps = ref(false)
 const confirmation = ref<'publish' | 'discard' | null>(null)
 const confirmationRegion = ref<HTMLElement | null>(null)
@@ -59,14 +61,15 @@ let confirmationTrigger: HTMLElement | null = null
 const isMutable = computed(() => detail.value?.status === 'draft')
 const canMutate = computed(() => isMutable.value && !isCompactReadOnly.value)
 const draftItems = computed(() => exerciseItems.value.filter((item) => item.status === 'draft'))
-const allDraftsSelected = computed({
-  get: () =>
+const canApproveAllDrafts = computed(
+  () =>
     draftItems.value.length > 0 &&
-    draftItems.value.every((item) => selectedItemIds.value.includes(item.id)),
-  set: (selected: boolean) => {
-    selectedItemIds.value = selected ? draftItems.value.map((item) => item.id) : []
-  },
-})
+    reviewSummary.value !== null &&
+    reviewSummary.value.needsReworkCount === 0 &&
+    reviewSummary.value.disabledCount === 0 &&
+    !(coverage.value?.cells.some((cell) => cell.status === 'disabled') ?? false) &&
+    !(coverage.value?.missingItems.some((item) => item.reason !== 'exercise_item_draft') ?? false),
+)
 const matrixRows = computed<MatrixRow[]>(() => {
   const rows = new Map<string, MatrixRow>()
 
@@ -148,21 +151,25 @@ const loadWorkspace = async (): Promise<void> => {
   actionSuccess.value = ''
 
   try {
-    const [nextDetail, nextCoverage, nextItems] = await Promise.all([
-      api.getSourceVersion(props.versionId),
+    const nextDetail = await api.getSourceVersion(props.versionId)
+    const [nextCoverage, nextItems, nextReviewSummary] = await Promise.all([
       api.getCoverage(props.versionId),
       api.listExerciseItems(props.versionId),
+      nextDetail.status === 'draft'
+        ? api.getExerciseReviewWindow(props.versionId)
+        : Promise.resolve(null),
     ])
     detail.value = nextDetail
     coverage.value = nextCoverage
     exerciseItems.value = nextItems
-    selectedItemIds.value = []
+    reviewSummary.value = nextReviewSummary
     reportPageContext(nextDetail)
     pageState.value = 'ready'
   } catch {
     detail.value = null
     coverage.value = null
     exerciseItems.value = []
+    reviewSummary.value = null
     pageContext.clearPageContext()
     pageState.value = 'error'
   }
@@ -189,10 +196,10 @@ const buildVersion = async (): Promise<void> => {
   }
 }
 
-const approveSelected = async (): Promise<void> => {
+const approveAllDrafts = async (): Promise<void> => {
   if (
     !canMutate.value ||
-    selectedItemIds.value.length === 0 ||
+    !canApproveAllDrafts.value ||
     actionState.value !== 'idle'
   ) {
     return
@@ -202,9 +209,10 @@ const approveSelected = async (): Promise<void> => {
   actionError.value = ''
   actionSuccess.value = ''
   let confirmedApprovedCount = 0
+  const itemIdsToApprove = draftItems.value.map((item) => item.id)
 
   try {
-    for (const itemIds of chunkIds(selectedItemIds.value, MAX_BATCH_APPROVAL_ITEMS)) {
+    for (const itemIds of chunkIds(itemIdsToApprove, MAX_BATCH_APPROVAL_ITEMS)) {
       const result = await api.approveExerciseItems({ itemIds })
       confirmedApprovedCount += result.approvedCount
     }
@@ -297,15 +305,18 @@ const discardVersion = async (): Promise<void> => {
 }
 
 const refreshWorkspace = async (): Promise<void> => {
-  const [nextDetail, nextCoverage, nextItems] = await Promise.all([
-    api.getSourceVersion(props.versionId),
+  const nextDetail = await api.getSourceVersion(props.versionId)
+  const [nextCoverage, nextItems, nextReviewSummary] = await Promise.all([
     api.getCoverage(props.versionId),
     api.listExerciseItems(props.versionId),
+    nextDetail.status === 'draft'
+      ? api.getExerciseReviewWindow(props.versionId)
+      : Promise.resolve(null),
   ])
   detail.value = nextDetail
   coverage.value = nextCoverage
   exerciseItems.value = nextItems
-  selectedItemIds.value = []
+  reviewSummary.value = nextReviewSummary
   reportPageContext(nextDetail)
 }
 
@@ -343,7 +354,7 @@ const invalidateWorkspace = (message: string): void => {
   detail.value = null
   coverage.value = null
   exerciseItems.value = []
-  selectedItemIds.value = []
+  reviewSummary.value = null
   confirmation.value = null
   actionError.value = message
   pageContext.clearPageContext()
@@ -357,6 +368,10 @@ const getActionError = (error: unknown, fallback: string): string => {
 
   if (error instanceof ApiFailureError && error.code === 'coverage_incomplete') {
     return '服务端仍报告覆盖缺口，请按发布阻断项继续审批。'
+  }
+
+  if (error instanceof ApiFailureError && error.code === 'review_feedback_open') {
+    return '存在待处理反馈，已停止全部通过；请进入审阅模式处理。'
   }
 
   return fallback
@@ -395,7 +410,6 @@ const syncCompactReadOnly = (event: MediaQueryListEvent): void => {
 
   if (event.matches) {
     confirmation.value = null
-    selectedItemIds.value = []
   }
 }
 
@@ -810,60 +824,48 @@ onBeforeUnmount(() => {
         </div>
 
         <section
-          v-if="canMutate && draftItems.length > 0"
-          data-approval-list
+          v-if="canMutate && exerciseItems.length > 0"
+          :data-approval-list="draftItems.length > 0 ? '' : undefined"
+          data-review-actions
           class="approval"
           aria-labelledby="approval-title"
         >
           <header class="section-heading">
             <div>
               <h2 id="approval-title">
-                待审批练习
+                审阅与批准
               </h2>
-              <p>只对明确勾选的真实草稿执行批准；超过单次上限时自动分批。</p>
-              <p data-selection-count>
-                已选 {{ selectedItemIds.length }} / 待审批 {{ draftItems.length }}
+              <p
+                v-if="reviewSummary"
+                data-review-summary
+              >
+                待审阅 {{ reviewSummary.pendingCount }} ·
+                需重构 {{ reviewSummary.needsReworkCount }} ·
+                已批准 {{ reviewSummary.approvedCount }} ·
+                已禁用 {{ reviewSummary.disabledCount }}。
               </p>
             </div>
-            <label class="approval-select-all">
-              <input
-                v-model="allDraftsSelected"
-                data-select-all
-                type="checkbox"
-              >
-              全选待审批
-            </label>
           </header>
-          <ul>
-            <li
-              v-for="item in draftItems"
-              :key="item.id"
+          <div class="approval-actions">
+            <router-link
+              data-enter-review
+              class="primary-link"
+              :to="`/admin/source-versions/${encodeURIComponent(detail.versionId)}/review`"
             >
-              <label>
-                <input
-                  v-model="selectedItemIds"
-                  type="checkbox"
-                  :value="item.id"
-                >
-                <span><strong lang="en">{{ item.word }}</strong> · {{ item.stage }} · {{ taskTypeLabel(item.taskType) }}</span>
-              </label>
-              <router-link
-                class="approval-link"
-                :to="`/admin/source-versions/${encodeURIComponent(detail.versionId)}/exercises/${encodeURIComponent(item.id)}`"
-              >
-                先查看
-              </router-link>
-            </li>
-          </ul>
-          <ui-button
-            data-approve-selected
-            :disabled="selectedItemIds.length === 0 || actionState !== 'idle'"
-            :loading="actionState === 'approving'"
-            loading-label="正在批准"
-            @click="approveSelected"
-          >
-            批准所选项目
-          </ui-button>
+              进入审阅模式
+            </router-link>
+            <ui-button
+              v-if="draftItems.length > 0"
+              data-approve-all
+              variant="secondary"
+              :disabled="!canApproveAllDrafts || actionState !== 'idle'"
+              :loading="actionState === 'approving'"
+              loading-label="正在批准"
+              @click="approveAllDrafts"
+            >
+              全部通过（{{ draftItems.length }} 项）
+            </ui-button>
+          </div>
         </section>
       </div>
     </template>
@@ -907,7 +909,6 @@ onBeforeUnmount(() => {
 .section-heading h2,
 .section-heading p,
 .blockers ul,
-.approval ul,
 .pipeline ol,
 .confirmation h2,
 .confirmation p {
@@ -1081,16 +1082,14 @@ onBeforeUnmount(() => {
   text-decoration: none;
 }
 
-.blockers ul,
-.approval ul {
+.blockers ul {
   padding: 0;
   border: 1px solid var(--color-line);
   background: var(--color-surface);
   list-style: none;
 }
 
-.blockers li,
-.approval li {
+.blockers li {
   display: flex;
   min-height: 44px;
   align-items: center;
@@ -1113,8 +1112,7 @@ onBeforeUnmount(() => {
   color: var(--color-muted);
 }
 
-.blockers li:last-child,
-.approval li:last-child {
+.blockers li:last-child {
   border-bottom: 0;
 }
 
@@ -1122,7 +1120,6 @@ onBeforeUnmount(() => {
   color: var(--color-muted);
 }
 
-.approval label,
 .gap-filter {
   display: inline-flex;
   min-height: 40px;
@@ -1132,14 +1129,11 @@ onBeforeUnmount(() => {
   font-weight: 650;
 }
 
-.approval-link {
-  display: inline-flex;
-  min-height: 40px;
+.approval-actions {
+  display: flex;
   align-items: center;
-}
-
-.approval > .ui-button {
-  justify-self: start;
+  gap: var(--space-3);
+  flex-wrap: wrap;
 }
 
 .table-scroll {
@@ -1315,16 +1309,14 @@ tbody tr:last-child > * {
   .version-header,
   .section-heading,
   .command-bar,
-  .blockers li,
-  .approval li {
+  .blockers li {
     align-items: stretch;
   }
 
   .version-header,
   .section-heading,
   .command-bar,
-  .blockers li,
-  .approval li {
+  .blockers li {
     display: grid;
   }
 
@@ -1339,7 +1331,6 @@ tbody tr:last-child > * {
   .status-badge,
   .command-bar,
   .blockers ul,
-  .approval ul,
   .table-scroll {
     border: 1px solid CanvasText;
   }

@@ -6,14 +6,14 @@ import RecognizeMeaningTask from './RecognizeMeaningTask.vue'
 import SentenceBuildTask from './SentenceBuildTask.vue'
 import SentenceOutputTask from './SentenceOutputTask.vue'
 import type {
-  LessonTaskDto,
   SentenceOutputPreviewRequest,
   SubmitTaskAnswerRequest,
+  TaskRenderDto,
 } from '@shared/api/taskSchemas'
 
 withDefaults(
   defineProps<{
-    task: LessonTaskDto
+    task: TaskRenderDto
     disabled?: boolean
     referenceSentence?: string
     recoveryDraft?: string
@@ -33,7 +33,7 @@ const rendererCoverage = {
   fill_blank: true,
   sentence_build: true,
   sentence_output: true,
-} satisfies Record<LessonTaskDto['taskType'], true>
+} satisfies Record<TaskRenderDto['taskType'], true>
 
 void rendererCoverage
 </script>

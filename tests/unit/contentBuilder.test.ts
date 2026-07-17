@@ -27,7 +27,9 @@ const approveAllDraftItems = async (
 ): Promise<void> => {
   const items = await contentBuilder.listExerciseItems(sourceVersionId)
 
-  await contentBuilder.approveExerciseItems(items.map((item) => item.id))
+  await contentBuilder.approveExerciseItems(
+    items.filter((item) => item.status === 'draft').map((item) => item.id),
+  )
 }
 
 describe('admin content building workflow', () => {
@@ -435,6 +437,489 @@ describe('admin content building workflow', () => {
     }
 
     expect(await contentBuilder.getExerciseItem(item.id)).toEqual(item)
+  })
+
+  it('returns one prompt-only review item in word order and supports explicit navigation', async () => {
+    const contentBuilder = createContentBuilder({
+      repository: createInMemoryContentRepository(),
+      now: () => new Date('2026-07-17T00:00:00.000Z'),
+    })
+    const draft = await contentBuilder.importNewSourceIdempotently({
+      operationToken: generateAdminOperationToken(),
+      sourceName: 'Ordered review source',
+      words: createWords(5),
+    })
+    await contentBuilder.buildExerciseItems(draft.versionId)
+
+    const first = await contentBuilder.getExerciseReviewWindow(draft.versionId)
+
+    expect(first).toMatchObject({
+      sourceVersionId: draft.versionId,
+      sourceName: 'Ordered review source',
+      contentRevision: 1,
+      totalCount: 30,
+      pendingCount: 30,
+      approvedCount: 0,
+      needsReworkCount: 0,
+      disabledCount: 0,
+      allApproved: false,
+      current: {
+        word: 'word-1',
+        wordOrderIndex: 1,
+        position: 1,
+        stage: 'S0',
+        taskType: 'recognize_meaning',
+        reviewState: 'pending_review',
+      },
+    })
+    expect(JSON.stringify(first)).not.toContain('"answer"')
+
+    const wordTwoS0 = (await contentBuilder.listExerciseItems(draft.versionId)).find(
+      (item) => item.word === 'word-2' && item.stage === 'S0',
+    )
+    if (!wordTwoS0) throw new Error('Expected word two S0 item')
+
+    const wordTwoWindow = await contentBuilder.getExerciseReviewWindow(
+      draft.versionId,
+      wordTwoS0.id,
+    )
+    expect(wordTwoWindow).toMatchObject({
+      current: { id: wordTwoS0.id, position: 7 },
+    })
+    expect(wordTwoWindow.previousItemId).toBeTypeOf('string')
+    expect(wordTwoWindow.nextItemId).toBeTypeOf('string')
+    await expect(
+      contentBuilder.getExerciseReviewWindow(draft.versionId, 'missing-item'),
+    ).rejects.toMatchObject({ code: 'not_found' })
+  })
+
+  it('previews and evaluates all six review task types without changing content revision', async () => {
+    const contentBuilder = createContentBuilder({
+      repository: createInMemoryContentRepository(),
+      now: () => new Date('2026-07-17T01:02:03.000Z'),
+    })
+    const draft = await contentBuilder.importNewSourceIdempotently({
+      operationToken: generateAdminOperationToken(),
+      sourceName: 'Evaluation review source',
+      words: createWords(5),
+    })
+    await contentBuilder.buildExerciseItems(draft.versionId)
+    const revision = (await contentBuilder.getExerciseReviewWindow(draft.versionId)).contentRevision
+    const items = (await contentBuilder.listExerciseItems(draft.versionId)).filter(
+      (item) => item.word === 'word-1',
+    )
+
+    const submissions = items.map((item) => {
+      switch (item.taskType) {
+        case 'recognize_meaning':
+          return { item, submission: { taskType: 'recognize_meaning' as const, response: 'known' as const } }
+        case 'recall_word':
+          return { item, submission: { taskType: 'recall_word' as const, answer: 'word-1' } }
+        case 'multiple_choice':
+          return { item, submission: { taskType: 'multiple_choice' as const, answer: 'word-1' } }
+        case 'fill_blank':
+          return { item, submission: { taskType: 'fill_blank' as const, answer: 'word-1' } }
+        case 'sentence_build':
+          return {
+            item,
+            submission: {
+              taskType: 'sentence_build' as const,
+              pieceIds: (item.answer as { pieceIds: string[] }).pieceIds,
+            },
+          }
+        case 'sentence_output':
+          return {
+            item,
+            submission: {
+              taskType: 'sentence_output' as const,
+              draft: 'I can use word-1 every day.',
+              selfScore: 3,
+            },
+          }
+      }
+    })
+
+    for (const { item, submission } of submissions) {
+      await expect(
+        contentBuilder.evaluateExerciseReview(item.id, {
+          expectedContentRevision: revision,
+          submission,
+        }),
+      ).resolves.toMatchObject({
+        exerciseItemId: item.id,
+        correct: true,
+      })
+    }
+
+    const s5 = items.find((item) => item.taskType === 'sentence_output')
+    if (!s5) throw new Error('Expected S5 item')
+    await expect(
+      contentBuilder.previewExerciseReview(s5.id, {
+        expectedContentRevision: revision,
+        taskType: 'sentence_output',
+        draft: 'I wrote a sentence.',
+      }),
+    ).resolves.toEqual({
+      exerciseItemId: s5.id,
+      referenceSentence: 'I can use word-1 every day.',
+      revealedAt: '2026-07-17T01:02:03.000Z',
+    })
+    expect(
+      (await contentBuilder.getExerciseReviewWindow(draft.versionId)).contentRevision,
+    ).toBe(revision)
+  })
+
+  it('approves the current snapshot without overwriting an edit between item and version reads', async () => {
+    const baseRepository = createInMemoryContentRepository()
+    let injectConcurrentEdit = false
+    const repository: ContentRepository = {
+      ...baseRepository,
+      async getExerciseItems(itemIds) {
+        const staleItems = await baseRepository.getExerciseItems(itemIds)
+
+        if (injectConcurrentEdit) {
+          injectConcurrentEdit = false
+          const target = staleItems[0]
+          if (!target || target.taskType !== 'recall_word') {
+            throw new Error('Expected a recall item for concurrent approval test')
+          }
+          const snapshot = await baseRepository.getSourceVersion(target.sourceVersionId)
+          if (!snapshot) throw new Error('Expected source version snapshot')
+          await baseRepository.updateExerciseItems(
+            target.sourceVersionId,
+            [{ ...target, prompt: { meaning: '并发更新后的释义' } }],
+            snapshot.version.contentRevision,
+          )
+        }
+
+        return staleItems
+      },
+    }
+    const contentBuilder = createContentBuilder({
+      repository,
+      now: () => new Date('2026-07-17T01:02:03.000Z'),
+    })
+    const draft = await contentBuilder.importNewSourceIdempotently({
+      operationToken: generateAdminOperationToken(),
+      sourceName: 'Concurrent approval source',
+      words: createWords(5),
+    })
+    await contentBuilder.buildExerciseItems(draft.versionId)
+    const item = (await contentBuilder.listExerciseItems(draft.versionId)).find(
+      (candidate) => candidate.taskType === 'recall_word',
+    )
+    if (!item) throw new Error('Expected a recall item')
+
+    injectConcurrentEdit = true
+    await contentBuilder.approveExerciseItems([item.id])
+
+    await expect(baseRepository.getExerciseItem(item.id)).resolves.toMatchObject({
+      prompt: { meaning: '并发更新后的释义' },
+      status: 'approved',
+    })
+  })
+
+  it('disables the current snapshot without overwriting an edit between item and version reads', async () => {
+    const baseRepository = createInMemoryContentRepository()
+    let injectConcurrentEdit = false
+    const repository: ContentRepository = {
+      ...baseRepository,
+      async getExerciseItem(itemId) {
+        const staleItem = await baseRepository.getExerciseItem(itemId)
+
+        if (injectConcurrentEdit && staleItem) {
+          injectConcurrentEdit = false
+          if (staleItem.taskType !== 'recall_word') {
+            throw new Error('Expected a recall item for concurrent disable test')
+          }
+          const snapshot = await baseRepository.getSourceVersion(staleItem.sourceVersionId)
+          if (!snapshot) throw new Error('Expected source version snapshot')
+          await baseRepository.updateExerciseItems(
+            staleItem.sourceVersionId,
+            [{ ...staleItem, prompt: { meaning: '禁用前的并发新释义' } }],
+            snapshot.version.contentRevision,
+          )
+        }
+
+        return staleItem
+      },
+    }
+    const contentBuilder = createContentBuilder({
+      repository,
+      now: () => new Date('2026-07-17T01:02:03.000Z'),
+    })
+    const draft = await contentBuilder.importNewSourceIdempotently({
+      operationToken: generateAdminOperationToken(),
+      sourceName: 'Concurrent disable source',
+      words: createWords(5),
+    })
+    await contentBuilder.buildExerciseItems(draft.versionId)
+    const item = (await contentBuilder.listExerciseItems(draft.versionId)).find(
+      (candidate) => candidate.taskType === 'recall_word',
+    )
+    if (!item) throw new Error('Expected a recall item')
+
+    injectConcurrentEdit = true
+    await contentBuilder.disableExerciseItem(item.id)
+
+    await expect(baseRepository.getExerciseItem(item.id)).resolves.toMatchObject({
+      prompt: { meaning: '禁用前的并发新释义' },
+      status: 'disabled',
+    })
+  })
+
+  it('reads and reviews the current snapshot without trusting a stale locating read', async () => {
+    const baseRepository = createInMemoryContentRepository()
+    const setupBuilder = createContentBuilder({
+      repository: baseRepository,
+      now: () => new Date('2026-07-17T01:02:03.000Z'),
+    })
+    const draft = await setupBuilder.importNewSourceIdempotently({
+      operationToken: generateAdminOperationToken(),
+      sourceName: 'Current review snapshot source',
+      words: createWords(5),
+    })
+    await setupBuilder.buildExerciseItems(draft.versionId)
+    const item = (await setupBuilder.listExerciseItems(draft.versionId)).find(
+      (candidate) => candidate.taskType === 'recall_word',
+    )
+    if (!item) throw new Error('Expected a recall item')
+    const staleItem = await baseRepository.getExerciseItem(item.id)
+    const beforeEdit = await baseRepository.getSourceVersion(draft.versionId)
+    if (!staleItem || !beforeEdit) throw new Error('Expected stored review state')
+    await baseRepository.updateExerciseItems(
+      draft.versionId,
+      [{ ...staleItem, prompt: { meaning: '审阅前的最新释义' } }],
+      beforeEdit.version.contentRevision,
+    )
+    const repository: ContentRepository = {
+      ...baseRepository,
+      async getExerciseItem(itemId) {
+        return itemId === staleItem.id
+          ? staleItem
+          : baseRepository.getExerciseItem(itemId)
+      },
+    }
+    const contentBuilder = createContentBuilder({
+      repository,
+      now: () => new Date('2026-07-17T01:02:03.000Z'),
+    })
+
+    await expect(contentBuilder.getExerciseItem(item.id)).resolves.toMatchObject({
+      prompt: { meaning: '审阅前的最新释义' },
+    })
+
+    const review = await contentBuilder.getExerciseReviewWindow(draft.versionId, item.id)
+
+    await contentBuilder.decideExerciseReview(item.id, {
+      action: 'approve',
+      expectedContentRevision: review.contentRevision,
+    })
+
+    await expect(baseRepository.getExerciseItem(item.id)).resolves.toMatchObject({
+      prompt: { meaning: '审阅前的最新释义' },
+      status: 'approved',
+    })
+  })
+
+  it('approves through an expected review revision and rejects stale or immutable review work', async () => {
+    const contentBuilder = createContentBuilder({
+      repository: createInMemoryContentRepository(),
+      now: () => new Date('2026-07-17T00:00:00.000Z'),
+    })
+    const draft = await contentBuilder.importNewSourceIdempotently({
+      operationToken: generateAdminOperationToken(),
+      sourceName: 'Concurrent review source',
+      words: createWords(5),
+    })
+    await contentBuilder.buildExerciseItems(draft.versionId)
+    const first = await contentBuilder.getExerciseReviewWindow(draft.versionId)
+    if (!first.current) throw new Error('Expected a review item')
+
+    await expect(
+      contentBuilder.decideExerciseReview(first.current.id, {
+        action: 'approve',
+        expectedContentRevision: first.contentRevision,
+      }),
+    ).resolves.toMatchObject({
+      exerciseItemId: first.current.id,
+      action: 'approve',
+      status: 'approved',
+      reviewState: 'approved',
+      contentRevision: first.contentRevision + 1,
+    })
+    const next = await contentBuilder.getExerciseReviewWindow(draft.versionId)
+    expect(next.current?.position).toBe(2)
+
+    await expect(
+      contentBuilder.evaluateExerciseReview(next.current?.id ?? '', {
+        expectedContentRevision: first.contentRevision,
+        submission: { taskType: 'multiple_choice', answer: 'word-1' },
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' })
+
+    await approveAllDraftItems(contentBuilder, draft.versionId)
+    await contentBuilder.publishVersion(draft.versionId)
+    await expect(
+      contentBuilder.getExerciseReviewWindow(draft.versionId),
+    ).rejects.toMatchObject({ code: 'source_version_immutable' })
+  })
+
+  it.each(['draft', 'approved', 'disabled'] as const)(
+    'requests rework from a %s item with one persisted feedback and one revision increment',
+    async (initialStatus) => {
+      const contentBuilder = createContentBuilder({
+        repository: createInMemoryContentRepository(),
+        now: () => new Date('2026-07-17T02:03:04.000Z'),
+      })
+      const draft = await contentBuilder.importNewSourceIdempotently({
+        operationToken: generateAdminOperationToken(),
+        sourceName: `Rework ${initialStatus} source`,
+        words: createWords(5),
+      })
+      await contentBuilder.buildExerciseItems(draft.versionId)
+      const item = (await contentBuilder.listExerciseItems(draft.versionId)).find(
+        (candidate) => candidate.taskType === 'recall_word',
+      )
+      if (!item) throw new Error('Expected a recall item')
+
+      if (initialStatus === 'approved') await contentBuilder.approveExerciseItem(item.id)
+      if (initialStatus === 'disabled') await contentBuilder.disableExerciseItem(item.id)
+      const before = await contentBuilder.getExerciseReviewWindow(draft.versionId, item.id)
+
+      await expect(
+        contentBuilder.decideExerciseReview(item.id, {
+          action: 'request_rework',
+          expectedContentRevision: before.contentRevision,
+          feedback: '  题干与词义不匹配  ',
+        }),
+      ).resolves.toEqual({
+        exerciseItemId: item.id,
+        sourceVersionId: draft.versionId,
+        action: 'request_rework',
+        status: 'draft',
+        reviewState: 'needs_rework',
+        contentRevision: before.contentRevision + 1,
+      })
+
+      expect(
+        await contentBuilder.getExerciseReviewWindow(draft.versionId, item.id),
+      ).toMatchObject({
+        contentRevision: before.contentRevision + 1,
+        current: {
+          id: item.id,
+          status: 'draft',
+          reviewState: 'needs_rework',
+          feedback: {
+            text: '题干与词义不匹配',
+            requestedAt: '2026-07-17T02:03:04.000Z',
+          },
+        },
+      })
+    },
+  )
+
+  it('blocks every legacy approval, disable, and publish path while feedback is open', async () => {
+    const contentBuilder = createContentBuilder({
+      repository: createInMemoryContentRepository(),
+      now: () => new Date('2026-07-17T00:00:00.000Z'),
+    })
+    const draft = await contentBuilder.importNewSourceIdempotently({
+      operationToken: generateAdminOperationToken(),
+      sourceName: 'Blocked feedback source',
+      words: createWords(5),
+    })
+    await contentBuilder.buildExerciseItems(draft.versionId)
+    const item = (await contentBuilder.listExerciseItems(draft.versionId))[0]
+    if (!item) throw new Error('Expected an item')
+    const before = await contentBuilder.getExerciseReviewWindow(draft.versionId, item.id)
+    await contentBuilder.decideExerciseReview(item.id, {
+      action: 'request_rework',
+      expectedContentRevision: before.contentRevision,
+      feedback: '需要重构',
+    })
+
+    for (const operation of [
+      () => contentBuilder.approveExerciseItem(item.id),
+      () => contentBuilder.approveExerciseItems([item.id]),
+      () => contentBuilder.disableExerciseItem(item.id),
+      () => contentBuilder.publishVersion(draft.versionId),
+    ]) {
+      await expect(operation()).rejects.toMatchObject({ code: 'review_feedback_open' })
+    }
+  })
+
+  it('requires an actual structured correction, clears feedback, and returns to pending review', async () => {
+    const contentBuilder = createContentBuilder({
+      repository: createInMemoryContentRepository(),
+      now: () => new Date('2026-07-17T00:00:00.000Z'),
+    })
+    const draft = await contentBuilder.importNewSourceIdempotently({
+      operationToken: generateAdminOperationToken(),
+      sourceName: 'Corrected review source',
+      words: createWords(5),
+    })
+    await contentBuilder.buildExerciseItems(draft.versionId)
+    const item = (await contentBuilder.listExerciseItems(draft.versionId)).find(
+      (candidate) => candidate.taskType === 'recall_word',
+    )
+    if (!item) throw new Error('Expected a recall item')
+    const openedAt = (await contentBuilder.getExerciseReviewWindow(draft.versionId)).contentRevision
+    await contentBuilder.decideExerciseReview(item.id, {
+      action: 'request_rework',
+      expectedContentRevision: openedAt,
+      feedback: '词义需要更清楚',
+    })
+    const needsRework = await contentBuilder.getExerciseReviewWindow(draft.versionId, item.id)
+    const unchangedContent = {
+      stage: item.stage,
+      taskType: item.taskType,
+      prompt: item.prompt,
+      answer: item.answer,
+    } as const
+
+    await expect(
+      contentBuilder.decideExerciseReview(item.id, {
+        action: 'correct',
+        expectedContentRevision: needsRework.contentRevision,
+        content: unchangedContent,
+      }),
+    ).rejects.toMatchObject({ code: 'conflict' })
+    expect(
+      await contentBuilder.getExerciseReviewWindow(draft.versionId, item.id),
+    ).toMatchObject({
+      contentRevision: needsRework.contentRevision,
+      current: { reviewState: 'needs_rework', feedback: { text: '词义需要更清楚' } },
+    })
+
+    await expect(
+      contentBuilder.decideExerciseReview(item.id, {
+        action: 'correct',
+        expectedContentRevision: needsRework.contentRevision,
+        content: {
+          ...unchangedContent,
+          prompt: { meaning: '更清楚的词义' },
+        },
+      }),
+    ).resolves.toMatchObject({
+      action: 'correct',
+      status: 'draft',
+      reviewState: 'pending_review',
+      contentRevision: needsRework.contentRevision + 1,
+    })
+    expect(
+      await contentBuilder.getExerciseReviewWindow(draft.versionId, item.id),
+    ).toMatchObject({
+      contentRevision: needsRework.contentRevision + 1,
+      current: {
+        status: 'draft',
+        reviewState: 'pending_review',
+        prompt: { meaning: '更清楚的词义' },
+      },
+    })
+    expect(
+      (await contentBuilder.getExerciseReviewWindow(draft.versionId, item.id)).current,
+    ).not.toHaveProperty('feedback')
   })
 
   it('returns edited approved and disabled exercise items to draft', async () => {

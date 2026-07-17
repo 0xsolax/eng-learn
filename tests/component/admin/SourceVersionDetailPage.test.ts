@@ -10,6 +10,7 @@ import SourceVersionDetailPage from '@/pages/admin/SourceVersionDetailPage.vue'
 import type {
   AdminExerciseItemDto,
   BuildCoverageDto,
+  ExerciseReviewWindowDto,
   SourceVersionDetailDto,
 } from '@shared/api/contentSchemas'
 
@@ -19,10 +20,13 @@ type VersionDetailApi = Pick<
   | 'buildSourceVersion'
   | 'discardSourceVersion'
   | 'getCoverage'
+  | 'getExerciseReviewWindow'
   | 'getSourceVersion'
   | 'listExerciseItems'
   | 'publishSourceVersion'
 >
+type VersionDetailApiInput = Omit<VersionDetailApi, 'getExerciseReviewWindow'> &
+  Partial<Pick<VersionDetailApi, 'getExerciseReviewWindow'>>
 
 const missingItem = {
   word: 'apple',
@@ -90,18 +94,50 @@ const draftExercise = {
   answer: { word: 'apple' },
 }
 
+const draftReviewSummary = {
+  sourceVersionId: 'version-1',
+  sourceName: 'Starter words',
+  versionNo: 1,
+  contentRevision: 0,
+  totalCount: 1,
+  approvedCount: 0,
+  pendingCount: 1,
+  needsReworkCount: 0,
+  disabledCount: 0,
+  allApproved: false,
+  firstItemId: 'item-1',
+  current: {
+    id: 'item-1',
+    wordId: 'word-1',
+    word: 'apple',
+    wordOrderIndex: 1,
+    position: 1,
+    stage: 'S1',
+    taskType: 'recall_word',
+    status: 'draft',
+    reviewState: 'pending_review',
+    prompt: { meaning: '苹果' },
+  },
+} as const satisfies ExerciseReviewWindowDto
+
 const createPageContext = (): AdminPageContextPort => ({
   setPageContext: vi.fn(),
   clearPageContext: vi.fn(),
 })
 
 const mountPage = (
-  api: VersionDetailApi,
+  api: VersionDetailApiInput,
   attachTo?: HTMLElement,
   pageContext: AdminPageContextPort = createPageContext(),
 ) =>
   mount(SourceVersionDetailPage, {
-    props: { api, versionId: 'version-1' },
+    props: {
+      api: {
+        getExerciseReviewWindow: vi.fn().mockResolvedValue(draftReviewSummary),
+        ...api,
+      },
+      versionId: 'version-1',
+    },
     global: {
       provide: { [adminPageContextKey]: pageContext },
       stubs: { RouterLink: { template: '<a><slot /></a>' } },
@@ -198,7 +234,7 @@ describe('SourceVersionDetailPage', () => {
     expect(wrapper.findAll('[data-matrix-row]')).toHaveLength(0)
   })
 
-  it('shows selected drafts against the authoritative pending total', async () => {
+  it('shows one-click approval without select-all or per-item checkboxes', async () => {
     const secondDraft = {
       ...draftExercise,
       id: 'item-2',
@@ -209,9 +245,72 @@ describe('SourceVersionDetailPage', () => {
     const wrapper = mountPage(api)
     await flushPromises()
 
-    expect(wrapper.get('[data-selection-count]').text()).toContain('已选 0 / 待审批 2')
-    await wrapper.get('input[type="checkbox"][value="item-1"]').setValue(true)
-    expect(wrapper.get('[data-selection-count]').text()).toContain('已选 1 / 待审批 2')
+    expect(wrapper.get('[data-approval-list]').text()).toContain('待审阅 2')
+    expect(wrapper.get('[data-enter-review]').text()).toContain('进入审阅模式')
+    expect(wrapper.get('[data-approve-all]').text()).toContain('全部通过（2 项）')
+    expect(wrapper.find('[data-select-all]').exists()).toBe(false)
+    expect(wrapper.find('[data-selection-count]').exists()).toBe(false)
+    expect(wrapper.findAll('[data-approval-list] input[type="checkbox"]')).toHaveLength(0)
+  })
+
+  it('fails closed when coverage has blockers that approval cannot resolve', async () => {
+    const api = createDraftApi({
+      coverage: {
+        ...draftCoverage,
+        missingItems: [
+          ...draftCoverage.missingItems,
+          {
+            word: 'pear',
+            stage: 'S2',
+            taskType: 'multiple_choice',
+            reason: 'exercise_item_required',
+          },
+        ],
+      },
+    })
+    const wrapper = mountPage(api)
+    await flushPromises()
+
+    expect(wrapper.get('[data-approve-all]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-approve-all]').trigger('click')
+    expect(api.approveExerciseItems).not.toHaveBeenCalled()
+  })
+
+  it('shows authoritative review counts and blocks one-click approval while feedback needs rework', async () => {
+    const needsReworkSummary = {
+      ...draftReviewSummary,
+      pendingCount: 0,
+      needsReworkCount: 1,
+      current: {
+        ...draftReviewSummary.current,
+        reviewState: 'needs_rework',
+        feedback: {
+          text: '提示需要重构',
+          requestedAt: '2026-07-17T09:00:00.000Z',
+        },
+      },
+    } as const
+    const api = createDraftApi({ review: needsReworkSummary })
+    const wrapper = mountPage(api)
+    await flushPromises()
+
+    expect(wrapper.get('[data-review-summary]').text()).toContain('需重构 1')
+    expect(wrapper.get('[data-approve-all]').attributes('disabled')).toBeDefined()
+    await wrapper.get('[data-approve-all]').trigger('click')
+    expect(api.approveExerciseItems).not.toHaveBeenCalled()
+  })
+
+  it('does not show one-click approval when no draft remains', async () => {
+    const wrapper = mountPage(createDraftApi({
+      detail: readyDetail,
+      coverage: readyCoverage,
+      items: [{ ...draftExercise, status: 'approved' }],
+    }))
+    await flushPromises()
+
+    expect(wrapper.find('[data-approval-list]').exists()).toBe(false)
+    expect(wrapper.find('[data-approve-all]').exists()).toBe(false)
+    expect(wrapper.get('[data-enter-review]').text()).toContain('进入审阅模式')
   })
 
   it('renders a blocker processing route only when coverage exposes a real item', async () => {
@@ -295,7 +394,7 @@ describe('SourceVersionDetailPage', () => {
     editable.restore()
   })
 
-  it('chunks a selection larger than the shared API limit and refreshes once after all batches', async () => {
+  it('chunks one-click approval larger than the shared API limit and refreshes once after all batches', async () => {
     const draftItems = Array.from({ length: 501 }, (_, index) => ({
       ...draftExercise,
       id: `item-${String(index + 1)}`,
@@ -336,8 +435,7 @@ describe('SourceVersionDetailPage', () => {
     const wrapper = mountPage(api)
     await flushPromises()
 
-    await wrapper.get('[data-select-all]').setValue(true)
-    await wrapper.get('[data-approve-selected]').trigger('click')
+    await wrapper.get('[data-approve-all]').trigger('click')
     await flushPromises()
 
     expect(api.approveExerciseItems).toHaveBeenCalledTimes(2)
@@ -377,8 +475,7 @@ describe('SourceVersionDetailPage', () => {
     const wrapper = mountPage(api)
     await flushPromises()
 
-    await wrapper.get('[data-select-all]').setValue(true)
-    await wrapper.get('[data-approve-selected]').trigger('click')
+    await wrapper.get('[data-approve-all]').trigger('click')
     await flushPromises()
 
     expect(api.approveExerciseItems).toHaveBeenCalledTimes(2)
@@ -386,10 +483,11 @@ describe('SourceVersionDetailPage', () => {
     expect(wrapper.get('[role="alert"]').text()).toContain(
       '已确认批准 500 个练习项目，后续批次未完成',
     )
-    expect(wrapper.findAll('.approval li input[type="checkbox"]')).toHaveLength(1)
+    expect(wrapper.get('[data-approve-all]').text()).toContain('全部通过（1 项）')
+    expect(wrapper.findAll('[data-approval-list] input[type="checkbox"]')).toHaveLength(0)
   })
 
-  it('uses server coverage to approve selected drafts before enabling publish confirmation', async () => {
+  it('uses server coverage to approve all drafts before enabling publish confirmation', async () => {
     const api = {
       getSourceVersion: vi
         .fn()
@@ -425,8 +523,7 @@ describe('SourceVersionDetailPage', () => {
     expect(wrapper.get('[data-blockers]').text()).toContain('apple · S1')
     expect(wrapper.get('[data-coverage-table]').text()).toContain('待审批')
 
-    await wrapper.get('input[type="checkbox"][value="item-1"]').setValue(true)
-    await wrapper.get('[data-approve-selected]').trigger('click')
+    await wrapper.get('[data-approve-all]').trigger('click')
     await flushPromises()
 
     expect(api.approveExerciseItems).toHaveBeenCalledWith({ itemIds: ['item-1'] })
@@ -536,7 +633,7 @@ describe('SourceVersionDetailPage', () => {
     expect(wrapper.find('[data-build]').exists()).toBe(false)
     expect(wrapper.find('[data-publish]').exists()).toBe(false)
     expect(wrapper.find('[data-discard]').exists()).toBe(false)
-    expect(wrapper.find('[data-approve-selected]').exists()).toBe(false)
+    expect(wrapper.find('[data-approve-all]').exists()).toBe(false)
     expect(wrapper.find('[data-select-all]').exists()).toBe(false)
     expect(wrapper.get('[data-next-version]').text()).toContain('创建下一草稿版本')
   })
@@ -702,15 +799,32 @@ const createDraftApi = (overrides: {
   detail?: SourceVersionDetailDto
   coverage?: BuildCoverageDto
   items?: AdminExerciseItemDto[]
-} = {}): VersionDetailApi => ({
-  getSourceVersion: vi.fn().mockResolvedValue(overrides.detail ?? draftDetail),
-  getCoverage: vi.fn().mockResolvedValue(overrides.coverage ?? draftCoverage),
-  listExerciseItems: vi.fn().mockResolvedValue(overrides.items ?? [draftExercise]),
-  buildSourceVersion: vi.fn(),
-  approveExerciseItems: vi.fn(),
-  publishSourceVersion: vi.fn(),
-  discardSourceVersion: vi.fn(),
-})
+  review?: ExerciseReviewWindowDto
+} = {}): VersionDetailApi => {
+  const items = overrides.items ?? [draftExercise]
+  const draftCount = items.filter((item) => item.status === 'draft').length
+  const approvedCount = items.filter((item) => item.status === 'approved').length
+  const disabledCount = items.filter((item) => item.status === 'disabled').length
+  const derivedReview = {
+    ...draftReviewSummary,
+    totalCount: items.length,
+    pendingCount: draftCount,
+    approvedCount,
+    disabledCount,
+    allApproved: items.length > 0 && approvedCount === items.length,
+  }
+
+  return {
+    getSourceVersion: vi.fn().mockResolvedValue(overrides.detail ?? draftDetail),
+    getCoverage: vi.fn().mockResolvedValue(overrides.coverage ?? draftCoverage),
+    listExerciseItems: vi.fn().mockResolvedValue(items),
+    getExerciseReviewWindow: vi.fn().mockResolvedValue(overrides.review ?? derivedReview),
+    buildSourceVersion: vi.fn(),
+    approveExerciseItems: vi.fn(),
+    publishSourceVersion: vi.fn(),
+    discardSourceVersion: vi.fn(),
+  }
+}
 
 const isBefore = (first: Element, second: Element): boolean =>
   (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0

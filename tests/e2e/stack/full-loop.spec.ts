@@ -10,6 +10,9 @@ import {
   adminExerciseItemListSchema,
   batchApprovalResultSchema,
   buildCoverageSchema,
+  exerciseReviewDecisionResultSchema,
+  exerciseReviewEvaluateResultSchema,
+  exerciseReviewWindowSchema,
   importedSourceVersionSchema,
   publishedSourceVersionSchema,
 } from '../../../shared/api/contentSchemas'
@@ -38,6 +41,16 @@ const importEvidenceSchema = z
     wordCount: z.number().int().nonnegative(),
     groupCount: z.number().int().nonnegative(),
     operationCount: z.number().int().nonnegative(),
+  })
+  .strict()
+const runtimeRowSchema = z.record(z.string(), z.unknown())
+const reviewRuntimeEvidenceSchema = z
+  .object({
+    courses: z.array(runtimeRowSchema),
+    lessonSessions: z.array(runtimeRowSchema),
+    lessonTasks: z.array(runtimeRowSchema),
+    reviewLogs: z.array(runtimeRowSchema),
+    userWordStates: z.array(runtimeRowSchema),
   })
   .strict()
 
@@ -302,7 +315,10 @@ test('enforces response-loss replay, token boundaries, and one-winner rotation i
   expect(await failureCode(revokedSession)).toBe('learner_session_revoked')
 })
 
-test('imports a real-size 118-word source into 24 groups', async ({ request, baseURL }) => {
+test('imports, builds, and approves a real-size 118-word source in 500 + 208 batches', async ({
+  request,
+  baseURL,
+}) => {
   if (!baseURL) throw new Error('Expected stack base URL')
   await authenticateAdminRequest(request, baseURL)
   const sourceName = `118 words ${generateAdminOperationToken().slice(0, 8)}`
@@ -327,6 +343,206 @@ test('imports a real-size 118-word source into 24 groups', async ({ request, bas
   expect(versions.filter((version) => version.sourceName === sourceName)).toEqual([
     expect.objectContaining({ versionId: imported.versionId }),
   ])
+
+  const coverage = await success(
+    await request.post(`/api/admin/source-versions/${imported.versionId}/build`, {
+      headers: { origin: new URL(baseURL).origin },
+    }),
+    buildCoverageSchema,
+  )
+  expect(coverage.cells).toHaveLength(708)
+
+  const items = await success(
+    await request.get(`/api/admin/source-versions/${imported.versionId}/exercises`),
+    adminExerciseItemListSchema,
+  )
+  expect(items).toHaveLength(708)
+
+  const batchSizes: number[] = []
+  for (let offset = 0; offset < items.length; offset += 500) {
+    const itemIds = items.slice(offset, offset + 500).map((item) => item.id)
+    batchSizes.push(itemIds.length)
+    const result = await success(
+      await request.post('/api/admin/exercise-items/batch-approve', {
+        headers: { origin: new URL(baseURL).origin },
+        data: { itemIds },
+      }),
+      batchApprovalResultSchema,
+    )
+    expect(result.approvedCount).toBe(itemIds.length)
+  }
+  expect(batchSizes).toEqual([500, 208])
+
+  const approvedItems = await success(
+    await request.get(`/api/admin/source-versions/${imported.versionId}/exercises`),
+    adminExerciseItemListSchema,
+  )
+  expect(approvedItems).toHaveLength(708)
+  expect(approvedItems.every((item) => item.status === 'approved')).toBe(true)
+})
+
+test('closes the D1 review feedback loop without touching learner runtime state', async ({
+  request,
+  baseURL,
+}) => {
+  if (!baseURL) throw new Error('Expected stack base URL')
+  await authenticateAdminRequest(request, baseURL)
+  const originHeaders = { origin: new URL(baseURL).origin }
+  const runtimeBefore = await success(
+    await request.get('/api/e2e/review-runtime-evidence'),
+    reviewRuntimeEvidenceSchema,
+  )
+  const imported = await success(
+    await request.post('/api/admin/source-versions/import', {
+      headers: originHeaders,
+      data: {
+        mode: 'new_source',
+        operationToken: generateAdminOperationToken(),
+        sourceName: `Review loop ${generateAdminOperationToken().slice(0, 8)}`,
+        words: createImportWords('review', 5),
+      },
+    }),
+    importedSourceVersionSchema,
+  )
+  await success(
+    await request.post(`/api/admin/source-versions/${imported.versionId}/build`, {
+      headers: originHeaders,
+    }),
+    buildCoverageSchema,
+  )
+  const items = await success(
+    await request.get(`/api/admin/source-versions/${imported.versionId}/exercises`),
+    adminExerciseItemListSchema,
+  )
+  const initialWindow = await success(
+    await request.get(`/api/admin/source-versions/${imported.versionId}/review`),
+    exerciseReviewWindowSchema,
+  )
+  const current = initialWindow.current
+
+  if (!current || current.taskType !== 'recognize_meaning') {
+    throw new Error('Expected the ordered review window to start at S0')
+  }
+  await success(
+    await request.post(`/api/admin/exercise-items/${current.id}/review/evaluate`, {
+      headers: originHeaders,
+      data: {
+        expectedContentRevision: initialWindow.contentRevision,
+        submission: { taskType: 'recognize_meaning', response: 'known' },
+      },
+    }),
+    exerciseReviewEvaluateResultSchema,
+  )
+  await success(
+    await request.post(`/api/admin/exercise-items/${current.id}/review/decision`, {
+      headers: originHeaders,
+      data: {
+        action: 'request_rework',
+        expectedContentRevision: initialWindow.contentRevision,
+        feedback: '中文释义需要更明确',
+      },
+    }),
+    exerciseReviewDecisionResultSchema,
+  )
+  const feedbackWindow = await success(
+    await request.get(
+      `/api/admin/source-versions/${imported.versionId}/review?itemId=${encodeURIComponent(current.id)}`,
+    ),
+    exerciseReviewWindowSchema,
+  )
+  expect(feedbackWindow.current).toMatchObject({
+    id: current.id,
+    status: 'draft',
+    reviewState: 'needs_rework',
+    feedback: { text: '中文释义需要更明确' },
+  })
+
+  const blockedApproval = await request.post('/api/admin/exercise-items/batch-approve', {
+    headers: originHeaders,
+    data: { itemIds: items.map((item) => item.id) },
+  })
+  expect(blockedApproval.status()).toBe(409)
+  expect(await failureCode(blockedApproval)).toBe('review_feedback_open')
+
+  const fullItem = items.find((item) => item.id === current.id)
+  if (!fullItem || fullItem.taskType !== 'recognize_meaning') {
+    throw new Error('Expected the full S0 exercise item')
+  }
+  const correctedContent = {
+    stage: fullItem.stage,
+    taskType: fullItem.taskType,
+    prompt: { ...fullItem.prompt, meaning: `${fullItem.prompt.meaning}（水果）` },
+    answer: fullItem.answer,
+  }
+  await success(
+    await request.post(`/api/admin/exercise-items/${current.id}/review/decision`, {
+      headers: originHeaders,
+      data: {
+        action: 'correct',
+        expectedContentRevision: feedbackWindow.contentRevision,
+        content: correctedContent,
+      },
+    }),
+    exerciseReviewDecisionResultSchema,
+  )
+  const correctedWindow = await success(
+    await request.get(
+      `/api/admin/source-versions/${imported.versionId}/review?itemId=${encodeURIComponent(current.id)}`,
+    ),
+    exerciseReviewWindowSchema,
+  )
+  expect(correctedWindow.current).toMatchObject({
+    id: current.id,
+    reviewState: 'pending_review',
+    prompt: correctedContent.prompt,
+  })
+  expect(correctedWindow.current?.feedback).toBeUndefined()
+
+  await success(
+    await request.post(`/api/admin/exercise-items/${current.id}/review/evaluate`, {
+      headers: originHeaders,
+      data: {
+        expectedContentRevision: correctedWindow.contentRevision,
+        submission: { taskType: 'recognize_meaning', response: 'known' },
+      },
+    }),
+    exerciseReviewEvaluateResultSchema,
+  )
+  await success(
+    await request.post(`/api/admin/exercise-items/${current.id}/review/decision`, {
+      headers: originHeaders,
+      data: {
+        action: 'approve',
+        expectedContentRevision: correctedWindow.contentRevision,
+      },
+    }),
+    exerciseReviewDecisionResultSchema,
+  )
+  await success(
+    await request.post('/api/admin/exercise-items/batch-approve', {
+      headers: originHeaders,
+      data: { itemIds: items.filter((item) => item.id !== current.id).map((item) => item.id) },
+    }),
+    batchApprovalResultSchema,
+  )
+  const completedWindow = await success(
+    await request.get(`/api/admin/source-versions/${imported.versionId}/review`),
+    exerciseReviewWindowSchema,
+  )
+  expect(completedWindow).toMatchObject({ allApproved: true, approvedCount: items.length })
+  expect(completedWindow.current).toBeUndefined()
+  await success(
+    await request.post(`/api/admin/source-versions/${imported.versionId}/publish`, {
+      headers: originHeaders,
+    }),
+    publishedSourceVersionSchema,
+  )
+
+  const runtimeAfter = await success(
+    await request.get('/api/e2e/review-runtime-evidence'),
+    reviewRuntimeEvidenceSchema,
+  )
+  expect(runtimeAfter).toEqual(runtimeBefore)
 })
 
 test('production Vue browser closes admin lifecycle and a capped all-wrong learner S0', async ({
@@ -387,9 +603,9 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   await expect(
     page.getByText('构建完成，已重新读取服务端覆盖率。', { exact: true }),
   ).toBeVisible()
-  await expect(page.locator('[data-select-all]')).toBeVisible()
-  await page.locator('[data-select-all]').check()
-  await page.locator('[data-approve-selected]').click()
+  await expect(page.locator('[data-enter-review]')).toBeVisible()
+  await expect(page.locator('[data-select-all]')).toHaveCount(0)
+  await page.locator('[data-approve-all]').click()
   await expect(
     page.getByText('已批准 30 个练习项目，并重新读取覆盖率。', { exact: true }),
   ).toBeVisible()
@@ -738,11 +954,12 @@ const success = async <TSchema extends z.ZodType>(
   response: APIResponse,
   schema: TSchema,
 ): Promise<z.output<TSchema>> => {
-  expect(response.status()).toBe(200)
+  const body: unknown = await response.json()
+  expect(response.status(), JSON.stringify(body)).toBe(200)
   const envelope = z
     .object({ ok: z.literal(true), data: z.unknown() })
     .strict()
-    .parse(await response.json())
+    .parse(body)
   const data: z.output<TSchema> = schema.parse(envelope.data)
 
   return data

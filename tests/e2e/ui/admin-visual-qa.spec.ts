@@ -207,6 +207,51 @@ const approvedExerciseItems = draftExerciseItems.map((item) => ({
   status: 'approved' as const,
 }))
 
+const draftReviewWindow = {
+  sourceVersionId: version.versionId,
+  sourceName: version.sourceName,
+  versionNo: version.versionNo,
+  contentRevision: 0,
+  totalCount: draftExerciseItems.length,
+  approvedCount: 0,
+  pendingCount: draftExerciseItems.length,
+  needsReworkCount: 0,
+  disabledCount: 0,
+  allApproved: false,
+  firstItemId: draftExerciseItems[0]?.id,
+  current: draftExerciseItems[0]
+    ? {
+        id: draftExerciseItems[0].id,
+        wordId: draftExerciseItems[0].wordId,
+        word: draftExerciseItems[0].word,
+        wordOrderIndex: 1,
+        position: 1,
+        stage: draftExerciseItems[0].stage,
+        taskType: draftExerciseItems[0].taskType,
+        status: 'draft' as const,
+        reviewState: 'pending_review' as const,
+        prompt: draftExerciseItems[0].prompt,
+      }
+    : undefined,
+}
+
+const approvedReviewWindow = {
+  ...draftReviewWindow,
+  approvedCount: draftExerciseItems.length,
+  pendingCount: 0,
+  allApproved: true,
+  current: undefined,
+}
+
+const emptyReviewWindow = {
+  ...draftReviewWindow,
+  totalCount: 0,
+  pendingCount: 0,
+  allApproved: false,
+  firstItemId: undefined,
+  current: undefined,
+}
+
 const createEphemeralAccessCode = (): string => {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
   const bytes = crypto.getRandomValues(new Uint8Array(10))
@@ -289,6 +334,10 @@ const installAdminFixture = async (page: Page): Promise<void> => {
     }
     if (key === `GET /api/admin/source-versions/${version.versionId}/exercises`) {
       await fulfill(draftExerciseItems)
+      return
+    }
+    if (key === `GET /api/admin/source-versions/${version.versionId}/review`) {
+      await fulfill(draftReviewWindow)
       return
     }
     if (key === `GET /api/admin/exercise-items/${exerciseItem.id}`) {
@@ -545,6 +594,23 @@ const installStateMatrixFixture = async (
         await fulfill(approvedExerciseItems)
         return
       }
+    }
+
+    if (key === `GET /api/admin/source-versions/${version.versionId}/review`) {
+      if (scenario === 'version-unbuilt') {
+        await fulfill(emptyReviewWindow)
+        return
+      }
+      if (
+        scenario === 'version-ready' ||
+        scenario === 'version-publish-confirmation' ||
+        scenario === 'version-gap-filter-empty'
+      ) {
+        await fulfill(approvedReviewWindow)
+        return
+      }
+      await fulfill(draftReviewWindow)
+      return
     }
 
     if (key === `GET /api/admin/exercise-items/${exerciseItem.id}`) {

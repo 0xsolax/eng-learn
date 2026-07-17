@@ -2,6 +2,8 @@ import type {
   ContentRepository,
   CreateSourceVersionInput,
   ExerciseItemRecord,
+  ExerciseReviewFeedbackRecord,
+  ExerciseReviewWindowItemRecord,
   SourceRecord,
   SourceVersionRecord,
   SourceVersionSnapshot,
@@ -24,6 +26,7 @@ export const createInMemoryContentRepository = (
   const wordsByVersion = new Map<string, WordRecord[]>()
   const groupsByVersion = new Map<string, WordGroupRecord[]>()
   const exerciseItemsByVersion = new Map<string, ExerciseItemRecord[]>()
+  const reviewFeedbackByItemId = new Map<string, ExerciseReviewFeedbackRecord>()
 
   const requireMutableVersion = (
     versionId: string,
@@ -238,6 +241,115 @@ export const createInMemoryContentRepository = (
       })
     },
 
+    async getExerciseReviewWindow(versionId: string, itemId?: string) {
+      const version = versions.get(versionId)
+
+      if (!version) return undefined
+
+      const source = sources.get(version.sourceId)
+      if (!source) throw new Error(`Source ${version.sourceId} is missing`)
+
+      const words = wordsByVersion.get(versionId) ?? []
+      const wordsById = new Map(words.map((word) => [word.id, word]))
+      const orderedItems = [...(exerciseItemsByVersion.get(versionId) ?? [])]
+        .sort((left, right) => {
+          const wordOrder =
+            (wordsById.get(left.wordId)?.orderIndex ?? Number.MAX_SAFE_INTEGER) -
+            (wordsById.get(right.wordId)?.orderIndex ?? Number.MAX_SAFE_INTEGER)
+
+          return wordOrder === 0 ? left.stage.localeCompare(right.stage) : wordOrder
+        })
+        .map<ExerciseReviewWindowItemRecord>((item, index) => {
+          const word = wordsById.get(item.wordId)
+          if (!word) throw new Error(`Word ${item.wordId} is missing`)
+          const feedback = reviewFeedbackByItemId.get(item.id)
+
+          return {
+            id: item.id,
+            wordId: item.wordId,
+            word: word.word,
+            wordOrderIndex: word.orderIndex,
+            position: index + 1,
+            stage: item.stage,
+            taskType: item.taskType,
+            prompt: item.prompt,
+            status: item.status,
+            reviewState: toReviewState(item.status, feedback),
+            ...(feedback ? { feedback } : {}),
+          }
+        })
+      const currentIndex = itemId
+        ? orderedItems.findIndex((item) => item.id === itemId)
+        : findDefaultReviewItemIndex(orderedItems)
+      const current = currentIndex >= 0 ? orderedItems[currentIndex] : undefined
+      const approvedCount = orderedItems.filter((item) => item.reviewState === 'approved').length
+      const pendingCount = orderedItems.filter(
+        (item) => item.reviewState === 'pending_review',
+      ).length
+      const needsReworkCount = orderedItems.filter(
+        (item) => item.reviewState === 'needs_rework',
+      ).length
+      const disabledCount = orderedItems.filter((item) => item.reviewState === 'disabled').length
+      const previousItemId = currentIndex > 0 ? orderedItems[currentIndex - 1]?.id : undefined
+      const nextItemId =
+        currentIndex >= 0 && currentIndex < orderedItems.length - 1
+          ? orderedItems[currentIndex + 1]?.id
+          : undefined
+
+      return {
+        sourceVersionId: version.id,
+        sourceName: source.name,
+        versionNo: version.versionNo,
+        contentRevision: version.contentRevision,
+        status: version.status,
+        totalCount: orderedItems.length,
+        approvedCount,
+        pendingCount,
+        needsReworkCount,
+        disabledCount,
+        ...(orderedItems[0] ? { firstItemId: orderedItems[0].id } : {}),
+        ...(previousItemId ? { previousItemId } : {}),
+        ...(nextItemId ? { nextItemId } : {}),
+        ...(current ? { current } : {}),
+      }
+    },
+
+    async getExerciseReviewFeedback(itemIds: string[]) {
+      return Array.from(new Set(itemIds)).flatMap((itemId) => {
+        const feedback = reviewFeedbackByItemId.get(itemId)
+
+        return feedback ? [feedback] : []
+      })
+    },
+
+    async requestExerciseItemRework(
+      versionId: string,
+      itemId: string,
+      feedbackText: string,
+      requestedAt: string,
+      expectedRevision: number,
+    ) {
+      const version = requireMutableVersion(versionId, expectedRevision)
+      const currentItems = exerciseItemsByVersion.get(versionId) ?? []
+      const item = currentItems.find((candidate) => candidate.id === itemId)
+
+      if (!item) throw new Error(`Exercise item ${itemId} is missing`)
+
+      exerciseItemsByVersion.set(
+        versionId,
+        currentItems.map((candidate) =>
+          candidate.id === itemId ? { ...candidate, status: 'draft' } : candidate,
+        ),
+      )
+      reviewFeedbackByItemId.set(itemId, {
+        exerciseItemId: itemId,
+        feedbackText,
+        requestedAt,
+      })
+
+      return incrementRevision(version)
+    },
+
     async updateExerciseItems(
       versionId: string,
       items: ExerciseItemRecord[],
@@ -259,10 +371,29 @@ export const createInMemoryContentRepository = (
         if (!currentItems?.some((candidate) => candidate.id === item.id)) {
           throw new Error(`Exercise item ${item.id} is missing`)
         }
+
+        if (
+          reviewFeedbackByItemId.has(item.id) &&
+          (item.status === 'approved' || item.status === 'disabled')
+        ) {
+          throw new DomainError(
+            'review_feedback_open',
+            'Exercise item has unresolved review feedback',
+          )
+        }
       }
 
       for (const item of items) {
         const currentItems = exerciseItemsByVersion.get(versionId) ?? []
+        const currentItem = currentItems.find((candidate) => candidate.id === item.id)
+
+        if (
+          currentItem &&
+          (JSON.stringify(currentItem.prompt) !== JSON.stringify(item.prompt) ||
+            JSON.stringify(currentItem.answer) !== JSON.stringify(item.answer))
+        ) {
+          reviewFeedbackByItemId.delete(item.id)
+        }
 
         exerciseItemsByVersion.set(
           versionId,
@@ -303,4 +434,23 @@ export const createInMemoryContentRepository = (
       return archived
     },
   }
+}
+
+const toReviewState = (
+  status: ExerciseItemRecord['status'],
+  feedback: ExerciseReviewFeedbackRecord | undefined,
+): ExerciseReviewWindowItemRecord['reviewState'] => {
+  if (status === 'approved') return 'approved'
+  if (status === 'disabled') return 'disabled'
+
+  return feedback ? 'needs_rework' : 'pending_review'
+}
+
+const findDefaultReviewItemIndex = (items: ExerciseReviewWindowItemRecord[]): number => {
+  for (const state of ['pending_review', 'needs_rework', 'disabled'] as const) {
+    const index = items.findIndex((item) => item.reviewState === state)
+    if (index >= 0) return index
+  }
+
+  return -1
 }

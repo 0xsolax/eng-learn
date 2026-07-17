@@ -16,7 +16,11 @@ import { generateAdminOperationToken } from '../../shared/security/adminOperatio
 const ORIGIN = 'https://eng-learn.test'
 
 type WriteOperation = 'edit' | 'approve' | 'disable' | 'publish' | 'discard'
-type GatedMethod = 'updateExerciseItems' | 'publishSourceVersion' | 'archiveDraftVersion'
+type GatedMethod =
+  | 'updateExerciseItems'
+  | 'requestExerciseItemRework'
+  | 'publishSourceVersion'
+  | 'archiveDraftVersion'
 
 const WRITE_CASES: Array<{
   operation: WriteOperation
@@ -100,6 +104,52 @@ describe.each(WRITE_CASES)('Content CAS API race: $operation', ({ operation, gat
     })
     expect(storedItem?.status).toBe('draft')
     expect(storedItem?.prompt).toMatchObject({ meaning: 'race-winner' })
+  })
+})
+
+describe.each([
+  { action: 'approve' as const, operation: 'approve' as const, gatedMethod: 'updateExerciseItems' as const },
+  { action: 'request_rework' as const, operation: 'edit' as const, gatedMethod: 'requestExerciseItemRework' as const },
+  { action: 'correct' as const, operation: 'edit' as const, gatedMethod: 'updateExerciseItems' as const },
+])('Exercise review CAS API race: $action', ({ action, operation, gatedMethod }) => {
+  it('returns conflict and preserves only a competing edit', async () => {
+    const fixture = await createFixture(operation)
+    const gate = createGatedRepository(fixture.repository, gatedMethod)
+    const app = createContentRaceApp(
+      gate.repository,
+      () => new Date('2026-07-17T02:00:00.000Z'),
+    )
+    const command = action === 'approve'
+      ? { action, expectedContentRevision: fixture.revisionBeforeRace }
+      : action === 'request_rework'
+        ? {
+            action,
+            expectedContentRevision: fixture.revisionBeforeRace,
+            feedback: '并发测试反馈',
+          }
+        : {
+            action,
+            expectedContentRevision: fixture.revisionBeforeRace,
+            content: editContent(fixture.item, 'original-correction'),
+          }
+    const original = app.fetch(reviewDecisionRequest(fixture.item.id, command))
+
+    await gate.reached
+    const racer = await app.fetch(editRequest(fixture.item, 'race-winner'))
+    gate.release()
+
+    const response = await original
+    expect(racer.status).toBe(200)
+    expect(response.status).toBe(409)
+    await expect(errorCode(response)).resolves.toBe('conflict')
+
+    const snapshot = await requireSnapshot(fixture.repository, fixture.versionId)
+    const storedItem = snapshot.exerciseItems.find((item) => item.id === fixture.item.id)
+    const feedback = await fixture.repository.getExerciseReviewFeedback([fixture.item.id])
+
+    expect(snapshot.version.contentRevision).toBe(fixture.revisionBeforeRace + 1)
+    expect(storedItem).toMatchObject({ status: 'draft', prompt: { meaning: 'race-winner' } })
+    expect(feedback).toEqual([])
   })
 })
 
@@ -205,6 +255,16 @@ const createGatedRepository = (
       await waitAtGate('updateExerciseItems')
       return stored.updateExerciseItems(versionId, items, expectedRevision)
     },
+    async requestExerciseItemRework(versionId, itemId, feedbackText, requestedAt, expectedRevision) {
+      await waitAtGate('requestExerciseItemRework')
+      return stored.requestExerciseItemRework(
+        versionId,
+        itemId,
+        feedbackText,
+        requestedAt,
+        expectedRevision,
+      )
+    },
     async publishSourceVersion(versionId, publishedAt, expectedRevision) {
       await waitAtGate('publishSourceVersion')
       return stored.publishSourceVersion(versionId, publishedAt, expectedRevision)
@@ -265,6 +325,12 @@ const versionActionRequest = (
   action: 'publish' | 'discard',
 ): Request =>
   request(`/api/admin/source-versions/${versionId}/${action}`, { method: 'POST' })
+
+const reviewDecisionRequest = (itemId: string, body: unknown): Request =>
+  request(`/api/admin/exercise-items/${itemId}/review/decision`, {
+    method: 'POST',
+    body,
+  })
 
 const request = (
   path: string,

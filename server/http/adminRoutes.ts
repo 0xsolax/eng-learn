@@ -2,6 +2,9 @@ import { z } from 'zod'
 import {
   approveExerciseItemsRequestSchema,
   editExerciseItemRequestSchema,
+  exerciseReviewDecisionRequestSchema,
+  exerciseReviewEvaluateRequestSchema,
+  exerciseReviewPreviewRequestSchema,
 } from '../../shared/api/contentSchemas'
 import {
   importSourceVersionCommandSchema,
@@ -67,6 +70,15 @@ export const routeAdminContentRequest = async (
     return apiOk(await contentBuilder.listExerciseItems(requireSegment(path, 3)))
   }
 
+  if (isSourceVersionAction(path, 'review') && request.method === 'GET') {
+    return apiOk(
+      await contentBuilder.getExerciseReviewWindow(
+        requireSegment(path, 3),
+        parseOptionalReviewItemId(url),
+      ),
+    )
+  }
+
   if (isSourceVersionAction(path, 'discard') && request.method === 'POST') {
     await parseOptionalEmptyJson(request)
 
@@ -119,6 +131,30 @@ export const routeAdminContentRequest = async (
     return apiOk({ itemId, status: 'disabled' })
   }
 
+  if (isExerciseItemReviewAction(path, 'preview') && request.method === 'POST') {
+    const input = await parseJsonRequest(request, exerciseReviewPreviewRequestSchema)
+
+    return apiOk(
+      await contentBuilder.previewExerciseReview(requireSegment(path, 3), input),
+    )
+  }
+
+  if (isExerciseItemReviewAction(path, 'evaluate') && request.method === 'POST') {
+    const input = await parseJsonRequest(request, exerciseReviewEvaluateRequestSchema)
+
+    return apiOk(
+      await contentBuilder.evaluateExerciseReview(requireSegment(path, 3), input),
+    )
+  }
+
+  if (isExerciseItemReviewAction(path, 'decision') && request.method === 'POST') {
+    const input = await parseJsonRequest(request, exerciseReviewDecisionRequestSchema)
+
+    return apiOk(
+      await contentBuilder.decideExerciseReview(requireSegment(path, 3), input),
+    )
+  }
+
   if (request.method === 'POST' && url.pathname === '/api/admin/exercise-items/batch-approve') {
     const input = await parseJsonRequest(request, approveExerciseItemsRequestSchema)
     await contentBuilder.approveExerciseItems(input.itemIds)
@@ -147,6 +183,12 @@ const isExerciseItemRoute = (path: string[]): boolean =>
 const isExerciseItemAction = (path: string[], action: string): boolean =>
   path.length === 5 && isExerciseItemRoute(path.slice(0, 4)) && path[4] === action
 
+const isExerciseItemReviewAction = (path: string[], action: string): boolean =>
+  path.length === 6 &&
+  isExerciseItemRoute(path.slice(0, 4)) &&
+  path[4] === 'review' &&
+  path[5] === action
+
 const requireSegment = (path: string[], index: number): string => {
   const segment = path[index]
 
@@ -159,6 +201,22 @@ const parseOptionalEmptyJson = async (request: Request): Promise<void> => {
   if (request.headers.has('content-type')) {
     await parseJsonRequest(request, emptyRequestSchema)
   }
+}
+
+const parseOptionalReviewItemId = (url: URL): string | undefined => {
+  const itemIds = url.searchParams.getAll('itemId')
+
+  if (itemIds.length === 0) return undefined
+
+  const itemId = itemIds.length === 1 ? itemIds[0]?.trim() : undefined
+
+  if (!itemId) {
+    throw new DomainError('validation_error', 'Review item id is invalid', {
+      fields: [{ path: 'itemId', message: 'Provide exactly one non-empty item id' }],
+    })
+  }
+
+  return itemId
 }
 
 const toImportWords = (

@@ -61,6 +61,13 @@ export const createAppRouter = (history: RouterHistory = createWebHistory()): Ro
                 meta: { requiresAdmin: true },
               },
               {
+                path: 'source-versions/:versionId/review/:itemId?',
+                name: 'admin-exercise-review',
+                component: () => import('../../pages/admin/ExerciseReviewPage.vue'),
+                props: true,
+                meta: { requiresAdmin: true },
+              },
+              {
                 path: 'source-versions/:versionId/exercises/:itemId',
                 name: 'admin-exercise-item',
                 component: () => import('../../pages/admin/ExerciseItemPage.vue'),

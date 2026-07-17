@@ -24,6 +24,7 @@ const migrationPaths = [
   '../../migrations/0007_backfill_legacy_lesson_runtime.sql',
   '../../migrations/0008_add_admin_operation_ledger.sql',
   '../../migrations/0011_add_progressive_context_model.sql',
+  '../../migrations/0012_add_exercise_review_feedback.sql',
 ]
 
 type SqliteD1Statement = {
@@ -405,7 +406,7 @@ describe('D1 content build query budget', () => {
       expect({
         buildQueryCount: buildMetrics.queryCount,
         approveQueryCount: approveMetrics.queryCount,
-      }).toEqual({ buildQueryCount: 26, approveQueryCount: 21 })
+      }).toEqual({ buildQueryCount: 26, approveQueryCount: 22 })
 
       database.close()
     },

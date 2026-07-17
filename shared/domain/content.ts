@@ -4,6 +4,12 @@ export type ContentModel = 'v1_single_sentence' | 'v2_progressive_context'
 
 export type ExerciseItemStatus = 'draft' | 'approved' | 'disabled'
 
+export type ExerciseReviewState =
+  | 'pending_review'
+  | 'needs_rework'
+  | 'approved'
+  | 'disabled'
+
 export type WordStage = 'S0' | 'S1' | 'S2' | 'S3' | 'S4' | 'S5'
 
 export type TaskType =

@@ -162,6 +162,36 @@ export const installMockedAdminWorkspaceApiRouteFixture = async (
     missingItems: missingItems(),
   })
 
+  const reviewWindow = () => ({
+    sourceVersionId: 'version-1',
+    sourceName: 'Starter words',
+    versionNo: 1,
+    contentRevision: 0,
+    totalCount: 1,
+    approvedCount: exerciseItem.status === 'approved' ? 1 : 0,
+    pendingCount: exerciseItem.status === 'draft' ? 1 : 0,
+    needsReworkCount: 0,
+    disabledCount: exerciseItem.status === 'disabled' ? 1 : 0,
+    allApproved: exerciseItem.status === 'approved',
+    firstItemId: 'item-1',
+    ...(exerciseItem.status === 'approved'
+      ? {}
+      : {
+          current: {
+            id: exerciseItem.id,
+            wordId: exerciseItem.wordId,
+            word: exerciseItem.word,
+            wordOrderIndex: 1,
+            position: 1,
+            stage: exerciseItem.stage,
+            taskType: exerciseItem.taskType,
+            status: exerciseItem.status,
+            reviewState: exerciseItem.status === 'draft' ? 'pending_review' : 'disabled',
+            prompt: exerciseItem.prompt,
+          },
+        }),
+  })
+
   await page.route('**/api/admin/**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -270,6 +300,11 @@ export const installMockedAdminWorkspaceApiRouteFixture = async (
 
     if (key === 'GET /api/admin/source-versions/version-1/exercises') {
       await fulfillJson(route, 200, { ok: true, data: [exerciseItem] })
+      return
+    }
+
+    if (key === 'GET /api/admin/source-versions/version-1/review') {
+      await fulfillJson(route, 200, { ok: true, data: reviewWindow() })
       return
     }
 

@@ -26,6 +26,7 @@ const migrationPaths = [
   '../../migrations/0007_backfill_legacy_lesson_runtime.sql',
   '../../migrations/0008_add_admin_operation_ledger.sql',
   '../../migrations/0011_add_progressive_context_model.sql',
+  '../../migrations/0012_add_exercise_review_feedback.sql',
 ]
 
 describe('D1 admin operation transactions', () => {
@@ -33,7 +34,9 @@ describe('D1 admin operation transactions', () => {
     const database = new DatabaseSync(':memory:')
     database.exec('PRAGMA foreign_keys = ON')
     for (const path of migrationPaths.filter(
-      (candidate) => !candidate.includes('0011_add_progressive_context_model'),
+      (candidate) =>
+        !candidate.includes('0011_add_progressive_context_model') &&
+        !candidate.includes('0012_add_exercise_review_feedback'),
     )) {
       database.exec(readFileSync(new URL(path, import.meta.url), 'utf8'))
     }

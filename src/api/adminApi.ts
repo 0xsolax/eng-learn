@@ -6,6 +6,13 @@ import {
   batchApprovalResultSchema,
   buildCoverageSchema,
   editExerciseItemRequestSchema,
+  exerciseReviewDecisionRequestSchema,
+  exerciseReviewDecisionResultSchema,
+  exerciseReviewEvaluateRequestSchema,
+  exerciseReviewEvaluateResultSchema,
+  exerciseReviewPreviewRequestSchema,
+  exerciseReviewPreviewResultSchema,
+  exerciseReviewWindowSchema,
   exerciseItemStatusResultSchema,
   importedSourceVersionSchema,
   publishedSourceVersionSchema,
@@ -37,6 +44,9 @@ import { createHttpClient, type HttpRequestOptions } from './httpClient'
 type HttpClient = ReturnType<typeof createHttpClient>
 export type ImportSourceVersionCommand = z.input<typeof importSourceVersionCommandSchema>
 export type EditExerciseItemRequest = z.input<typeof editExerciseItemRequestSchema>
+export type ExerciseReviewDecisionCommand = z.input<typeof exerciseReviewDecisionRequestSchema>
+export type ExerciseReviewEvaluateCommand = z.input<typeof exerciseReviewEvaluateRequestSchema>
+export type ExerciseReviewPreviewCommand = z.input<typeof exerciseReviewPreviewRequestSchema>
 export type ApproveExerciseItemsRequest = z.input<
   typeof approveExerciseItemsRequestSchema
 >
@@ -127,6 +137,36 @@ export const createAdminApi = (client: HttpClient = createHttpClient()) => {
         dataSchema: adminExerciseItemSchema,
       })
     },
+    getExerciseReviewWindow(versionId: string, itemId?: string) {
+      const query = itemId === undefined
+        ? ''
+        : `?${new URLSearchParams({ itemId: resourceIdSchema.parse(itemId) }).toString()}`
+
+      return request(`${sourceVersionPath(versionId)}/review${query}`, {
+        dataSchema: exerciseReviewWindowSchema,
+      })
+    },
+    previewExerciseReview(itemId: string, command: ExerciseReviewPreviewCommand) {
+      return request(`${exerciseItemPath(itemId)}/review/preview`, {
+        dataSchema: exerciseReviewPreviewResultSchema,
+        method: 'POST',
+        json: exerciseReviewPreviewRequestSchema.parse(command),
+      })
+    },
+    evaluateExerciseReview(itemId: string, command: ExerciseReviewEvaluateCommand) {
+      return request(`${exerciseItemPath(itemId)}/review/evaluate`, {
+        dataSchema: exerciseReviewEvaluateResultSchema,
+        method: 'POST',
+        json: exerciseReviewEvaluateRequestSchema.parse(command),
+      })
+    },
+    decideExerciseReview(itemId: string, command: ExerciseReviewDecisionCommand) {
+      return request(`${exerciseItemPath(itemId)}/review/decision`, {
+        dataSchema: exerciseReviewDecisionResultSchema,
+        method: 'POST',
+        json: exerciseReviewDecisionRequestSchema.parse(command),
+      })
+    },
     editExerciseItem(itemId: string, command: EditExerciseItemRequest) {
       return request(exerciseItemPath(itemId), {
         dataSchema: adminExerciseItemSchema,
@@ -189,6 +229,15 @@ export const createAdminApi = (client: HttpClient = createHttpClient()) => {
     },
   }
 }
+
+export type ExerciseReviewApi = Pick<
+  ReturnType<typeof createAdminApi>,
+  | 'decideExerciseReview'
+  | 'evaluateExerciseReview'
+  | 'getExerciseItem'
+  | 'getExerciseReviewWindow'
+  | 'previewExerciseReview'
+>
 
 const sourceVersionPath = (versionId: string): string =>
   `/api/admin/source-versions/${encodePathSegment(versionId)}`
