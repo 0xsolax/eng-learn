@@ -27,6 +27,7 @@ const migrationPaths = [
   '../../migrations/0011_add_progressive_context_model.sql',
   '../../migrations/0012_add_exercise_review_feedback.sql',
   '../../migrations/0013_add_lesson_flow_policy_v2.sql',
+  '../../migrations/0014_add_lesson_replay_and_learning_runs.sql',
 ]
 
 type SqliteD1Statement = {
@@ -1908,6 +1909,8 @@ describe('D1 course queue repository', () => {
           learnerId: 'learner-1',
           sourceVersionId: 'version-1',
           currentLessonNo: 1,
+          currentLearningRunNo: 1,
+          currentRunStartLessonNo: 1,
           status: 'active',
           createdAt: NOW,
         },

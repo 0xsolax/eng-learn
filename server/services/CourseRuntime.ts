@@ -27,6 +27,11 @@ import type {
   ReviewLogRecord,
   UserWordStateRecord,
 } from '../repositories/courseRepository'
+import {
+  getCourseLearningRunNo,
+  getCourseRunLessonNo,
+  getSessionRunLessonNo,
+} from '../repositories/courseRepository'
 import type { ContentRepository, SourceVersionSnapshot } from '../repositories/contentRepository'
 import { requireLearnerSafeExerciseItemContent } from '../errors/PersistedContentCompatibilityError'
 import { DomainError } from '../errors/DomainError'
@@ -216,6 +221,8 @@ export const createCourseRuntime = ({
           learnerId,
           sourceVersionId: input.sourceVersionId,
           currentLessonNo: 1,
+          currentLearningRunNo: 1,
+          currentRunStartLessonNo: 1,
           status: 'active',
           createdAt,
         },
@@ -375,6 +382,7 @@ export const createCourseRuntime = ({
               wordId: word.id,
               groupId: nextGroup.id,
               lessonNo: course.currentLessonNo,
+              learningRunNo: getCourseLearningRunNo(course),
               createdAt,
             }),
           )
@@ -425,6 +433,8 @@ export const createCourseRuntime = ({
           id: sessionId,
           courseId: course.id,
           lessonNo: course.currentLessonNo,
+          learningRunNo: getCourseLearningRunNo(course),
+          runLessonNo: getCourseRunLessonNo(course),
           status: 'started',
           taskCount: tasks.length,
           completedTaskCount: 0,
@@ -1012,7 +1022,7 @@ const replayCreatedCourse = async (
       id: course.id,
       learnerId: course.learnerId,
       sourceVersionId: course.sourceVersionId,
-      currentLessonNo: course.currentLessonNo,
+      currentLessonNo: getCourseRunLessonNo(course),
       status: course.status,
     },
   }
@@ -1326,7 +1336,7 @@ const toStartedLesson = (
   session: {
     id: session.id,
     courseId: session.courseId,
-    lessonNo: session.lessonNo,
+    lessonNo: getSessionRunLessonNo(session),
     status: session.status,
     taskCount: session.taskCount,
     completedTaskCount: session.completedTaskCount,
@@ -1413,10 +1423,12 @@ const createInitialWordState = (input: {
   wordId: string
   groupId: string
   lessonNo: number
+  learningRunNo: number
   createdAt: string
 }): UserWordStateRecord => ({
   id: crypto.randomUUID(),
   courseId: input.courseId,
+  learningRunNo: input.learningRunNo,
   wordId: input.wordId,
   groupId: input.groupId,
   stage: 'S0',

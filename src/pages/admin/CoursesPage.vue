@@ -16,10 +16,10 @@ import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
 type CoursesApi = Pick<
   ReturnType<typeof createAdminApi>,
   'createCourse' | 'listCourses' | 'listSourceVersions' | 'rotateAccessCode'
->
+> & Partial<Pick<ReturnType<typeof createAdminApi>, 'resetCourseProgress'>>
 type CourseEntry = AdminCourseListDto['courses'][number]
 type PageState = 'loading' | 'ready' | 'error'
-type ActionState = 'idle' | 'creating' | 'rotating'
+type ActionState = 'idle' | 'creating' | 'resetting' | 'rotating'
 type CopyState = 'idle' | 'success' | 'error'
 type OneTimeCode = {
   accessCode: string
@@ -28,6 +28,9 @@ type OneTimeCode = {
 }
 type CreateCourseCommand = Parameters<CoursesApi['createCourse']>[0]
 type RotateCodeCommand = Parameters<CoursesApi['rotateAccessCode']>[1]
+type ResetProgressCommand = Parameters<
+  NonNullable<CoursesApi['resetCourseProgress']>
+>[1]
 type PendingOperation =
   | { kind: 'create'; command: CreateCourseCommand }
   | {
@@ -35,6 +38,12 @@ type PendingOperation =
       learnerId: string
       learnerName: string
       command: RotateCodeCommand
+    }
+  | {
+      kind: 'reset'
+      courseId: string
+      learnerName: string
+      command: ResetProgressCommand
     }
 
 const props = defineProps<{
@@ -51,6 +60,8 @@ const sourceVersionId = ref('')
 const actionError = ref('')
 const oneTimeCode = ref<OneTimeCode | null>(null)
 const rotateTarget = ref<CourseEntry | null>(null)
+const resetTarget = ref<CourseEntry | null>(null)
+const resetSuccess = ref<string>()
 const pendingOperation = ref<PendingOperation | null>(null)
 const resultUnknown = ref(false)
 const showCreateForm = ref(false)
@@ -59,6 +70,7 @@ const pageRoot = ref<HTMLElement | null>(null)
 const oneTimeCodeDialog = ref<HTMLElement | null>(null)
 const copyState = ref<CopyState>('idle')
 let rotateTrigger: HTMLElement | null = null
+let resetTrigger: HTMLElement | null = null
 
 const publishedVersions = computed(() =>
   versions.value.filter((version) => version.status === 'published'),
@@ -107,6 +119,8 @@ const loadWorkspace = async (): Promise<void> => {
 const createCourse = async (): Promise<void> => {
   if (!canCreate.value) return
   rotateTarget.value = null
+  resetTarget.value = null
+  resetSuccess.value = undefined
   const operation: PendingOperation = {
     kind: 'create',
     command: {
@@ -172,6 +186,7 @@ const rotateCode = async (): Promise<void> => {
     return
   }
   const target = rotateTarget.value
+  resetSuccess.value = undefined
   const operation: PendingOperation = {
     kind: 'rotate',
     learnerId: target.learner.id,
@@ -185,6 +200,75 @@ const rotateCode = async (): Promise<void> => {
   rotateTarget.value = null
 
   await executeRotateCode(operation)
+}
+
+const resetProgress = async (): Promise<void> => {
+  if (
+    !resetTarget.value ||
+    !api.resetCourseProgress ||
+    actionState.value !== 'idle' ||
+    pendingOperation.value !== null
+  ) {
+    return
+  }
+  const target = resetTarget.value
+  const operation: PendingOperation = {
+    kind: 'reset',
+    courseId: target.course.id,
+    learnerName: target.learner.name,
+    command: {
+      operationToken: generateAdminOperationToken(),
+      expectedLearningRunNo: target.learningRunNo,
+      expectedCurrentLessonNo: target.course.currentLessonNo,
+    },
+  }
+  pendingOperation.value = operation
+  resetTarget.value = null
+
+  await executeResetProgress(operation)
+}
+
+const executeResetProgress = async (
+  operation: Extract<PendingOperation, { kind: 'reset' }>,
+): Promise<void> => {
+  if (!api.resetCourseProgress) return
+
+  actionState.value = 'resetting'
+  actionError.value = ''
+  resetSuccess.value = undefined
+  resultUnknown.value = false
+
+  try {
+    const reset = await api.resetCourseProgress(operation.courseId, operation.command)
+    courses.value = courses.value.map((entry) =>
+      entry.course.id === operation.courseId
+        ? {
+            ...entry,
+            course: reset.course,
+            learningRunNo: reset.learningRunNo,
+          }
+        : entry,
+    )
+    resetSuccess.value = `${operation.learnerName} 已从第 1 课重新开始；原学习记录已保留。`
+    pendingOperation.value = null
+  } catch (error) {
+    if (isUnknownResult(error)) {
+      resultUnknown.value = true
+      return
+    }
+
+    pendingOperation.value = null
+    actionError.value =
+      error instanceof ApiFailureError && error.code === 'progress_conflict'
+        ? '学习进度已变化，请重新读取工作台后再执行重新学习。'
+        : error instanceof ApiFailureError && error.code === 'operation_superseded'
+          ? '本次重新学习结果已被后续操作替代，请重新读取工作台。'
+          : '重新学习未完成，请重新读取工作台确认服务端状态。'
+    await nextTick()
+    resetTrigger?.focus()
+  } finally {
+    actionState.value = 'idle'
+  }
 }
 
 const executeRotateCode = async (
@@ -237,15 +321,19 @@ const retryUnknownOperation = async (): Promise<void> => {
 
   if (pendingOperation.value.kind === 'create') {
     await executeCreateCourse(pendingOperation.value)
-  } else {
+  } else if (pendingOperation.value.kind === 'rotate') {
     await executeRotateCode(pendingOperation.value)
+  } else {
+    await executeResetProgress(pendingOperation.value)
   }
 }
 
 const unknownResultMessage = computed(() =>
   pendingOperation.value?.kind === 'rotate'
     ? '结果未知：学习码和会话可能已经变更。请安全重试同一次轮换，不要根据当前页面判断旧码仍有效。'
-    : '结果未知：课程可能已经创建。请安全重试同一次创建，不要重新提交一个新操作。',
+    : pendingOperation.value?.kind === 'reset'
+      ? '结果未知：学习轮次可能已经重置。请安全重试同一次重新学习操作，不要创建新的操作。'
+      : '结果未知：课程可能已经创建。请安全重试同一次创建，不要重新提交一个新操作。',
 )
 
 const isUnknownResult = (error: unknown): boolean =>
@@ -267,10 +355,36 @@ const openRotateConfirmation = async (
   event: MouseEvent,
 ): Promise<void> => {
   if (isMobileReadonly.value || actionState.value !== 'idle' || pendingOperation.value) return
+  resetTarget.value = null
   rotateTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
   rotateTarget.value = entry
   await nextTick()
   pageRoot.value?.querySelector<HTMLElement>('[data-rotate-confirmation]')?.focus()
+}
+
+const openResetConfirmation = async (
+  entry: CourseEntry,
+  event: MouseEvent,
+): Promise<void> => {
+  if (
+    !api.resetCourseProgress ||
+    isMobileReadonly.value ||
+    actionState.value !== 'idle' ||
+    pendingOperation.value
+  ) {
+    return
+  }
+  rotateTarget.value = null
+  resetTrigger = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+  resetTarget.value = entry
+  await nextTick()
+  pageRoot.value?.querySelector<HTMLElement>('[data-reset-confirmation]')?.focus()
+}
+
+const closeResetConfirmation = async (): Promise<void> => {
+  resetTarget.value = null
+  await nextTick()
+  resetTrigger?.focus()
 }
 
 const closeRotateConfirmation = async (): Promise<void> => {
@@ -337,6 +451,7 @@ const syncViewport = (): void => {
   if (isMobileReadonly.value) {
     showCreateForm.value = false
     rotateTarget.value = null
+    resetTarget.value = null
   }
 }
 
@@ -407,7 +522,7 @@ onBeforeUnmount(() => {
         tone="info"
         title="当前视口仅支持查看"
       >
-        请使用至少 480px 宽的设备创建课程或轮换学习码。
+        请使用至少 480px 宽的设备创建课程、轮换学习码或重新学习。
       </ui-status-message>
 
       <ui-status-message
@@ -416,6 +531,15 @@ onBeforeUnmount(() => {
         title="课程操作未完成"
       >
         {{ actionError }}
+      </ui-status-message>
+
+      <ui-status-message
+        v-if="resetSuccess"
+        data-reset-success
+        tone="success"
+        title="已重新开始学习"
+      >
+        {{ resetSuccess }}
       </ui-status-message>
 
       <ui-status-message
@@ -561,7 +685,7 @@ onBeforeUnmount(() => {
                 </th>
                 <td>{{ versionNames.get(entry.course.sourceVersionId) ?? '版本信息不可用' }}</td>
                 <td class="numeric">
-                  第 {{ entry.course.currentLessonNo }} 课
+                  第 {{ entry.course.currentLessonNo }} 课 · 第 {{ entry.learningRunNo }} 轮
                 </td>
                 <td>
                   <span
@@ -572,15 +696,27 @@ onBeforeUnmount(() => {
                   </span>
                 </td>
                 <td v-if="!isMobileReadonly">
-                  <ui-button
-                    data-rotate-code
-                    variant="secondary"
-                    :aria-expanded="String(rotateTarget?.learner.id === entry.learner.id)"
-                    :disabled="actionState !== 'idle' || pendingOperation !== null"
-                    @click="openRotateConfirmation(entry, $event)"
-                  >
-                    轮换学习码
-                  </ui-button>
+                  <div class="course-actions">
+                    <ui-button
+                      data-rotate-code
+                      variant="secondary"
+                      :aria-expanded="String(rotateTarget?.learner.id === entry.learner.id)"
+                      :disabled="actionState !== 'idle' || pendingOperation !== null"
+                      @click="openRotateConfirmation(entry, $event)"
+                    >
+                      轮换学习码
+                    </ui-button>
+                    <ui-button
+                      v-if="api.resetCourseProgress"
+                      data-reset-progress
+                      variant="secondary"
+                      :aria-expanded="String(resetTarget?.course.id === entry.course.id)"
+                      :disabled="actionState !== 'idle' || pendingOperation !== null"
+                      @click="openResetConfirmation(entry, $event)"
+                    >
+                      重新学习
+                    </ui-button>
+                  </div>
                   <section
                     v-if="rotateTarget?.learner.id === entry.learner.id"
                     data-rotate-confirmation
@@ -610,6 +746,38 @@ onBeforeUnmount(() => {
                         @click="rotateCode"
                       >
                         确认轮换
+                      </ui-button>
+                    </div>
+                  </section>
+                  <section
+                    v-if="resetTarget?.course.id === entry.course.id"
+                    data-reset-confirmation
+                    class="inline-confirmation"
+                    role="region"
+                    aria-live="polite"
+                    aria-atomic="true"
+                    aria-labelledby="reset-progress-title"
+                    tabindex="-1"
+                    @keydown.esc="closeResetConfirmation"
+                  >
+                    <h2 id="reset-progress-title">
+                      确认让 {{ resetTarget.learner.name }} 重新学习
+                    </h2>
+                    <p>保留全部历史记录和原学习码；当前未完成课时会结束，学习者将从第 1 课重新学习。</p>
+                    <div>
+                      <ui-button
+                        variant="secondary"
+                        @click="closeResetConfirmation"
+                      >
+                        取消
+                      </ui-button>
+                      <ui-button
+                        data-confirm-reset
+                        :disabled="actionState !== 'idle' || pendingOperation !== null"
+                        :loading="actionState === 'resetting'"
+                        @click="resetProgress"
+                      >
+                        确认重新学习
                       </ui-button>
                     </div>
                   </section>
@@ -717,6 +885,12 @@ onBeforeUnmount(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-4);
+}
+
+.course-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
 .page-heading p,

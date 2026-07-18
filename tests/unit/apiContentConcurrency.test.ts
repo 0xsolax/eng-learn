@@ -5,11 +5,14 @@ import { createInMemoryAdminOperationLedger } from '../../server/repositories/ad
 import type { ContentRepository } from '../../server/repositories/contentRepository'
 import { createInMemoryContentRepository } from '../../server/repositories/inMemoryContentRepository'
 import { createInMemoryCourseRepository } from '../../server/repositories/inMemoryCourseRepository'
+import { createInMemoryLessonReplayRepository } from '../../server/repositories/inMemoryLessonReplayRepository'
 import { createInMemorySessionRepository } from '../../server/repositories/inMemorySessionRepository'
 import { createContentBuilder } from '../../server/services/ContentBuilder'
 import { createCourseQueryService } from '../../server/services/CourseQueryService'
 import { createCourseRuntime } from '../../server/services/CourseRuntime'
 import { createLearnerSessionService } from '../../server/services/LearnerSessionService'
+import { createLearningProgressService } from '../../server/services/LearningProgressService'
+import { createLessonReplayService } from '../../server/services/LessonReplayService'
 import type { AdminExerciseItemDto } from '../../shared/api/contentSchemas'
 import { generateAdminOperationToken } from '../../shared/security/adminOperationToken'
 
@@ -203,6 +206,7 @@ const createContentRaceApp = (
     credentialPort: courseRepository,
     ledger: operationLedger,
   })
+  const replayRepository = createInMemoryLessonReplayRepository()
 
   return createWorkerApp({
     contentBuilder: createContentBuilder({ repository: contentRepository, now }),
@@ -220,6 +224,15 @@ const createContentRaceApp = (
       flowWriteMode: 'legacy_v1',
     }),
     courseRepository,
+    lessonReplayService: createLessonReplayService({
+      courseRepository,
+      replayRepository,
+      now,
+    }),
+    learningProgressService: createLearningProgressService({
+      courseRepository,
+      now,
+    }),
     learnerSessionService: createLearnerSessionService({
       courseRepository,
       sessionRepository,

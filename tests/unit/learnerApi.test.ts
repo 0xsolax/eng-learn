@@ -256,6 +256,102 @@ describe('learner API client', () => {
     })
   })
 
+  it('lists completed lessons and uses isolated replay endpoints', async () => {
+    const completedPage = {
+      currentLearningRunNo: 2,
+      lessons: [
+        {
+          sourceSessionId: 'lesson/1',
+          learningRunNo: 1,
+          lessonNo: 1,
+          taskCount: 1,
+          completedAt: '2026-07-18T00:00:00.000Z',
+        },
+      ],
+    }
+    const replay = {
+      session: {
+        id: 'replay/1',
+        courseId: 'course/1',
+        sourceSessionId: 'lesson/1',
+        learningRunNo: 1,
+        lessonNo: 1,
+        status: 'started',
+        taskCount: 1,
+        completedTaskCount: 0,
+        correctCount: 0,
+        wrongCount: 0,
+      },
+      tasks: [
+        {
+          id: 'replay-task/1',
+          sessionId: 'replay/1',
+          courseId: 'course/1',
+          wordId: 'word-1',
+          stage: 'S0',
+          taskType: 'recognize_meaning',
+          prompt: { word: 'apple', meaning: '苹果', exampleSentence: 'I eat an apple.' },
+          orderIndex: 1,
+          status: 'pending',
+          role: 'primary',
+          required: true,
+        },
+      ],
+    } as const
+    const answer = {
+      taskId: 'replay-task/1',
+      score: 3,
+      correct: true,
+      feedback: {
+        taskType: 'recognize_meaning',
+        response: 'known',
+      },
+    } as const
+    const fetchImpl = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValueOnce(Response.json({ ok: true, data: completedPage }))
+      .mockResolvedValueOnce(Response.json({ ok: true, data: replay }))
+      .mockResolvedValueOnce(Response.json({ ok: true, data: replay }))
+      .mockResolvedValueOnce(Response.json({ ok: true, data: answer }))
+      .mockResolvedValueOnce(
+        Response.json({
+          ok: true,
+          data: {
+            ...replay,
+            session: {
+              ...replay.session,
+              status: 'completed',
+              completedTaskCount: 1,
+              correctCount: 1,
+            },
+            tasks: [{ ...replay.tasks[0], status: 'completed' }],
+          },
+        }),
+      )
+    const api = createLearnerApi(createHttpClient(fetchImpl))
+
+    await expect(
+      api.listCompletedLessons('course/1', { limit: 20 }),
+    ).resolves.toEqual(completedPage)
+    await expect(api.startLessonReplay('lesson/1')).resolves.toEqual(replay)
+    await expect(api.getLessonReplay('replay/1')).resolves.toEqual(replay)
+    await expect(
+      api.submitReplayAnswer('replay/1', 'replay-task/1', {
+        taskType: 'recognize_meaning',
+        response: 'known',
+      }),
+    ).resolves.toEqual(answer)
+    await api.completeLessonReplay('replay/1')
+
+    expect(fetchImpl.mock.calls.map(([path]) => path)).toEqual([
+      '/api/app/courses/course%2F1/completed-lessons?limit=20',
+      '/api/app/lessons/lesson%2F1/replays',
+      '/api/app/lesson-replays/replay%2F1',
+      '/api/app/lesson-replays/replay%2F1/tasks/replay-task%2F1/answer',
+      '/api/app/lesson-replays/replay%2F1/complete',
+    ])
+  })
+
   it('rejects invalid ids and typed commands before making a network request', () => {
     const fetchImpl = vi.fn<FetchImplementation>()
     const api = createLearnerApi(createHttpClient(fetchImpl))
@@ -329,10 +425,18 @@ describe('learner API client', () => {
       }),
       api.completeLesson('lesson-1'),
       api.getLessonReport('lesson-1'),
+      api.listCompletedLessons('course-1'),
+      api.startLessonReplay('lesson-1'),
+      api.getLessonReplay('replay-1'),
+      api.submitReplayAnswer('replay-1', 'task-1', {
+        taskType: 'recognize_meaning',
+        response: 'known',
+      }),
+      api.completeLessonReplay('replay-1'),
     ])
 
     const paths = fetchImpl.mock.calls.map(([path]) => requestPath(path))
-    expect(paths).toHaveLength(10)
+    expect(paths).toHaveLength(15)
     expect(paths.every((path) => path.startsWith('/api/app/'))).toBe(true)
     expect(paths.some((path) => path.startsWith('/api/admin/'))).toBe(false)
   })

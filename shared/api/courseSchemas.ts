@@ -93,9 +93,97 @@ export const adminCourseListSchema = z
           learner: learnerIdentitySchema,
           course: courseViewSchema,
           credentialVersion: z.number().int().positive(),
+          learningRunNo: z.number().int().positive(),
         })
         .strict(),
     ),
+  })
+  .strict()
+
+export const completedLessonSummarySchema = z
+  .object({
+    sourceSessionId: nonEmptyText,
+    learningRunNo: z.number().int().positive(),
+    lessonNo: z.number().int().positive(),
+    taskCount: z.number().int().positive(),
+    completedAt: z.iso.datetime(),
+  })
+  .strict()
+
+export const completedLessonPageSchema = z
+  .object({
+    currentLearningRunNo: z.number().int().positive(),
+    lessons: z.array(completedLessonSummarySchema),
+    nextCursor: nonEmptyText.optional(),
+  })
+  .strict()
+
+export const lessonReplaySessionSchema = z
+  .object({
+    id: nonEmptyText,
+    courseId: nonEmptyText,
+    sourceSessionId: nonEmptyText,
+    learningRunNo: z.number().int().positive(),
+    lessonNo: z.number().int().positive(),
+    status: z.enum(['started', 'completed']),
+    taskCount: z.number().int().positive(),
+    completedTaskCount: z.number().int().nonnegative(),
+    correctCount: z.number().int().nonnegative(),
+    wrongCount: z.number().int().nonnegative(),
+  })
+  .strict()
+  .superRefine((session, context) => {
+    if (session.completedTaskCount > session.taskCount) {
+      context.addIssue({
+        code: 'custom',
+        path: ['completedTaskCount'],
+        message: 'Completed replay task count cannot exceed task count',
+      })
+    }
+    if (session.correctCount + session.wrongCount !== session.completedTaskCount) {
+      context.addIssue({
+        code: 'custom',
+        path: ['correctCount'],
+        message: 'Replay score counts must equal completed task count',
+      })
+    }
+  })
+
+export const lessonReplaySchema = z
+  .object({
+    session: lessonReplaySessionSchema,
+    tasks: z.array(lessonTaskSchema),
+  })
+  .strict()
+  .superRefine((replay, context) => {
+    if (replay.tasks.length !== replay.session.taskCount) {
+      context.addIssue({
+        code: 'custom',
+        path: ['tasks'],
+        message: 'Replay tasks must match the persisted replay task count',
+      })
+    }
+    if (
+      replay.tasks.some(
+        (task) =>
+          task.sessionId !== replay.session.id ||
+          task.courseId !== replay.session.courseId,
+      )
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['tasks'],
+        message: 'Replay tasks must belong to the replay session and course',
+      })
+    }
+  })
+
+export const courseProgressResetResultSchema = z
+  .object({
+    course: courseViewSchema,
+    learningRunNo: z.number().int().positive(),
+    abandonedSessionCount: z.number().int().nonnegative(),
+    historyPreserved: z.literal(true),
   })
   .strict()
 
@@ -178,3 +266,8 @@ export type CompletedLessonDto = z.infer<typeof completedLessonSchema>
 export type AdminCourseListDto = z.infer<typeof adminCourseListSchema>
 export type CourseHomeDto = z.infer<typeof courseHomeSchema>
 export type LessonReportDto = z.infer<typeof lessonReportSchema>
+export type CompletedLessonPageDto = z.infer<typeof completedLessonPageSchema>
+export type LessonReplayDto = z.infer<typeof lessonReplaySchema>
+export type CourseProgressResetResultDto = z.infer<
+  typeof courseProgressResetResultSchema
+>

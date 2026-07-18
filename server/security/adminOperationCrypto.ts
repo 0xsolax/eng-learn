@@ -45,6 +45,12 @@ export type AdminOperationRequest =
       learnerId: string
       expectedCredentialVersion: number
     }
+  | {
+      kind: 'reset_course_progress'
+      courseId: string
+      expectedLearningRunNo: number
+      expectedCurrentLessonNo: number
+    }
 
 export type SourceVersionImportOperationRequest = {
   mode: 'new_source' | 'next_version'
@@ -120,6 +126,8 @@ const operationTargetId = (input: AdminOperationRequest): string => {
       return 'new-source'
     case 'rotate_access_code':
       return input.learnerId
+    case 'reset_course_progress':
+      return input.courseId
   }
 }
 
@@ -139,6 +147,8 @@ const operationPayload = (input: AdminOperationRequest): string => {
       ].join('\0')
     case 'rotate_access_code':
       return `${lengthPrefixed(input.learnerId)}\0${String(input.expectedCredentialVersion)}`
+    case 'reset_course_progress':
+      return `${lengthPrefixed(input.courseId)}\0${String(input.expectedLearningRunNo)}\0${String(input.expectedCurrentLessonNo)}`
   }
 }
 

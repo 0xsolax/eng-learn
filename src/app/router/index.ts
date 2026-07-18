@@ -109,6 +109,11 @@ export const createAppRouter = (history: RouterHistory = createWebHistory()): Ro
             name: 'learner-lesson-report',
             component: () => import('../../pages/app/LearnerLessonReportPage.vue'),
           },
+          {
+            path: 'replay/:replaySessionId',
+            name: 'learner-lesson-replay',
+            component: () => import('../../pages/app/LearnerLessonReplayPage.vue'),
+          },
         ],
       },
       {

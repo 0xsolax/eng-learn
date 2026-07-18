@@ -8,6 +8,11 @@ import {
 } from '../../shared/api/courseSchemas'
 import { isPassingReviewScore, type UserWordStateView } from '../../shared/domain/course'
 import type { CourseRecord, CourseRepository } from '../repositories/courseRepository'
+import {
+  getCourseLearningRunNo,
+  getCourseRunLessonNo,
+  getSessionRunLessonNo,
+} from '../repositories/courseRepository'
 import type { ContentRepository, SourceVersionSnapshot } from '../repositories/contentRepository'
 import { DomainError } from '../errors/DomainError'
 import { planRollingLessonFlow } from './LessonFlowPolicy'
@@ -40,6 +45,7 @@ export const createCourseQueryService = (input: {
         learner: record.learner,
         course: toCourseView(record.course),
         credentialVersion: record.credentialVersion,
+        learningRunNo: getCourseLearningRunNo(record.course),
       })),
     })
   },
@@ -80,8 +86,10 @@ export const createCourseQueryService = (input: {
       action: started ? 'continue' : 'start',
       ...(started ? { startedSessionId: started.session.id } : {}),
       lessonPath: createLessonPath(
-        course.currentLessonNo,
-        previousCompletedLesson?.lessonNo,
+        getCourseRunLessonNo(course),
+        previousCompletedLesson
+          ? getSessionRunLessonNo(previousCompletedLesson)
+          : undefined,
       ),
     })
   },
@@ -156,13 +164,13 @@ export const createCourseQueryService = (input: {
     const correctCount = primaryLogs.filter((log) => isPassingReviewScore(log.score)).length
 
     return lessonReportSchema.parse({
-      lessonNo: snapshot.session.lessonNo,
+      lessonNo: getSessionRunLessonNo(snapshot.session),
       completedTaskCount: snapshot.tasks.filter((task) => task.status === 'completed').length,
       totalTaskCount: snapshot.tasks.length,
       correctRate: primaryLogs.length === 0 ? 0 : correctCount / primaryLogs.length,
       needsPracticeWords: mapReportWords(primaryTasks, needsPracticeIds, sourceVersion),
       progressWords: mapReportWords(primaryTasks, progressIds, sourceVersion),
-      nextLessonNo: course.currentLessonNo,
+      nextLessonNo: getCourseRunLessonNo(course),
       courseStatus: course.status,
     })
   },
@@ -333,6 +341,6 @@ const toCourseView = (course: CourseRecord) => ({
   id: course.id,
   learnerId: course.learnerId,
   sourceVersionId: course.sourceVersionId,
-  currentLessonNo: course.currentLessonNo,
+  currentLessonNo: getCourseRunLessonNo(course),
   status: course.status,
 })

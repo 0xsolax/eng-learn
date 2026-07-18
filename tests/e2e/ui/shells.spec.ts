@@ -471,20 +471,60 @@ test('@admin verifies exercise and course mutation boundaries at 479 and 480 pix
 
   const createCourseButton = page.locator('[data-toggle-create]')
   const rotateCodeButton = page.locator('[data-rotate-code]')
+  const resetProgressButton = page.locator('[data-reset-progress]')
   if (viewportWidth === 479) {
     await expect(page.locator('[data-mobile-readonly]')).toBeVisible()
     await expect(createCourseButton).toHaveCount(0)
     await expect(rotateCodeButton).toHaveCount(0)
+    await expect(resetProgressButton).toHaveCount(0)
     await expect(page.locator('[data-course-form]')).toHaveCount(0)
     await expect(page.locator('[data-copy-code]')).toHaveCount(0)
   } else {
     await expect(page.locator('[data-mobile-readonly]')).toHaveCount(0)
     await expect(createCourseButton).toBeVisible()
     await expect(rotateCodeButton).toBeVisible()
+    await expect(resetProgressButton).toBeVisible()
   }
 
   await expectNoHorizontalOverflow(page)
   await expectNoSeriousAccessibilityViolations(page)
+  expect(fixture.unhandledRequests).toEqual([])
+})
+
+test('@admin restarts one learner from lesson one while keeping the course identity', async ({
+  page,
+}) => {
+  test.skip(
+    page.viewportSize()?.width !== 1280,
+    'The destructive confirmation workflow runs once in the desktop project.',
+  )
+  const fixture = await installMockedAdminWorkspaceApiRouteFixture(page, {
+    authenticated: true,
+    withExistingCourse: true,
+  })
+
+  await page.goto('/admin/courses')
+  const courseRow = page.getByRole('row').filter({ hasText: '小明' })
+  await expect(courseRow).toContainText('第 2 课 · 第 1 轮')
+  await courseRow.getByRole('button', { name: '重新学习' }).click()
+  await expect(page.locator('[data-reset-confirmation]')).toContainText(
+    '保留全部历史记录和原学习码',
+  )
+  await page.getByRole('button', { name: '确认重新学习' }).click()
+
+  await expect(page.locator('[data-reset-success]')).toContainText(
+    '已从第 1 课重新开始；原学习记录已保留',
+  )
+  await expect(courseRow).toContainText('第 1 课 · 第 2 轮')
+  const resetRequest = fixture.requestBodies.find(
+    (request) =>
+      request.key === 'POST /api/admin/courses/course-existing/learning-progress/reset',
+  )
+  expect(resetRequest?.body).toEqual({
+    operationToken: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    expectedLearningRunNo: 1,
+    expectedCurrentLessonNo: 2,
+  })
   expect(fixture.unhandledRequests).toEqual([])
 })
 

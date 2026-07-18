@@ -30,6 +30,7 @@ const DOMAIN_ERROR_STATUS: Record<ApiError['code'], number> = {
   not_found: 404,
   origin_forbidden: 403,
   operation_superseded: 409,
+  progress_conflict: 409,
   payload_too_large: 413,
   queue_invariant_violation: 409,
   report_unavailable: 409,

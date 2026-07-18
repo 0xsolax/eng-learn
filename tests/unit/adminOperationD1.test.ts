@@ -25,8 +25,12 @@ const migrationPaths = [
   '../../migrations/0006_add_lesson_task_queue.sql',
   '../../migrations/0007_backfill_legacy_lesson_runtime.sql',
   '../../migrations/0008_add_admin_operation_ledger.sql',
+  '../../migrations/0009_add_lesson_queue_policy_v2.sql',
+  '../../migrations/0010_add_admin_sessions.sql',
   '../../migrations/0011_add_progressive_context_model.sql',
   '../../migrations/0012_add_exercise_review_feedback.sql',
+  '../../migrations/0013_add_lesson_flow_policy_v2.sql',
+  '../../migrations/0014_add_lesson_replay_and_learning_runs.sql',
 ]
 
 describe('D1 admin operation transactions', () => {

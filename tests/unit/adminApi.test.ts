@@ -601,6 +601,7 @@ describe('admin API client', () => {
         {
           learner: { id: 'learner-1', name: 'Alice' },
           credentialVersion: 1,
+          learningRunNo: 1,
           course: {
             id: 'course-1',
             learnerId: 'learner-1',
@@ -623,6 +624,49 @@ describe('admin API client', () => {
       method: 'GET',
     })
     expect(JSON.stringify(listed)).not.toContain('accessCode')
+  })
+
+  it('restarts a course through a CAS-protected admin command', async () => {
+    const reset = {
+      course: {
+        id: 'course-1',
+        learnerId: 'learner-1',
+        sourceVersionId: 'version-1',
+        currentLessonNo: 1,
+        status: 'active',
+      },
+      learningRunNo: 2,
+      abandonedSessionCount: 1,
+      historyPreserved: true,
+    } as const
+    const fetchImpl = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValue(Response.json({ ok: true, data: reset }))
+    const api = createAdminApi(createHttpClient(fetchImpl))
+
+    await expect(
+      api.resetCourseProgress('course/1', {
+        operationToken: OPERATION_TOKEN,
+        expectedLearningRunNo: 1,
+        expectedCurrentLessonNo: 2,
+      }),
+    ).resolves.toEqual(reset)
+    expect(fetchImpl).toHaveBeenCalledWith(
+      '/api/admin/courses/course%2F1/learning-progress/reset',
+      {
+        credentials: 'same-origin',
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-requested-with': 'XMLHttpRequest',
+        },
+        body: JSON.stringify({
+          operationToken: OPERATION_TOKEN,
+          expectedLearningRunNo: 1,
+          expectedCurrentLessonNo: 2,
+        }),
+      },
+    )
   })
 
   it('rotates a learner code by learner id and validates session revocation count', async () => {
@@ -772,10 +816,15 @@ describe('admin API client', () => {
         operationToken: OPERATION_TOKEN,
         expectedCredentialVersion: 1,
       }),
+      api.resetCourseProgress('course-1', {
+        operationToken: OPERATION_TOKEN,
+        expectedLearningRunNo: 1,
+        expectedCurrentLessonNo: 1,
+      }),
     ])
 
     const paths = fetchImpl.mock.calls.map(([path]) => requestPath(path))
-    expect(paths).toHaveLength(17)
+    expect(paths).toHaveLength(18)
     expect(paths.every((path) => path.startsWith('/api/admin/'))).toBe(true)
     expect(paths.some((path) => path.startsWith('/api/app/'))).toBe(false)
   })

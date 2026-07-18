@@ -28,6 +28,79 @@ const courseHome = {
 }
 
 describe('LearnerCourseHome', () => {
+  it('renders completed lessons as repeatable choices and starts one replay once', async () => {
+    const replay = {
+      session: {
+        id: 'replay-1',
+        courseId: course.id,
+        sourceSessionId: 'session-3',
+        learningRunNo: 1,
+        lessonNo: 3,
+        status: 'started' as const,
+        taskCount: 1,
+        completedTaskCount: 0,
+        correctCount: 0,
+        wrongCount: 0,
+      },
+      tasks: [],
+    }
+    let resolveReplay: ((value: typeof replay) => void) | undefined
+    const replayRequest = new Promise<typeof replay>((resolve) => {
+      resolveReplay = resolve
+    })
+    const api = {
+      getCourseHome: vi.fn().mockResolvedValue(courseHome),
+      startLesson: vi.fn(),
+      listCompletedLessons: vi.fn().mockResolvedValue({
+        currentLearningRunNo: 2,
+        lessons: [
+          {
+            sourceSessionId: 'session-run-2-1',
+            learningRunNo: 2,
+            lessonNo: 1,
+            taskCount: 6,
+            completedAt: '2026-07-18T00:00:00.000Z',
+          },
+          {
+            sourceSessionId: 'session-1',
+            learningRunNo: 1,
+            lessonNo: 1,
+            taskCount: 6,
+            completedAt: '2026-07-17T00:00:00.000Z',
+          },
+          {
+            sourceSessionId: 'session-3',
+            learningRunNo: 1,
+            lessonNo: 3,
+            taskCount: 8,
+            completedAt: '2026-07-17T01:00:00.000Z',
+          },
+        ],
+      }),
+      startLessonReplay: vi.fn().mockReturnValue(replayRequest),
+    }
+    const wrapper = mount(LearnerCourseHome, { props: { api } })
+    await flushPromises()
+
+    expect(wrapper.get('[data-completed-lessons]').text()).toContain('选择已完成课时重新练习')
+    expect(wrapper.get('[data-completed-lessons]').text()).toContain('当前轮次 · 第 2 轮')
+    expect(wrapper.get('[data-completed-lessons]').text()).toContain('历史轮次 · 第 1 轮')
+    const choices = wrapper.findAll('[data-action="repeat-lesson"]')
+    expect(choices.map((choice) => choice.text())).toEqual([
+      '第 1 课，再练一次',
+      '第 1 课，再练一次',
+      '第 3 课，再练一次',
+    ])
+    await choices[2]?.trigger('click')
+    await choices[2]?.trigger('click')
+    expect(api.startLessonReplay).toHaveBeenCalledTimes(1)
+    expect(api.startLessonReplay).toHaveBeenCalledWith('session-3')
+
+    resolveReplay?.(replay)
+    await flushPromises()
+    expect(wrapper.emitted('replay-started')).toEqual([['replay-1']])
+  })
+
   it('renders only the server lesson number and one start-or-continue primary action', async () => {
     const api = {
       getCourseHome: vi.fn().mockResolvedValue(courseHome),

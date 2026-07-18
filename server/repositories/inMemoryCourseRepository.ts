@@ -1,5 +1,7 @@
 import type {
   CourseRecord,
+  CourseLearningRunWordStateSnapshot,
+  CourseProgressResetOperationRecord,
   CourseRepository,
   CreateLessonInput,
   CreateCourseInput,
@@ -9,6 +11,13 @@ import type {
   RecordAnswerInput,
   ReviewLogRecord,
   UserWordStateRecord,
+} from './courseRepository'
+import {
+  getCourseLearningRunNo,
+  getCourseRunLessonNo,
+  getCourseRunStartLessonNo,
+  getSessionLearningRunNo,
+  getSessionRunLessonNo,
 } from './courseRepository'
 import { lessonTaskSchema, type LessonTaskDto } from '../../shared/api/taskSchemas'
 import { isPassingReviewScore } from '../../shared/domain/course'
@@ -62,12 +71,14 @@ export const createInMemoryCourseRepository = (
   const wordStates = new Map<string, UserWordStateRecord>()
   const reviewLogs = new Map<string, ReviewLogRecord>()
   const reviewLogByTask = new Map<string, string>()
+  const resetOperations = new Map<string, CourseProgressResetOperationRecord>()
+  const wordStateSnapshots: CourseLearningRunWordStateSnapshot[] = []
 
   const toStartedLesson = (session: LessonSessionRecord) => ({
     session: {
       id: session.id,
       courseId: session.courseId,
-      lessonNo: session.lessonNo,
+      lessonNo: getSessionRunLessonNo(session),
       status: session.status,
       taskCount: session.taskCount,
       completedTaskCount: session.completedTaskCount,
@@ -161,7 +172,7 @@ export const createInMemoryCourseRepository = (
           id: course.id,
           learnerId: course.learnerId,
           sourceVersionId: course.sourceVersionId,
-          currentLessonNo: course.currentLessonNo,
+          currentLessonNo: getCourseRunLessonNo(course),
           status: course.status,
         },
       },
@@ -242,7 +253,10 @@ export const createInMemoryCourseRepository = (
           accessCode: await hashAccessCode(rawAccessCode),
           credentialVersion: 1,
         })
-        courses.set(input.course.id, input.course)
+        const storedCourse = input.course
+        storedCourse.currentLearningRunNo ??= 1
+        storedCourse.currentRunStartLessonNo ??= 1
+        courses.set(input.course.id, storedCourse)
         if (input.adminOperation) ledger.insert(input.adminOperation)
 
         return {
@@ -255,7 +269,7 @@ export const createInMemoryCourseRepository = (
             id: input.course.id,
             learnerId: input.course.learnerId,
             sourceVersionId: input.course.sourceVersionId,
-            currentLessonNo: input.course.currentLessonNo,
+            currentLessonNo: getCourseRunLessonNo(storedCourse),
             status: input.course.status,
           },
         }
@@ -399,14 +413,44 @@ export const createInMemoryCourseRepository = (
     },
 
     async getLatestCompletedLessonBefore(input) {
+      const course = courses.get(input.courseId)
+      const currentLearningRunNo = course ? getCourseLearningRunNo(course) : 1
+
       return Array.from(sessions.values())
         .filter(
           (session) =>
             session.courseId === input.courseId &&
             session.status === 'completed' &&
+            getSessionLearningRunNo(session) === currentLearningRunNo &&
             session.lessonNo < input.beforeLessonNo,
         )
         .sort((left, right) => right.lessonNo - left.lessonNo)[0]
+    },
+
+    async listCompletedLessonSessions(input) {
+      const after = input.after
+
+      return Array.from(sessions.values())
+        .filter((session) => session.courseId === input.courseId && session.status === 'completed')
+        .sort((left, right) =>
+          getSessionLearningRunNo(left) - getSessionLearningRunNo(right) ||
+          getSessionRunLessonNo(left) - getSessionRunLessonNo(right) ||
+          left.lessonNo - right.lessonNo,
+        )
+        .filter((session) => {
+          if (!after) return true
+          const learningRunNo = getSessionLearningRunNo(session)
+          const runLessonNo = getSessionRunLessonNo(session)
+
+          return (
+            learningRunNo > after.learningRunNo ||
+            (learningRunNo === after.learningRunNo && runLessonNo > after.runLessonNo) ||
+            (learningRunNo === after.learningRunNo &&
+              runLessonNo === after.runLessonNo &&
+              session.lessonNo > after.physicalLessonNo)
+          )
+        })
+        .slice(0, input.limit)
     },
 
     async createLesson(input: CreateLessonInput) {
@@ -424,13 +468,21 @@ export const createInMemoryCourseRepository = (
 
       const session = {
         ...input.session,
+        learningRunNo:
+          input.session.learningRunNo ?? getCourseLearningRunNo(course),
+        runLessonNo:
+          input.session.runLessonNo ??
+          input.session.lessonNo - getCourseRunStartLessonNo(course) + 1,
         flowPolicyVersion: withLegacyFlowPolicyDefault(input.session.flowPolicyVersion),
       }
 
       sessions.set(session.id, session)
       tasksBySession.set(input.session.id, [...input.tasks])
       for (const state of input.wordStates) {
-        wordStates.set(wordStateKey(state.courseId, state.wordId), state)
+        wordStates.set(wordStateKey(state.courseId, state.wordId), {
+          ...state,
+          learningRunNo: state.learningRunNo ?? getCourseLearningRunNo(course),
+        })
       }
 
       return toStartedLesson(session)
@@ -510,6 +562,9 @@ export const createInMemoryCourseRepository = (
       if (session.status !== 'started') {
         throw new DomainError('lesson_not_active', 'Lesson session is not active')
       }
+      if (getSessionLearningRunNo(session) !== getCourseLearningRunNo(course)) {
+        throw new DomainError('lesson_not_active', 'Lesson session is not active')
+      }
 
       const tasks = tasksBySession.get(input.sessionId) ?? []
       const task = tasks.find((candidate) => candidate.id === input.taskId)
@@ -558,11 +613,24 @@ export const createInMemoryCourseRepository = (
     },
 
     async getWordStates(courseId: string) {
-      return Array.from(wordStates.values()).filter((state) => state.courseId === courseId)
+      const course = courses.get(courseId)
+      if (!course) return []
+      const learningRunNo = getCourseLearningRunNo(course)
+
+      return Array.from(wordStates.values()).filter(
+        (state) =>
+          state.courseId === courseId &&
+          (state.learningRunNo ?? 1) === learningRunNo,
+      )
     },
 
     async getWordState(courseId: string, wordId: string) {
-      return wordStates.get(wordStateKey(courseId, wordId))
+      const course = courses.get(courseId)
+      const state = wordStates.get(wordStateKey(courseId, wordId))
+
+      return course && state && (state.learningRunNo ?? 1) === getCourseLearningRunNo(course)
+        ? state
+        : undefined
     },
 
     async getSubmittedAnswer(sessionId: string, taskId: string) {
@@ -618,6 +686,9 @@ export const createInMemoryCourseRepository = (
       }
 
       if (session.status !== 'started') {
+        throw new DomainError('lesson_not_active', 'Lesson session is not active')
+      }
+      if (getSessionLearningRunNo(session) !== getCourseLearningRunNo(course)) {
         throw new DomainError('lesson_not_active', 'Lesson session is not active')
       }
 
@@ -704,7 +775,10 @@ export const createInMemoryCourseRepository = (
       if (input.persistWordState) {
         wordStates.set(
           wordStateKey(input.wordState.courseId, input.wordState.wordId),
-          input.wordState,
+          {
+            ...input.wordState,
+            learningRunNo: getCourseLearningRunNo(course),
+          },
         )
       }
       const persistedReviewLog = { ...input.reviewLog }
@@ -730,6 +804,9 @@ export const createInMemoryCourseRepository = (
       if (course.status !== 'active') {
         throw new DomainError('course_unavailable', 'Course is not active')
       }
+      if (getSessionLearningRunNo(session) !== getCourseLearningRunNo(course)) {
+        throw new DomainError('lesson_not_active', 'Lesson session is not active')
+      }
 
       if (session.status !== 'started') {
         if (session.status !== 'completed' || session.completedAt === undefined) {
@@ -741,13 +818,13 @@ export const createInMemoryCourseRepository = (
             id: course.id,
             learnerId: course.learnerId,
             sourceVersionId: course.sourceVersionId,
-            currentLessonNo: course.currentLessonNo,
+            currentLessonNo: getCourseRunLessonNo(course),
             status: course.status,
           },
           session: {
             id: session.id,
             courseId: session.courseId,
-            lessonNo: session.lessonNo,
+            lessonNo: getSessionRunLessonNo(session),
             status: session.status,
             taskCount: session.taskCount,
             completedTaskCount: session.completedTaskCount,
@@ -807,18 +884,139 @@ export const createInMemoryCourseRepository = (
           id: advancedCourse.id,
           learnerId: advancedCourse.learnerId,
           sourceVersionId: advancedCourse.sourceVersionId,
-          currentLessonNo: advancedCourse.currentLessonNo,
+          currentLessonNo: getCourseRunLessonNo(advancedCourse),
           status: advancedCourse.status,
         },
         session: {
           id: completedSession.id,
           courseId: completedSession.courseId,
-          lessonNo: completedSession.lessonNo,
+          lessonNo: getSessionRunLessonNo(completedSession),
           status: completedSession.status,
           taskCount: completedSession.taskCount,
           completedTaskCount: completedSession.completedTaskCount,
         },
       }
+    },
+
+    async getCourseProgressResetOperation(operationHash) {
+      return resetOperations.get(operationHash)
+    },
+
+    async resetCourseProgress(input) {
+      return ledger.runExclusive(async () => {
+        const existing = resetOperations.get(input.operationHash)
+        const existingCourse = courses.get(input.courseId)
+
+        if (existing) {
+          if (
+            existing.courseId !== input.courseId ||
+            existing.requestFingerprint !== input.requestFingerprint
+          ) {
+            throw new DomainError(
+              'idempotency_conflict',
+              'Admin operation token was already used for a different request',
+            )
+          }
+          if (!existingCourse) throw new Error('Reset course is missing')
+          return { course: existingCourse, operation: existing }
+        }
+
+        if (await ledger.get(input.operationHash)) {
+          throw new DomainError(
+            'idempotency_conflict',
+            'Admin operation token was already used for a different request',
+          )
+        }
+        if (!existingCourse) {
+          throw new DomainError('not_found', 'Course is missing')
+        }
+        if (existingCourse.status !== 'active') {
+          throw new DomainError('course_unavailable', 'Course is not active')
+        }
+        if (
+          getCourseLearningRunNo(existingCourse) !== input.expectedLearningRunNo ||
+          getCourseRunLessonNo(existingCourse) !== input.expectedCurrentRunLessonNo
+        ) {
+          throw new DomainError('progress_conflict', 'Course learning progress has changed')
+        }
+
+        const currentLearningRunNo = getCourseLearningRunNo(existingCourse)
+        const courseSessions = Array.from(sessions.values()).filter(
+          (session) => session.courseId === existingCourse.id,
+        )
+        const toPhysicalLessonNo =
+          Math.max(
+            existingCourse.currentLessonNo,
+            ...courseSessions.map((session) => session.lessonNo),
+          ) + 1
+        const startedSessions = courseSessions.filter(
+          (session) =>
+            session.status === 'started' &&
+            getSessionLearningRunNo(session) === currentLearningRunNo,
+        )
+        const operation: CourseProgressResetOperationRecord = {
+          operationHash: input.operationHash,
+          courseId: existingCourse.id,
+          requestFingerprint: input.requestFingerprint,
+          fromLearningRunNo: currentLearningRunNo,
+          expectedCurrentRunLessonNo: input.expectedCurrentRunLessonNo,
+          fromPhysicalLessonNo: existingCourse.currentLessonNo,
+          toLearningRunNo: currentLearningRunNo + 1,
+          toPhysicalLessonNo,
+          abandonedSessionCount: startedSessions.length,
+          actorSource: input.actor.source,
+          actorSubject: input.actor.subject,
+          createdAt: input.createdAt,
+        }
+
+        for (const state of wordStates.values()) {
+          if (
+            state.courseId === existingCourse.id &&
+            (state.learningRunNo ?? 1) === currentLearningRunNo
+          ) {
+            wordStateSnapshots.push({
+              ...state,
+              learningRunNo: currentLearningRunNo,
+              archivedAt: input.createdAt,
+              resetOperationHash: input.operationHash,
+            })
+          }
+        }
+        for (const session of startedSessions) {
+          sessions.set(session.id, { ...session, status: 'abandoned' })
+        }
+
+        const resetCourse: CourseRecord = {
+          ...existingCourse,
+          currentLessonNo: toPhysicalLessonNo,
+          currentLearningRunNo: currentLearningRunNo + 1,
+          currentRunStartLessonNo: toPhysicalLessonNo,
+        }
+        courses.set(resetCourse.id, resetCourse)
+        resetOperations.set(operation.operationHash, operation)
+        ledger.insert({
+          operationHash: operation.operationHash,
+          kind: 'reset_course_progress',
+          targetId: operation.courseId,
+          requestFingerprint: operation.requestFingerprint,
+          outcomeLearningRunNo: operation.toLearningRunNo,
+          outcomePhysicalLessonNo: operation.toPhysicalLessonNo,
+          abandonedSessionCount: operation.abandonedSessionCount,
+          createdAt: operation.createdAt,
+        })
+
+        return { course: resetCourse, operation }
+      })
+    },
+
+    async getLearningRunWordStateSnapshots(input) {
+      return wordStateSnapshots
+        .filter(
+          (snapshot) =>
+            snapshot.courseId === input.courseId &&
+            snapshot.learningRunNo === input.learningRunNo,
+        )
+        .map((snapshot) => ({ ...snapshot }))
     },
   }
 }

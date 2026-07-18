@@ -22,6 +22,11 @@ import type {
 } from '../../shared/api/taskSchemas'
 import type { CreateCourseAdminOperation } from './adminOperationLedger'
 import type { AccessCodeHash } from '../security/credentialCrypto'
+import type {
+  AdminOperationHash,
+  AdminRequestFingerprint,
+} from '../security/adminOperationCrypto'
+import type { AdminIdentity } from '../security/adminAuthentication'
 
 export type {
   LessonQueuePolicyVersion,
@@ -42,6 +47,8 @@ export type CourseRecord = {
   learnerId: string
   sourceVersionId: string
   currentLessonNo: number
+  currentLearningRunNo?: number
+  currentRunStartLessonNo?: number
   status: CourseStatus
   createdAt: string
 }
@@ -50,6 +57,8 @@ export type LessonSessionRecord = {
   id: string
   courseId: string
   lessonNo: number
+  learningRunNo?: number
+  runLessonNo?: number
   status: LessonSessionStatus
   taskCount: number
   completedTaskCount: number
@@ -82,6 +91,7 @@ export type LessonTaskRecord = LessonTaskRecordBase & ExerciseItemContent
 export type UserWordStateRecord = {
   id: string
   courseId: string
+  learningRunNo?: number
   wordId: string
   groupId: string
   stage: WordStage
@@ -206,6 +216,42 @@ export type CompleteLessonInput = {
   skippablePrimaryTaskIds: string[]
 }
 
+export type CourseProgressResetOperationRecord = {
+  operationHash: AdminOperationHash
+  courseId: string
+  requestFingerprint: AdminRequestFingerprint
+  fromLearningRunNo: number
+  expectedCurrentRunLessonNo: number
+  fromPhysicalLessonNo: number
+  toLearningRunNo: number
+  toPhysicalLessonNo: number
+  abandonedSessionCount: number
+  actorSource: AdminIdentity['source']
+  actorSubject: string
+  createdAt: string
+}
+
+export type CourseLearningRunWordStateSnapshot = UserWordStateRecord & {
+  learningRunNo: number
+  archivedAt: string
+  resetOperationHash: AdminOperationHash
+}
+
+export type ResetCourseProgressInput = {
+  courseId: string
+  operationHash: AdminOperationHash
+  requestFingerprint: AdminRequestFingerprint
+  expectedLearningRunNo: number
+  expectedCurrentRunLessonNo: number
+  actor: Pick<AdminIdentity, 'source' | 'subject'>
+  createdAt: string
+}
+
+export type ResetCourseProgressOutcome = {
+  course: CourseRecord
+  operation: CourseProgressResetOperationRecord
+}
+
 export type CourseRepository = {
   createCourse(input: CreateCourseInput): Promise<CreatedCourse>
   getCourse(courseId: string): Promise<CourseRecord | undefined>
@@ -226,6 +272,15 @@ export type CourseRepository = {
     courseId: string
     beforeLessonNo: number
   }): Promise<LessonSessionRecord | undefined>
+  listCompletedLessonSessions(input: {
+    courseId: string
+    after?: {
+      learningRunNo: number
+      runLessonNo: number
+      physicalLessonNo: number
+    }
+    limit: number
+  }): Promise<LessonSessionRecord[]>
   createLesson(input: CreateLessonInput): Promise<StartedLesson>
   getLessonSessionForCourse(input: {
     sessionId: string
@@ -258,4 +313,29 @@ export type CourseRepository = {
   ): Promise<RecordedAnswerOutcome | undefined>
   recordAnswer(input: RecordAnswerInput): Promise<RecordedAnswerOutcome>
   completeLesson(input: CompleteLessonInput): Promise<CompletedLesson | undefined>
+  getCourseProgressResetOperation(
+    operationHash: AdminOperationHash,
+  ): Promise<CourseProgressResetOperationRecord | undefined>
+  resetCourseProgress(
+    input: ResetCourseProgressInput,
+  ): Promise<ResetCourseProgressOutcome>
+  getLearningRunWordStateSnapshots(input: {
+    courseId: string
+    learningRunNo: number
+  }): Promise<CourseLearningRunWordStateSnapshot[]>
 }
+
+export const getCourseLearningRunNo = (course: CourseRecord): number =>
+  course.currentLearningRunNo ?? 1
+
+export const getCourseRunStartLessonNo = (course: CourseRecord): number =>
+  course.currentRunStartLessonNo ?? 1
+
+export const getCourseRunLessonNo = (course: CourseRecord): number =>
+  course.currentLessonNo - getCourseRunStartLessonNo(course) + 1
+
+export const getSessionLearningRunNo = (session: LessonSessionRecord): number =>
+  session.learningRunNo ?? 1
+
+export const getSessionRunLessonNo = (session: LessonSessionRecord): number =>
+  session.runLessonNo ?? session.lessonNo

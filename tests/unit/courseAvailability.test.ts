@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createWorkerApp } from '../../server/app'
 import { createInMemoryContentRepository } from '../../server/repositories/inMemoryContentRepository'
 import { createInMemoryCourseRepository } from '../../server/repositories/inMemoryCourseRepository'
+import { createInMemoryLessonReplayRepository } from '../../server/repositories/inMemoryLessonReplayRepository'
 import { createInMemorySessionRepository } from '../../server/repositories/inMemorySessionRepository'
 import type {
   CourseRepository,
@@ -11,6 +12,8 @@ import { createContentBuilder } from '../../server/services/ContentBuilder'
 import { createCourseQueryService } from '../../server/services/CourseQueryService'
 import { createCourseRuntime } from '../../server/services/CourseRuntime'
 import { createLearnerSessionService } from '../../server/services/LearnerSessionService'
+import { createLearningProgressService } from '../../server/services/LearningProgressService'
+import { createLessonReplayService } from '../../server/services/LessonReplayService'
 import type { CourseStatus } from '../../shared/domain/course'
 import { generateAdminOperationToken } from '../../shared/security/adminOperationToken'
 
@@ -847,6 +850,7 @@ const createAvailabilityFixture = async () => {
     now: () => NOW,
     generateToken: () => 'a'.repeat(64),
   })
+  const replayRepository = createInMemoryLessonReplayRepository()
 
   return {
     versionId: imported.versionId,
@@ -859,6 +863,15 @@ const createAvailabilityFixture = async () => {
       courseRuntime: runtime,
       courseQueryService: queries,
       courseRepository,
+      lessonReplayService: createLessonReplayService({
+        courseRepository,
+        replayRepository,
+        now: () => NOW,
+      }),
+      learningProgressService: createLearningProgressService({
+        courseRepository,
+        now: () => NOW,
+      }),
       learnerSessionService: sessions,
       adminAuthentication: { allowedOrigin: 'https://eng-learn.test' },
     }),

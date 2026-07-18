@@ -125,6 +125,171 @@ describe('course read API', () => {
     expect(crossCourse.status).toBe(403)
     expect(await readErrorCode(crossCourse)).toBe('forbidden_resource')
   })
+
+  it('lets a learner select and repeat a completed lesson without changing formal progress', async () => {
+    const fixture = await createFixture()
+    const cookie = await exchangeCode(fixture.app, fixture.accessCode)
+    const sessionId = await completeCurrentLesson(fixture.app, fixture.courseId, cookie)
+    const beforeHome = await readSuccess<{ course: { currentLessonNo: number } }>(
+      await fixture.app.fetch(request('/api/app/course', { cookie })),
+    )
+
+    const completed = await readSuccess<{
+      currentLearningRunNo: number
+      lessons: Array<{
+        sourceSessionId: string
+        learningRunNo: number
+        lessonNo: number
+      }>
+    }>(
+      await fixture.app.fetch(
+        request(`/api/app/courses/${fixture.courseId}/completed-lessons?limit=20`, {
+          cookie,
+        }),
+      ),
+    )
+    expect(completed).toMatchObject({
+      currentLearningRunNo: 1,
+      lessons: [
+        { sourceSessionId: sessionId, learningRunNo: 1, lessonNo: 1 },
+      ],
+    })
+
+    const replay = await readSuccess<{
+      session: { id: string; sourceSessionId: string; lessonNo: number }
+      tasks: Array<{ id: string; sessionId: string }>
+    }>(
+      await fixture.app.fetch(
+        request(`/api/app/lessons/${sessionId}/replays`, {
+          method: 'POST',
+          origin: ORIGIN,
+          cookie,
+          body: {},
+        }),
+      ),
+    )
+    expect(replay.session).toMatchObject({ sourceSessionId: sessionId, lessonNo: 1 })
+    expect(replay.tasks.every((task) => task.sessionId === replay.session.id)).toBe(true)
+
+    await answerReplayUntilComplete(fixture.app, replay.session.id, cookie)
+    const replayCompleted = await readSuccess<{
+      session: { status: string; completedTaskCount: number; taskCount: number }
+    }>(
+      await fixture.app.fetch(
+        request(`/api/app/lesson-replays/${replay.session.id}/complete`, {
+          method: 'POST',
+          origin: ORIGIN,
+          cookie,
+          body: {},
+        }),
+      ),
+    )
+    expect(replayCompleted.session).toMatchObject({
+      status: 'completed',
+      completedTaskCount: replayCompleted.session.taskCount,
+    })
+
+    const afterHome = await readSuccess<typeof beforeHome>(
+      await fixture.app.fetch(request('/api/app/course', { cookie })),
+    )
+    expect(afterHome).toEqual(beforeHome)
+  })
+
+  it('lets an administrator restart the same course as a new formal learning run', async () => {
+    const fixture = await createFixture()
+    const cookie = await exchangeCode(fixture.app, fixture.accessCode)
+    await completeCurrentLesson(fixture.app, fixture.courseId, cookie)
+    const oldLesson = await readSuccess<{
+      session: { id: string }
+      tasks: Array<{ id: string }>
+    }>(
+      await fixture.app.fetch(
+        request(`/api/app/courses/${fixture.courseId}/lessons/start`, {
+          method: 'POST',
+          origin: ORIGIN,
+          cookie,
+          body: {},
+        }),
+      ),
+    )
+    const operationToken = generateAdminOperationToken()
+    const body = {
+      operationToken,
+      expectedLearningRunNo: 1,
+      expectedCurrentLessonNo: 2,
+    }
+    const reset = await readSuccess<{
+      course: { id: string; currentLessonNo: number }
+      learningRunNo: number
+      abandonedSessionCount: number
+      historyPreserved: true
+    }>(
+      await fixture.app.fetch(
+        request(`/api/admin/courses/${fixture.courseId}/learning-progress/reset`, {
+          method: 'POST',
+          body,
+        }),
+      ),
+    )
+    const retried = await readSuccess<typeof reset>(
+      await fixture.app.fetch(
+        request(`/api/admin/courses/${fixture.courseId}/learning-progress/reset`, {
+          method: 'POST',
+          body,
+        }),
+      ),
+    )
+
+    expect(retried).toEqual(reset)
+    expect(reset).toMatchObject({
+      course: { id: fixture.courseId, currentLessonNo: 1 },
+      learningRunNo: 2,
+      abandonedSessionCount: 1,
+      historyPreserved: true,
+    })
+    const courses = await readSuccess<{
+      courses: Array<{
+        course: { id: string; currentLessonNo: number }
+        learningRunNo: number
+      }>
+    }>(await fixture.app.fetch(request('/api/admin/courses')))
+    expect(courses.courses.find((item) => item.course.id === fixture.courseId)).toMatchObject({
+      course: { currentLessonNo: 1 },
+      learningRunNo: 2,
+    })
+
+    const home = await readSuccess<{
+      course: { currentLessonNo: number }
+      action: string
+    }>(await fixture.app.fetch(request('/api/app/course', { cookie })))
+    expect(home).toMatchObject({ course: { currentLessonNo: 1 }, action: 'start' })
+
+    const oldAnswer = await fixture.app.fetch(
+      request(
+        `/api/app/lessons/${oldLesson.session.id}/tasks/${oldLesson.tasks[0]?.id ?? 'missing'}/answer`,
+        {
+          method: 'POST',
+          origin: ORIGIN,
+          cookie,
+          body: { taskType: 'recognize_meaning', response: 'known' },
+        },
+      ),
+    )
+    expect(oldAnswer.status).toBe(409)
+    expect(await readErrorCode(oldAnswer)).toBe('lesson_not_active')
+
+    const restarted = await readSuccess<{ session: { lessonNo: number } }>(
+      await fixture.app.fetch(
+        request(`/api/app/courses/${fixture.courseId}/lessons/start`, {
+          method: 'POST',
+          origin: ORIGIN,
+          cookie,
+          body: {},
+        }),
+      ),
+    )
+    expect(restarted.session.lessonNo).toBe(1)
+  })
 })
 
 const createFixture = async () => {
@@ -315,4 +480,73 @@ const answerUntilLessonIsCompletable = async (
   }
 
   throw new Error('Lesson did not become completable within 20 answers')
+}
+
+const completeCurrentLesson = async (
+  app: WorkerApp,
+  courseId: string,
+  cookie: string,
+): Promise<string> => {
+  const lesson = await readSuccess<{ session: { id: string } }>(
+    await app.fetch(
+      request(`/api/app/courses/${courseId}/lessons/start`, {
+        method: 'POST',
+        origin: ORIGIN,
+        cookie,
+        body: {},
+      }),
+    ),
+  )
+  await answerUntilLessonIsCompletable(app, lesson.session.id, cookie)
+  await readSuccess(
+    await app.fetch(
+      request(`/api/app/lessons/${lesson.session.id}/complete`, {
+        method: 'POST',
+        origin: ORIGIN,
+        cookie,
+        body: {},
+      }),
+    ),
+  )
+  return lesson.session.id
+}
+
+const answerReplayUntilComplete = async (
+  app: WorkerApp,
+  replaySessionId: string,
+  cookie: string,
+): Promise<void> => {
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    const replay = await readSuccess<{
+      session: { completedTaskCount: number; taskCount: number }
+      tasks: Array<{
+        id: string
+        status: 'pending' | 'completed' | 'skipped'
+        taskType: 'recognize_meaning' | 'multiple_choice'
+        prompt: { meaning?: string }
+      }>
+    }>(
+      await app.fetch(
+        request(`/api/app/lesson-replays/${replaySessionId}`, { cookie }),
+      ),
+    )
+    if (replay.session.completedTaskCount === replay.session.taskCount) return
+    const task = replay.tasks.find((candidate) => candidate.status === 'pending')
+    if (!task) throw new Error('Expected a pending replay task')
+    const body = task.taskType === 'recognize_meaning'
+      ? { taskType: 'recognize_meaning', response: 'known' }
+      : {
+          taskType: 'multiple_choice',
+          answer: task.prompt.meaning?.replace(/^meaning-/u, 'word-') ?? 'word-1',
+        }
+    await readSuccess(
+      await app.fetch(
+        request(
+          `/api/app/lesson-replays/${replaySessionId}/tasks/${task.id}/answer`,
+          { method: 'POST', origin: ORIGIN, cookie, body },
+        ),
+      ),
+    )
+  }
+  throw new Error('Replay did not complete within 30 answers')
 }

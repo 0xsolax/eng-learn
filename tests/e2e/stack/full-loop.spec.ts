@@ -18,10 +18,13 @@ import {
 } from '../../../shared/api/contentSchemas'
 import {
   completedLessonSchema,
+  completedLessonPageSchema,
+  courseProgressResetResultSchema,
   createdCourseSchema,
   adminCourseListSchema,
   establishedLearnerSessionSchema,
   lessonReportSchema,
+  lessonReplaySchema,
   rotatedAccessCodeSchema,
   restoredLearnerSessionSchema,
   startedLessonSchema,
@@ -549,6 +552,7 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   page,
   baseURL,
 }) => {
+  test.setTimeout(60_000)
   if (!baseURL) throw new Error('Expected stack base URL')
   await authenticateAdminPage(page)
   const sourceName = 'Browser stack source'
@@ -741,6 +745,106 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
     .getByRole('listitem')
     .allTextContents()
   expect(practiceWords.sort()).toEqual(distinctWords.sort())
+
+  await page.goto('/app/course')
+  await expect(page.getByRole('heading', { level: 1, name: '第 2 课' })).toBeVisible()
+  await expect(page.getByText('当前轮次 · 第 1 轮')).toBeVisible()
+  await page.getByRole('button', { name: '第 1 课，再练一次' }).click()
+  await expect(page).toHaveURL(/\/app\/replay\/[^/]+$/u)
+  await expect(page.getByText('重复练习', { exact: true })).toBeVisible()
+
+  for (let replayAnswerIndex = 0; replayAnswerIndex < 15; replayAnswerIndex += 1) {
+    const currentWord = (await page.locator('#recognize-word').textContent())?.trim()
+    if (!currentWord) {
+      throw new Error(`Expected replay task ${String(replayAnswerIndex + 1)}`)
+    }
+    await page.getByRole('button', { name: '我认识' }).click()
+    await expect(page.getByRole('status')).toContainText('服务端已记录这次判断')
+    await page.getByRole('button', { name: '继续' }).click()
+
+    if (replayAnswerIndex === 6) {
+      const nextWord = (await page.locator('#recognize-word').textContent())?.trim()
+      if (!nextWord) throw new Error('Expected a replay task before browser refresh')
+      await page.reload()
+      await expect(page.locator('#recognize-word')).toHaveText(nextWord)
+    }
+  }
+
+  await expect(page.getByText('本次任务已答完')).toBeVisible()
+  await page.getByRole('button', { name: '完成重复练习' }).click()
+  await expect(page.getByText('本次答对 15 / 15 道')).toBeVisible()
+  await page.getByRole('button', { name: '返回课程' }).click()
+  await expect(page).toHaveURL(/\/app\/course$/u)
+  await expect(page.getByRole('heading', { level: 1, name: '第 2 课' })).toBeVisible()
+
+  await page.getByRole('button', { name: '开始第 2 课' }).click()
+  await expect(page).toHaveURL(/\/app\/lesson\/[^/]+$/u)
+  const oldLessonUrl = page.url()
+  const oldLessonSessionId = new URL(oldLessonUrl).pathname.split('/').at(-1)
+  if (!oldLessonSessionId) throw new Error('Expected the old lesson session id')
+
+  await page.goto('/admin/courses')
+  const browserCourse = page.getByRole('row', { name: /^Browser learner\b/u })
+  await expect(browserCourse).toContainText('第 2 课 · 第 1 轮')
+  const resetCommands: unknown[] = []
+  let resetAttempt = 0
+  await page.route('**/api/admin/courses/*/learning-progress/reset', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue()
+      return
+    }
+
+    resetAttempt += 1
+    resetCommands.push(route.request().postDataJSON())
+    if (resetAttempt === 1) {
+      const committed = await route.fetch()
+      expect(committed.status()).toBe(200)
+      await route.abort('failed')
+      return
+    }
+    await route.continue()
+  })
+
+  await browserCourse.getByRole('button', { name: '重新学习' }).click()
+  await expect(page.locator('[data-reset-confirmation]')).toContainText(
+    '保留全部历史记录和原学习码',
+  )
+  await page.getByRole('button', { name: '确认重新学习' }).click()
+  await expect(page.locator('[data-unknown-result]')).toContainText(
+    '学习轮次可能已经重置',
+  )
+  await page.getByRole('button', { name: '安全重试同一次操作' }).click()
+  await expect(page.locator('[data-reset-success]')).toContainText(
+    '已从第 1 课重新开始；原学习记录已保留',
+  )
+  expect(resetCommands).toHaveLength(2)
+  expect(resetCommands[1]).toEqual(resetCommands[0])
+  await expect(browserCourse).toContainText('第 1 课 · 第 2 轮')
+  await page.unroute('**/api/admin/courses/*/learning-progress/reset')
+
+  await page.goto(oldLessonUrl)
+  await expect(page).toHaveURL(/\/app\/course$/u)
+  await expect(page.getByRole('heading', { level: 1, name: '第 1 课' })).toBeVisible()
+  await page.getByRole('button', { name: '开始第 1 课' }).click()
+  await expect(page).toHaveURL(/\/app\/lesson\/[^/]+$/u)
+  const newLessonSessionId = new URL(page.url()).pathname.split('/').at(-1)
+  if (!newLessonSessionId) throw new Error('Expected the new lesson session id')
+
+  const runtimeEvidence = await success(
+    await page.request.get('/api/e2e/review-runtime-evidence'),
+    reviewRuntimeEvidenceSchema,
+  )
+  expect(runtimeEvidence.lessonSessions).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: oldLessonSessionId, status: 'abandoned' }),
+      expect.objectContaining({
+        id: newLessonSessionId,
+        status: 'started',
+        learning_run_no: 2,
+        run_lesson_no: 1,
+      }),
+    ]),
+  )
 })
 
 test('runs admin lifecycle, learner isolation, capped v2 reflux, recovery, and completion', async ({
@@ -948,7 +1052,196 @@ test('runs admin lifecycle, learner isolation, capped v2 reflux, recovery, and c
     courseStatus: 'active',
   })
   expect(report.needsPracticeWords.map((word) => word.id).sort()).toEqual(wordIds.sort())
+
+  const formalRowsBeforeReplay = await success(
+    await request.get('/api/e2e/review-runtime-evidence'),
+    reviewRuntimeEvidenceSchema,
+  )
+  const completedLessons = await success(
+    await request.get(
+      `/api/app/courses/${firstCourse.course.id}/completed-lessons?limit=20`,
+      { headers: originHeaders },
+    ),
+    completedLessonPageSchema,
+  )
+  expect(completedLessons).toMatchObject({
+    currentLearningRunNo: 1,
+    lessons: [
+      expect.objectContaining({
+        sourceSessionId: lesson.session.id,
+        learningRunNo: 1,
+        lessonNo: 1,
+        taskCount: 15,
+      }),
+    ],
+  })
+
+  let recoveredReplay = await success(
+    await request.post(`/api/app/lessons/${lesson.session.id}/replays`, {
+      headers: originHeaders,
+    }),
+    lessonReplaySchema,
+  )
+  expect(recoveredReplay.session).toMatchObject({
+    sourceSessionId: lesson.session.id,
+    learningRunNo: 1,
+    lessonNo: 1,
+    status: 'started',
+    taskCount: 15,
+  })
+
+  for (let answerIndex = 0; answerIndex < 15; answerIndex += 1) {
+    const current = recoveredReplay.tasks.find((task) => task.status === 'pending')
+
+    if (!current || current.taskType !== 'recognize_meaning') {
+      throw new Error(`Expected replay task ${String(answerIndex + 1)} to be S0`)
+    }
+    await success(
+      await request.post(
+        `/api/app/lesson-replays/${recoveredReplay.session.id}/tasks/${current.id}/answer`,
+        {
+          headers: originHeaders,
+          data: { taskType: 'recognize_meaning', response: 'known' },
+        },
+      ),
+      taskAnswerResultSchema,
+    )
+    recoveredReplay = await success(
+      await request.get(`/api/app/lesson-replays/${recoveredReplay.session.id}`, {
+        headers: originHeaders,
+      }),
+      lessonReplaySchema,
+    )
+  }
+
+  const completedReplay = await success(
+    await request.post(`/api/app/lesson-replays/${recoveredReplay.session.id}/complete`, {
+      headers: originHeaders,
+    }),
+    lessonReplaySchema,
+  )
+  const replayCompletionRetry = await success(
+    await request.post(`/api/app/lesson-replays/${recoveredReplay.session.id}/complete`, {
+      headers: originHeaders,
+    }),
+    lessonReplaySchema,
+  )
+  expect(completedReplay.session).toMatchObject({
+    status: 'completed',
+    completedTaskCount: 15,
+    correctCount: 15,
+    wrongCount: 0,
+  })
+  expect(replayCompletionRetry).toEqual(completedReplay)
+  const formalRowsAfterReplay = await success(
+    await request.get('/api/e2e/review-runtime-evidence'),
+    reviewRuntimeEvidenceSchema,
+  )
+  expect(formalRowsAfterReplay).toEqual(formalRowsBeforeReplay)
+
+  const startedLessonTwo = await success(
+    await request.post(`/api/app/courses/${firstCourse.course.id}/lessons/start`, {
+      headers: originHeaders,
+    }),
+    startedLessonSchema,
+  )
+  expect(startedLessonTwo.session).toMatchObject({ lessonNo: 2, status: 'started' })
+  const adminCourses = await success(
+    await request.get('/api/admin/courses'),
+    adminCourseListSchema,
+  )
+  const firstCourseEntry = adminCourses.courses.find(
+    (entry) => entry.course.id === firstCourse.course.id,
+  )
+  if (!firstCourseEntry) throw new Error('Expected the first course in the admin list')
+  expect(firstCourseEntry).toMatchObject({
+    learningRunNo: 1,
+    course: { currentLessonNo: 2 },
+  })
+
+  const resetCommand = {
+    operationToken: generateAdminOperationToken(),
+    expectedLearningRunNo: firstCourseEntry.learningRunNo,
+    expectedCurrentLessonNo: firstCourseEntry.course.currentLessonNo,
+  }
+  const resetPath = `/api/admin/courses/${firstCourse.course.id}/learning-progress/reset`
+  const reset = await success(
+    await request.post(resetPath, { headers: originHeaders, data: resetCommand }),
+    courseProgressResetResultSchema,
+  )
+  const resetRetry = await success(
+    await request.post(resetPath, { headers: originHeaders, data: resetCommand }),
+    courseProgressResetResultSchema,
+  )
+  expect(reset).toMatchObject({
+    course: {
+      id: firstCourse.course.id,
+      learnerId: firstCourse.learner.id,
+      currentLessonNo: 1,
+    },
+    learningRunNo: 2,
+    abandonedSessionCount: 1,
+    historyPreserved: true,
+  })
+  expect(resetRetry).toEqual(reset)
+
+  const oldTask = startedLessonTwo.tasks.find((task) => task.status === 'pending')
+  if (!oldTask) throw new Error('Expected an unfinished task before resetting progress')
+  const rejectedOldAnswer = await request.post(
+    `/api/app/lessons/${startedLessonTwo.session.id}/tasks/${oldTask.id}/answer`,
+    {
+      headers: originHeaders,
+      data: taskSubmissionFor(oldTask),
+    },
+  )
+  expect(rejectedOldAnswer.status()).toBe(409)
+  expect(await failureCode(rejectedOldAnswer)).toBe('lesson_not_active')
+
+  const restoredAfterReset = await success(
+    await request.get('/api/app/session'),
+    restoredLearnerSessionSchema,
+  )
+  expect(restoredAfterReset.course).toMatchObject({
+    id: firstCourse.course.id,
+    currentLessonNo: 1,
+  })
+  const restartedLessonOne = await success(
+    await request.post(`/api/app/courses/${firstCourse.course.id}/lessons/start`, {
+      headers: originHeaders,
+    }),
+    startedLessonSchema,
+  )
+  expect(restartedLessonOne.session).toMatchObject({ lessonNo: 1, status: 'started' })
+
+  const runtimeAfterReset = await success(
+    await request.get('/api/e2e/review-runtime-evidence'),
+    reviewRuntimeEvidenceSchema,
+  )
+  expect(runtimeAfterReset.lessonSessions).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ id: lesson.session.id, status: 'completed' }),
+      expect.objectContaining({ id: startedLessonTwo.session.id, status: 'abandoned' }),
+      expect.objectContaining({ id: restartedLessonOne.session.id, status: 'started' }),
+    ]),
+  )
 })
+
+const taskSubmissionFor = (
+  task: z.output<typeof startedLessonSchema>['tasks'][number],
+): Record<string, unknown> => {
+  switch (task.taskType) {
+    case 'recognize_meaning':
+      return { taskType: task.taskType, response: 'known' }
+    case 'recall_word':
+    case 'multiple_choice':
+    case 'fill_blank':
+      return { taskType: task.taskType, answer: '__reset_rejected__' }
+    case 'sentence_build':
+      return { taskType: task.taskType, tokens: ['__reset_rejected__'] }
+    case 'sentence_output':
+      return { taskType: task.taskType, draft: '__reset_rejected__' }
+  }
+}
 
 const success = async <TSchema extends z.ZodType>(
   response: APIResponse,

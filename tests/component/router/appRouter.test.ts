@@ -34,6 +34,7 @@ const adminApi = vi.hoisted(() => ({
   createCourse: vi.fn(),
   listCourses: vi.fn(),
   rotateAccessCode: vi.fn(),
+  resetCourseProgress: vi.fn(),
 }))
 
 vi.mock('@/api/adminApi', () => ({
@@ -90,6 +91,15 @@ const createLearnerApiFixture = () => ({
   submitAnswer: vi.fn(),
   completeLesson: vi.fn(),
   getLessonReport: vi.fn(),
+  listCompletedLessons: vi.fn().mockResolvedValue({
+    currentLearningRunNo: 1,
+    lessons: [],
+  }),
+  startLessonReplay: vi.fn(),
+  getLessonReplay: vi.fn(),
+  previewReplaySentenceOutput: vi.fn(),
+  submitReplayAnswer: vi.fn(),
+  completeLessonReplay: vi.fn(),
 }) satisfies LearnerApiPort
 
 const learnerSessionErrorCodes = [
@@ -345,6 +355,56 @@ describe('application router', () => {
     },
   )
 
+  it('routes completed repeat practice back to the selectable course page', async () => {
+    const api = createLearnerApiFixture()
+    const replay = {
+      session: {
+        id: 'replay-1',
+        courseId: 'course-1',
+        sourceSessionId: 'session-1',
+        learningRunNo: 1,
+        lessonNo: 1,
+        status: 'started' as const,
+        taskCount: 1,
+        completedTaskCount: 1,
+        correctCount: 1,
+        wrongCount: 0,
+      },
+      tasks: [
+        {
+          id: 'replay-task-1',
+          sessionId: 'replay-1',
+          courseId: 'course-1',
+          wordId: 'word-1',
+          orderIndex: 1,
+          status: 'completed' as const,
+          role: 'primary' as const,
+          required: true,
+          stage: 'S0' as const,
+          taskType: 'recognize_meaning' as const,
+          prompt: { word: 'apple', meaning: '苹果', exampleSentence: 'I eat an apple.' },
+        },
+      ],
+    }
+    api.getLessonReplay.mockResolvedValue(replay)
+    api.completeLessonReplay.mockResolvedValue({
+      ...replay,
+      session: { ...replay.session, status: 'completed' },
+    })
+
+    const router = await renderRoute('/app/replay/replay-1', api)
+    expect(wrapper?.text()).toContain('重复练习')
+    await wrapper?.get('[data-action="complete-replay"]').trigger('click')
+    await flushPromises()
+
+    expect(api.completeLessonReplay).toHaveBeenCalledWith('replay-1')
+    expect(router.currentRoute.value.fullPath).toBe('/app/replay/replay-1')
+    await wrapper?.get('[data-action="return-to-course"]').trigger('click')
+    await flushPromises()
+
+    expect(router.currentRoute.value.fullPath).toBe('/app/course')
+  })
+
   it.each(learnerSessionErrorCodes)(
     'replaces an invalid lesson report route with the access-code route for %s',
     async (code) => {
@@ -415,6 +475,7 @@ describe('application router', () => {
       'admin-courses',
       'learner',
       'learner-home',
+      'learner-lesson-replay',
       'not-found',
     ]
 

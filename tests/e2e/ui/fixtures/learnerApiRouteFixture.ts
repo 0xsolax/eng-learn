@@ -43,6 +43,37 @@ const answeredLesson = {
   tasks: [{ ...pendingTask, status: 'completed' }],
 }
 
+const pendingReplayTask = {
+  ...pendingTask,
+  id: 'replay-task-1',
+  sessionId: 'replay-6',
+}
+
+const pendingReplay = {
+  session: {
+    id: 'replay-6',
+    courseId: 'course-1',
+    sourceSessionId: 'session-6',
+    learningRunNo: 1,
+    lessonNo: 6,
+    status: 'started',
+    taskCount: 1,
+    completedTaskCount: 0,
+    correctCount: 0,
+    wrongCount: 0,
+  },
+  tasks: [pendingReplayTask],
+}
+
+const answeredReplay = {
+  session: {
+    ...pendingReplay.session,
+    completedTaskCount: 1,
+    correctCount: 1,
+  },
+  tasks: [{ ...pendingReplayTask, status: 'completed' }],
+}
+
 const fulfill = (route: Route, status: number, payload: unknown): Promise<void> =>
   route.fulfill({
     status,
@@ -53,6 +84,7 @@ const fulfill = (route: Route, status: number, payload: unknown): Promise<void> 
 
 export const installMockedLearnerApiRouteFixture = async (page: Page): Promise<void> => {
   let lessonReadCount = 0
+  let replayReadCount = 0
 
   await page.route('**/api/app/**', async (route) => {
     const request = route.request()
@@ -92,8 +124,55 @@ export const installMockedLearnerApiRouteFixture = async (page: Page): Promise<v
           },
         })
         return
+      case 'GET /api/app/courses/course-1/completed-lessons':
+        await fulfill(route, 200, {
+          ok: true,
+          data: {
+            currentLearningRunNo: 1,
+            lessons: [
+              {
+                sourceSessionId: 'session-6',
+                learningRunNo: 1,
+                lessonNo: 6,
+                taskCount: 1,
+                completedAt: '2026-07-13T00:00:00.000Z',
+              },
+            ],
+          },
+        })
+        return
       case 'POST /api/app/courses/course-1/lessons/start':
         await fulfill(route, 200, { ok: true, data: pendingLesson })
+        return
+      case 'POST /api/app/lessons/session-6/replays':
+        await fulfill(route, 200, { ok: true, data: pendingReplay })
+        return
+      case 'GET /api/app/lesson-replays/replay-6':
+        replayReadCount += 1
+        await fulfill(route, 200, {
+          ok: true,
+          data: replayReadCount === 1 ? pendingReplay : answeredReplay,
+        })
+        return
+      case 'POST /api/app/lesson-replays/replay-6/tasks/replay-task-1/answer':
+        await fulfill(route, 200, {
+          ok: true,
+          data: {
+            taskId: 'replay-task-1',
+            score: 3,
+            correct: true,
+            feedback: { taskType: 'multiple_choice', correctAnswer: 'apple' },
+          },
+        })
+        return
+      case 'POST /api/app/lesson-replays/replay-6/complete':
+        await fulfill(route, 200, {
+          ok: true,
+          data: {
+            ...answeredReplay,
+            session: { ...answeredReplay.session, status: 'completed' },
+          },
+        })
         return
       case 'GET /api/app/lessons/session-7':
         lessonReadCount += 1
@@ -267,6 +346,12 @@ export const installCappedWrongAnswerLearnerFixture = async (
               { lessonNo: 8, status: 'locked' },
             ],
           },
+        })
+        return
+      case 'GET /api/app/courses/course-1/completed-lessons':
+        await fulfill(route, 200, {
+          ok: true,
+          data: { currentLearningRunNo: 1, lessons: [] },
         })
         return
       case 'POST /api/app/courses/course-1/lessons/start':

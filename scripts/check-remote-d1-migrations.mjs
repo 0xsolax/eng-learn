@@ -12,7 +12,10 @@ const MIGRATION_QUERY = 'SELECT id, name FROM d1_migrations ORDER BY id'
 const MIGRATION_FILENAME = /^\d{4}_.+\.sql$/u
 const ACCOUNT_ID = /^[0-9a-f]{32}$/u
 const DATABASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
-const REQUIRED_LESSON_FLOW_MIGRATION = '0013_add_lesson_flow_policy_v2.sql'
+const REQUIRED_RUNTIME_MIGRATIONS = [
+  '0013_add_lesson_flow_policy_v2.sql',
+  '0014_add_lesson_replay_and_learning_runs.sql',
+]
 
 export const RELEASE_ENTRY_WRITE_MODES = Object.freeze({
   normal: Object.freeze({ queue: 'v2', flow: 'rolling_v2' }),
@@ -78,10 +81,10 @@ export const assertRemoteMigrationGateConfiguration = (config, entry) => {
 }
 
 export const assertLessonFlowMigrationPresent = (localMigrationNames) => {
-  if (!localMigrationNames.includes(REQUIRED_LESSON_FLOW_MIGRATION)) {
-    throw new Error(
-      `Required D1 migration is missing: ${REQUIRED_LESSON_FLOW_MIGRATION}`,
-    )
+  for (const migration of REQUIRED_RUNTIME_MIGRATIONS) {
+    if (!localMigrationNames.includes(migration)) {
+      throw new Error(`Required D1 migration is missing: ${migration}`)
+    }
   }
 }
 

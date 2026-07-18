@@ -103,6 +103,7 @@ describe('course API schemas', () => {
           learner: { id: 'learner-1', name: 'Alice' },
           course,
           credentialVersion: 1,
+          learningRunNo: 1,
         },
       ],
     }

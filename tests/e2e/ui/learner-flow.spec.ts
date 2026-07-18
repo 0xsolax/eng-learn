@@ -39,6 +39,32 @@ test('@learner [mocked route fixture] closes code → course → lesson → repo
   expect(overflow.scrollWidth).toBeLessThanOrEqual(overflow.clientWidth)
 })
 
+test('@learner [mocked route fixture] reselects a completed lesson without moving formal progress', async ({
+  page,
+}) => {
+  await installMockedLearnerApiRouteFixture(page)
+  await page.goto('/app')
+
+  await page.getByLabel('10 位学习码').fill('ABCDEFGH23')
+  await page.getByRole('button', { name: '进入课程' }).click()
+  await expect(page.getByRole('heading', { level: 2, name: '选择已完成课时重新练习' })).toBeVisible()
+
+  await page.getByRole('button', { name: '第 6 课，再练一次' }).click()
+  await expect(page).toHaveURL(/\/app\/replay\/replay-6$/u)
+  await expect(page.getByText('重复练习', { exact: true })).toBeVisible()
+  await page.getByLabel('apple').check()
+  await page.getByRole('button', { name: '检查答案' }).click()
+  await expect(page.getByRole('status')).toContainText('参考答案：apple')
+  await page.getByRole('button', { name: '继续' }).click()
+  await page.getByRole('button', { name: '完成重复练习' }).click()
+  await expect(page.getByText('本次答对 1 / 1 道')).toBeVisible()
+  await page.getByRole('button', { name: '返回课程' }).click()
+
+  await expect(page).toHaveURL(/\/app\/course$/u)
+  await expect(page.getByRole('heading', { level: 1, name: '第 7 课' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '第 6 课，再练一次' })).toBeVisible()
+})
+
 test('@learner [mocked route fixture] finishes fifteen capped wrong answers across refresh', async ({
   page,
 }) => {

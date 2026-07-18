@@ -2,7 +2,9 @@ import { inject, type InjectionKey } from 'vue'
 import type { z } from 'zod'
 import type {
   CompletedLessonDto,
+  CompletedLessonPageDto,
   CourseHomeDto,
+  LessonReplayDto,
   LessonReportDto,
   StartedLessonDto,
 } from '@shared/api/courseSchemas'
@@ -40,6 +42,23 @@ export type LearnerApiPort = {
   ): Promise<TaskAnswerResult>
   completeLesson(sessionId: string): Promise<CompletedLessonDto>
   getLessonReport(sessionId: string): Promise<LessonReportDto>
+  listCompletedLessons(
+    courseId: string,
+    input?: { cursor?: string; limit?: number },
+  ): Promise<CompletedLessonPageDto>
+  startLessonReplay(sourceSessionId: string): Promise<LessonReplayDto>
+  getLessonReplay(replaySessionId: string): Promise<LessonReplayDto>
+  previewReplaySentenceOutput(
+    replaySessionId: string,
+    taskId: string,
+    preview: SentenceOutputPreviewRequest,
+  ): Promise<SentenceOutputPreview>
+  submitReplayAnswer(
+    replaySessionId: string,
+    taskId: string,
+    submission: SubmitTaskAnswerRequest,
+  ): Promise<TaskAnswerResult>
+  completeLessonReplay(replaySessionId: string): Promise<LessonReplayDto>
 }
 
 export const learnerApiKey: InjectionKey<LearnerApiPort> = Symbol('learner-api')

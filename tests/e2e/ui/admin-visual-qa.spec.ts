@@ -145,6 +145,7 @@ const courseEntries = [
       status: 'active',
     },
     credentialVersion: 1,
+    learningRunNo: 1,
   },
   {
     learner: { id: 'learner-2', name: '小雨' },
@@ -156,6 +157,7 @@ const courseEntries = [
       status: 'paused',
     },
     credentialVersion: 1,
+    learningRunNo: 1,
   },
   {
     learner: { id: 'learner-3', name: '小杰' },
@@ -167,6 +169,7 @@ const courseEntries = [
       status: 'completed',
     },
     credentialVersion: 1,
+    learningRunNo: 1,
   },
 ] as const
 

@@ -38,6 +38,7 @@ const courseEntry = {
     status: 'active' as const,
   },
   credentialVersion: 1,
+  learningRunNo: 1,
 }
 
 afterEach(() => {
@@ -184,6 +185,43 @@ describe('CoursesPage', () => {
     await wrapper.get('[data-dismiss-code]').trigger('click')
     await nextTick()
     expect(document.activeElement).toBe(trigger.element)
+    wrapper.unmount()
+  })
+
+  it('requires explicit confirmation before restarting formal learning progress', async () => {
+    const api = {
+      listCourses: vi.fn().mockResolvedValue({ courses: [courseEntry] }),
+      listSourceVersions: vi.fn().mockResolvedValue([publishedVersion]),
+      createCourse: vi.fn(),
+      rotateAccessCode: vi.fn(),
+      resetCourseProgress: vi.fn().mockResolvedValue({
+        course: { ...courseEntry.course, currentLessonNo: 1 },
+        learningRunNo: 2,
+        abandonedSessionCount: 1,
+        historyPreserved: true as const,
+      }),
+    }
+    const wrapper = mount(CoursesPage, { props: { api }, attachTo: document.body })
+    await flushPromises()
+
+    await wrapper.get('[data-reset-progress]').trigger('click')
+    expect(api.resetCourseProgress).not.toHaveBeenCalled()
+    const confirmation = wrapper.get('[data-reset-confirmation]')
+    expect(confirmation.text()).toContain('保留全部历史记录')
+    expect(confirmation.text()).toContain('从第 1 课重新学习')
+
+    await wrapper.get('[data-confirm-reset]').trigger('click')
+    await flushPromises()
+    const call = (api.resetCourseProgress.mock.calls as unknown[][])[0]
+    expect(call?.[0]).toBe('course-1')
+    expect(requireRecord(call?.[1])).toMatchObject({
+      expectedLearningRunNo: 1,
+      expectedCurrentLessonNo: 1,
+    })
+    expect(requireRecord(call?.[1]).operationToken).toMatch(/^[0-9a-f]{64}$/)
+    expect(wrapper.get('[data-reset-success]').text()).toContain('已从第 1 课重新开始')
+    expect(wrapper.get('table').text()).toContain('第 2 轮')
+    expect(wrapper.find('[data-one-time-code]').exists()).toBe(false)
     wrapper.unmount()
   })
 

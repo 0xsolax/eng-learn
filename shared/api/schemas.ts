@@ -71,6 +71,7 @@ const simpleApiErrorSchema = z
       'course_unavailable',
       'conflict',
       'credential_conflict',
+      'progress_conflict',
       'idempotency_conflict',
       'import_reconcile_required',
       'operation_superseded',
@@ -189,6 +190,14 @@ export const rotateAccessCodeRequestSchema = z
   .object({
     operationToken: z.string().regex(/^[0-9a-f]{64}$/),
     expectedCredentialVersion: z.number().int().positive(),
+  })
+  .strict()
+
+export const courseProgressResetRequestSchema = z
+  .object({
+    operationToken: z.string().regex(/^[0-9a-f]{64}$/),
+    expectedLearningRunNo: z.number().int().positive(),
+    expectedCurrentLessonNo: z.number().int().positive(),
   })
   .strict()
 

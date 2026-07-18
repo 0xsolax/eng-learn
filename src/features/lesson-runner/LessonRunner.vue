@@ -6,7 +6,11 @@ import TaskRenderer from '@/components/task-renderers/TaskRenderer.vue'
 import TaskShell from '@/components/task-renderers/TaskShell.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
-import type { CompletedLessonDto, StartedLessonDto } from '@shared/api/courseSchemas'
+import type {
+  CompletedLessonDto,
+  LessonReplayDto,
+  StartedLessonDto,
+} from '@shared/api/courseSchemas'
 import type {
   SentenceOutputPreviewRequest,
   SubmitTaskAnswerRequest,
@@ -16,8 +20,10 @@ import type { LearnerApiPort } from '@/features/learner-course/learnerApiPort'
 
 type RunnerApi = Pick<
   LearnerApiPort,
-  'completeLesson' | 'getLesson' | 'previewSentenceOutput' | 'submitAnswer'
->
+  'getLesson' | 'previewSentenceOutput' | 'submitAnswer'
+> & {
+  completeLesson(sessionId: string): Promise<CompletedLessonDto | LessonReplayDto>
+}
 type ShellFeedback = {
   tone: 'neutral' | 'info' | 'success' | 'error'
   title: string
@@ -25,10 +31,14 @@ type ShellFeedback = {
 }
 type RetryKind = 'continue' | 'preview' | 'reload' | 'submit' | 'sync'
 
-const props = defineProps<{ api: RunnerApi; sessionId: string }>()
+const props = defineProps<{
+  api: RunnerApi
+  sessionId: string
+  mode?: 'lesson' | 'replay'
+}>()
 const emit = defineEmits<{
   'access-required': []
-  completed: [lesson?: CompletedLessonDto]
+  completed: [lesson?: CompletedLessonDto | LessonReplayDto]
   exit: []
 }>()
 

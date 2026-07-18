@@ -4,6 +4,7 @@ import {
 } from '../shared/api/adminAuthSchemas'
 import {
   createCourseRequestSchema,
+  courseProgressResetRequestSchema,
   enterCourseByAccessCodeRequestSchema,
   rotateAccessCodeRequestSchema,
 } from '../shared/api/schemas'
@@ -14,13 +15,16 @@ import {
 } from '../shared/api/taskSchemas'
 import { createD1ContentRepository } from './repositories/d1ContentRepository'
 import { createD1CourseRepository } from './repositories/d1CourseRepository'
+import { createD1LessonReplayRepository } from './repositories/d1LessonReplayRepository'
 import { createD1SessionRepository } from './repositories/d1SessionRepository'
 import { createD1AdminSessionRepository } from './repositories/d1AdminSessionRepository'
 import { createInMemoryContentRepository } from './repositories/inMemoryContentRepository'
 import { createInMemoryCourseRepository } from './repositories/inMemoryCourseRepository'
+import { createInMemoryLessonReplayRepository } from './repositories/inMemoryLessonReplayRepository'
 import { createInMemorySessionRepository } from './repositories/inMemorySessionRepository'
 import { createInMemoryAdminSessionRepository } from './repositories/inMemoryAdminSessionRepository'
-import type { CourseRepository } from './repositories/courseRepository'
+import type { CourseRecord, CourseRepository } from './repositories/courseRepository'
+import { getCourseRunLessonNo } from './repositories/courseRepository'
 import {
   createD1AdminOperationLedger,
   createInMemoryAdminOperationLedger,
@@ -66,6 +70,14 @@ import {
   type AdminSessionService,
 } from './services/AdminSessionService'
 import {
+  createLearningProgressService,
+  type LearningProgressService,
+} from './services/LearningProgressService'
+import {
+  createLessonReplayService,
+  type LessonReplayService,
+} from './services/LessonReplayService'
+import {
   requireAdminIdentity,
   requireExactWriteOrigin,
   requireLearnerPrincipal,
@@ -102,6 +114,8 @@ export type CreateWorkerAppInput = {
   courseRuntime: CourseRuntime
   courseQueryService: CourseQueryService
   courseRepository: CourseRepository
+  lessonReplayService: LessonReplayService
+  learningProgressService: LearningProgressService
   learnerSessionService: LearnerSessionService
   adminAuthentication: AdminAuthenticationBoundary
   assets?: { fetch(request: Request): Promise<Response> }
@@ -133,6 +147,7 @@ export const createTestWorkerApp = (
   const operationLedger = createInMemoryAdminOperationLedger()
   const contentRepository = createInMemoryContentRepository({ ledger: operationLedger })
   const courseRepository = createInMemoryCourseRepository({ ledger: operationLedger })
+  const replayRepository = createInMemoryLessonReplayRepository()
   const sessionRepository = createInMemorySessionRepository({
     credentialPort: courseRepository,
     ledger: operationLedger,
@@ -180,6 +195,16 @@ export const createTestWorkerApp = (
       flowWriteMode: 'rolling_v2',
     }),
     courseRepository,
+    lessonReplayService: createLessonReplayService({
+      courseRepository,
+      replayRepository,
+      now,
+    }),
+    learningProgressService: createLearningProgressService({
+      courseRepository,
+      operationLedger,
+      now,
+    }),
     learnerSessionService: createLearnerSessionService({
       courseRepository,
       sessionRepository,
@@ -207,9 +232,12 @@ export const createTestWorkerApp = (
 
 export const createDefaultWorkerApp = (env: WorkerEnv): WorkerApp => {
   const now = () => new Date()
-  const operationLedger = createD1AdminOperationLedger(env.DB)
+  const operationLedger = createD1AdminOperationLedger(env.DB, {
+    includeProgressResets: true,
+  })
   const contentRepository = createD1ContentRepository(env.DB)
   const courseRepository = createD1CourseRepository(env.DB)
+  const replayRepository = createD1LessonReplayRepository(env.DB)
   const sessionRepository = createD1SessionRepository(env.DB)
   const adminSessionRepository = createD1AdminSessionRepository(env.DB)
   const adminAuthConfig = readAdminAuthConfig(env.ADMIN_AUTH_CONFIG)
@@ -249,6 +277,16 @@ export const createDefaultWorkerApp = (env: WorkerEnv): WorkerApp => {
       flowWriteMode: parseLessonFlowWriteMode(env.LESSON_FLOW_WRITE_MODE),
     }),
     courseRepository,
+    lessonReplayService: createLessonReplayService({
+      courseRepository,
+      replayRepository,
+      now,
+    }),
+    learningProgressService: createLearningProgressService({
+      courseRepository,
+      operationLedger,
+      now,
+    }),
     learnerSessionService: createLearnerSessionService({
       courseRepository,
       sessionRepository,
@@ -391,6 +429,21 @@ const routeRequest = async (
     if (
       request.method === 'POST' &&
       path.length === 6 &&
+      path[2] === 'courses' &&
+      path[4] === 'learning-progress' &&
+      path[5] === 'reset'
+    ) {
+      const courseId = requirePathSegment(path, 3)
+      const command = await parseJsonRequest(request, courseProgressResetRequestSchema)
+
+      return apiOk(
+        await input.learningProgressService.resetCourseProgress(courseId, command, identity),
+      )
+    }
+
+    if (
+      request.method === 'POST' &&
+      path.length === 6 &&
       path[2] === 'learners' &&
       path[4] === 'access-code' &&
       path[5] === 'rotate'
@@ -462,6 +515,106 @@ const routeRequest = async (
           learnerId: principal.learnerId,
           courseId: principal.courseId,
         }),
+      )
+    }
+
+    if (
+      request.method === 'GET' &&
+      path.length === 5 &&
+      path[2] === 'courses' &&
+      path[4] === 'completed-lessons'
+    ) {
+      const courseId = requirePathSegment(path, 3)
+      requireCourseOwnership(courseId, principal.courseId)
+      const rawLimit = url.searchParams.get('limit') ?? '20'
+      const limit = Number(rawLimit)
+      const cursor = url.searchParams.get('cursor') ?? undefined
+
+      return apiOk(
+        await input.lessonReplayService.listCompletedLessons(principal, {
+          ...(cursor ? { cursor } : {}),
+          limit,
+        }),
+      )
+    }
+
+    if (
+      request.method === 'POST' &&
+      path.length === 5 &&
+      path[2] === 'lessons' &&
+      path[4] === 'replays'
+    ) {
+      const sourceSessionId = requirePathSegment(path, 3)
+
+      return apiOk(
+        await input.lessonReplayService.startReplay(principal, sourceSessionId),
+      )
+    }
+
+    if (
+      request.method === 'GET' &&
+      path.length === 4 &&
+      path[2] === 'lesson-replays'
+    ) {
+      const replaySessionId = requirePathSegment(path, 3)
+
+      return apiOk(
+        await input.lessonReplayService.getReplay(principal, replaySessionId),
+      )
+    }
+
+    if (
+      request.method === 'POST' &&
+      path.length === 7 &&
+      path[2] === 'lesson-replays' &&
+      path[4] === 'tasks' &&
+      path[6] === 'preview'
+    ) {
+      const replaySessionId = requirePathSegment(path, 3)
+      const taskId = requirePathSegment(path, 5)
+      const preview = await parseJsonRequest(request, previewSentenceOutputRequestSchema)
+
+      return apiOk(
+        await input.lessonReplayService.previewSentenceOutput(principal, {
+          replaySessionId,
+          taskId,
+          preview,
+        }),
+      )
+    }
+
+    if (
+      request.method === 'POST' &&
+      path.length === 7 &&
+      path[2] === 'lesson-replays' &&
+      path[4] === 'tasks' &&
+      path[6] === 'answer'
+    ) {
+      const replaySessionId = requirePathSegment(path, 3)
+      const taskId = requirePathSegment(path, 5)
+      const submission = await parseJsonRequest(request, submitTaskAnswerRequestSchema)
+
+      return apiOk(
+        taskAnswerResultSchema.parse(
+          await input.lessonReplayService.submitAnswer(principal, {
+            replaySessionId,
+            taskId,
+            submission,
+          }),
+        ),
+      )
+    }
+
+    if (
+      request.method === 'POST' &&
+      path.length === 5 &&
+      path[2] === 'lesson-replays' &&
+      path[4] === 'complete'
+    ) {
+      const replaySessionId = requirePathSegment(path, 3)
+
+      return apiOk(
+        await input.lessonReplayService.completeReplay(principal, replaySessionId),
       )
     }
 
@@ -661,17 +814,11 @@ const toAdminSession = (identity: AdminIdentity) => {
   return accessEmail ? adminSessionSchema.parse({ ...base, email: accessEmail }) : base
 }
 
-const toCourseView = (course: {
-  id: string
-  learnerId: string
-  sourceVersionId: string
-  currentLessonNo: number
-  status: 'active' | 'paused' | 'completed'
-}) => ({
+const toCourseView = (course: CourseRecord) => ({
   id: course.id,
   learnerId: course.learnerId,
   sourceVersionId: course.sourceVersionId,
-  currentLessonNo: course.currentLessonNo,
+  currentLessonNo: getCourseRunLessonNo(course),
   status: course.status,
 })
 

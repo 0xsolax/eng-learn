@@ -25,6 +25,7 @@ type FixtureCourse = {
     status: 'active'
   }
   credentialVersion: number
+  learningRunNo: number
 }
 
 type FixtureOptions = {
@@ -79,6 +80,7 @@ export const installMockedAdminWorkspaceApiRouteFixture = async (
             status: 'active',
           },
           credentialVersion: 1,
+          learningRunNo: 1,
         },
       ]
     : []
@@ -363,6 +365,7 @@ export const installMockedAdminWorkspaceApiRouteFixture = async (
           status: 'active',
         },
         credentialVersion: 1,
+        learningRunNo: 1,
       }
       courses.push(course)
       await fulfillJson(route, 200, {
@@ -373,6 +376,37 @@ export const installMockedAdminWorkspaceApiRouteFixture = async (
             accessCode: createTemporaryAccessCode(),
           },
           course: course.course,
+        },
+      })
+      return
+    }
+
+    if (key === 'POST /api/admin/courses/course-existing/learning-progress/reset') {
+      const body = request.postDataJSON() as {
+        operationToken: string
+        expectedLearningRunNo: number
+        expectedCurrentLessonNo: number
+      }
+      requestBodies.push({ key, body })
+      const entry = courses.find((candidate) => candidate.course.id === 'course-existing')
+
+      if (!entry) {
+        await fulfillJson(route, 404, {
+          ok: false,
+          error: { code: 'not_found', message: 'Course was not found' },
+        })
+        return
+      }
+
+      entry.course = { ...entry.course, currentLessonNo: 1 }
+      entry.learningRunNo = 2
+      await fulfillJson(route, 200, {
+        ok: true,
+        data: {
+          course: entry.course,
+          learningRunNo: entry.learningRunNo,
+          abandonedSessionCount: 1,
+          historyPreserved: true,
         },
       })
       return

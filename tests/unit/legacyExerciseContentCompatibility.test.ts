@@ -8,12 +8,15 @@ import {
 } from '../../shared/api/taskSchemas'
 import { createD1ContentRepository } from '../../server/repositories/d1ContentRepository'
 import { createD1CourseRepository } from '../../server/repositories/d1CourseRepository'
+import { createD1LessonReplayRepository } from '../../server/repositories/d1LessonReplayRepository'
 import { createD1SessionRepository } from '../../server/repositories/d1SessionRepository'
 import { createWorkerApp, type WorkerApp } from '../../server/app'
 import { createContentBuilder } from '../../server/services/ContentBuilder'
 import { createCourseQueryService } from '../../server/services/CourseQueryService'
 import { createCourseRuntime } from '../../server/services/CourseRuntime'
 import { createLearnerSessionService } from '../../server/services/LearnerSessionService'
+import { createLearningProgressService } from '../../server/services/LearningProgressService'
+import { createLessonReplayService } from '../../server/services/LessonReplayService'
 
 const NOW = '2026-07-13T00:00:00.000Z'
 const ORIGIN = 'https://eng-learn.test'
@@ -33,6 +36,7 @@ const currentMigrationPaths = [
   '../../migrations/0011_add_progressive_context_model.sql',
   '../../migrations/0012_add_exercise_review_feedback.sql',
   '../../migrations/0013_add_lesson_flow_policy_v2.sql',
+  '../../migrations/0014_add_lesson_replay_and_learning_runs.sql',
 ]
 
 type SqliteD1Statement = {
@@ -297,6 +301,15 @@ const createLegacyLearnerApp = (db: D1Database): WorkerApp => {
       flowWriteMode: 'legacy_v1',
     }),
     courseRepository,
+    lessonReplayService: createLessonReplayService({
+      courseRepository,
+      replayRepository: createD1LessonReplayRepository(db),
+      now,
+    }),
+    learningProgressService: createLearningProgressService({
+      courseRepository,
+      now,
+    }),
     learnerSessionService: createLearnerSessionService({
       courseRepository,
       sessionRepository: createD1SessionRepository(db),

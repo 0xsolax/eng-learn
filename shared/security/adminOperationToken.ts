@@ -8,6 +8,7 @@ export type RawAdminOperationToken = CredentialBrand<'raw-admin-operation-token'
 export type AdminOperationKind =
   | 'create_course'
   | 'create_source'
+  | 'reset_course_progress'
   | 'rotate_access_code'
 
 export const parseAdminOperationToken = (

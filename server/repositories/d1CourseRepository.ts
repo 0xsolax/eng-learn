@@ -16,7 +16,9 @@ import {
 } from '../security/credentialCrypto'
 import type {
   CourseRecord,
+  CourseLearningRunWordStateSnapshot,
   CourseCredentialMatch,
+  CourseProgressResetOperationRecord,
   CourseRepository,
   CreateCourseInput,
   CreateLessonInput,
@@ -26,8 +28,14 @@ import type {
   QueueCapacityReason,
   QueueDisposition,
   RecordAnswerInput,
+  ResetCourseProgressInput,
+  ResetCourseProgressOutcome,
   ReviewLogRecord,
   UserWordStateRecord,
+} from './courseRepository'
+import {
+  getCourseRunLessonNo,
+  getSessionRunLessonNo,
 } from './courseRepository'
 import { requireLearnerSafeExerciseItemContent } from '../errors/PersistedContentCompatibilityError'
 import { DomainError } from '../errors/DomainError'
@@ -39,6 +47,8 @@ type CourseRow = {
   learner_id: string
   source_version_id: string
   current_lesson_no: number
+  current_learning_run_no?: number
+  current_run_start_lesson_no?: number
   status: CourseRecord['status']
   created_at: string
 }
@@ -49,6 +59,8 @@ type CourseAccessIdentityRow = {
   course_id: string
   source_version_id: string
   current_lesson_no: number
+  current_learning_run_no?: number
+  current_run_start_lesson_no?: number
   status: CourseRecord['status']
   credential_version: number
 }
@@ -67,6 +79,8 @@ type LessonSessionRow = {
   id: string
   course_id: string
   lesson_no: number
+  learning_run_no?: number
+  run_lesson_no?: number
   status: LessonSessionRecord['status']
   task_count: number
   completed_task_count: number
@@ -78,7 +92,7 @@ type LessonSessionRow = {
   completed_at: string | null
 }
 
-type LessonTaskRow = {
+export type D1LessonTaskRow = {
   id: string
   session_id: string
   course_id: string
@@ -100,12 +114,13 @@ type LessonTaskRow = {
   linked_example_sentence?: string
 }
 
-const LESSON_TASKS_WITH_WORD_SELECT =
+export const D1_LESSON_TASKS_WITH_WORD_SELECT =
   'SELECT lesson_tasks.*, words.word AS linked_word, words.example_sentence AS linked_example_sentence FROM lesson_tasks INNER JOIN words ON words.id = lesson_tasks.word_id'
 
 type UserWordStateRow = {
   id: string
   course_id: string
+  learning_run_no?: number
   word_id: string
   group_id: string
   stage: WordStage
@@ -140,6 +155,38 @@ type ReviewLogRow = {
   queue_capacity_reason: QueueCapacityReason | null
   lesson_no: number
   created_at: string
+}
+
+type CourseProgressResetOperationRow = {
+  operation_hash: string
+  course_id: string
+  request_fingerprint: string
+  from_learning_run_no: number
+  expected_current_run_lesson_no: number
+  from_physical_lesson_no: number
+  to_learning_run_no: number
+  to_physical_lesson_no: number
+  abandoned_session_count: number
+  actor_source: CourseProgressResetOperationRecord['actorSource']
+  actor_subject: string
+  created_at: string
+}
+
+type CourseLearningRunWordStateSnapshotRow = Omit<
+  UserWordStateRow,
+  'id' | 'created_at' | 'updated_at'
+> & {
+  state_id: string
+  learning_run_no: number
+  state_created_at: string
+  state_updated_at: string
+  archived_at: string
+  reset_operation_hash: string
+}
+
+type CourseResetRuntimeStatsRow = {
+  max_lesson_no: number | null
+  abandoned_session_count: number
 }
 
 export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
@@ -252,7 +299,7 @@ export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
   async listAdminCourses() {
     const rows = await db
       .prepare(
-        'SELECT courses.id, courses.learner_id, courses.source_version_id, courses.current_lesson_no, courses.status, courses.created_at, learners.name AS learner_name, learners.credential_version FROM courses INNER JOIN learners ON learners.id = courses.learner_id ORDER BY courses.created_at DESC, courses.id ASC',
+        'SELECT courses.id, courses.learner_id, courses.source_version_id, courses.current_lesson_no, courses.current_learning_run_no, courses.current_run_start_lesson_no, courses.status, courses.created_at, learners.name AS learner_name, learners.credential_version FROM courses INNER JOIN learners ON learners.id = courses.learner_id ORDER BY courses.created_at DESC, courses.id ASC',
       )
       .all<AdminCourseRow>()
 
@@ -296,12 +343,49 @@ export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
   async getLatestCompletedLessonBefore(input) {
     const row = await db
       .prepare(
-        'SELECT * FROM lesson_sessions WHERE course_id = ? AND lesson_no < ? AND status = ? ORDER BY lesson_no DESC LIMIT 1',
+        'SELECT lesson_sessions.* FROM lesson_sessions INNER JOIN courses ON courses.id = lesson_sessions.course_id WHERE lesson_sessions.course_id = ? AND lesson_sessions.lesson_no < ? AND lesson_sessions.status = ? AND lesson_sessions.learning_run_no = courses.current_learning_run_no ORDER BY lesson_sessions.lesson_no DESC LIMIT 1',
       )
       .bind(input.courseId, input.beforeLessonNo, 'completed')
       .first<LessonSessionRow>()
 
     return row ? mapLessonSession(row) : undefined
+  },
+
+  async listCompletedLessonSessions(input) {
+    const after = input.after
+    const statement = after
+      ? db.prepare(
+          `SELECT * FROM lesson_sessions
+           WHERE course_id = ? AND status = 'completed' AND task_count > 0
+             AND (
+               learning_run_no > ?
+               OR (learning_run_no = ? AND run_lesson_no > ?)
+               OR (learning_run_no = ? AND run_lesson_no = ? AND lesson_no > ?)
+             )
+           ORDER BY learning_run_no ASC, run_lesson_no ASC, lesson_no ASC
+           LIMIT ?`,
+        )
+      : db.prepare(
+          `SELECT * FROM lesson_sessions
+           WHERE course_id = ? AND status = 'completed' AND task_count > 0
+           ORDER BY learning_run_no ASC, run_lesson_no ASC, lesson_no ASC
+           LIMIT ?`,
+        )
+    const bound = after
+      ? statement.bind(
+          input.courseId,
+          after.learningRunNo,
+          after.learningRunNo,
+          after.runLessonNo,
+          after.learningRunNo,
+          after.runLessonNo,
+          after.physicalLessonNo,
+          input.limit,
+        )
+      : statement.bind(input.courseId, input.limit)
+    const rows = await bound.all<LessonSessionRow>()
+
+    return rows.results.map(mapLessonSession)
   },
 
   async createLesson(input: CreateLessonInput) {
@@ -349,34 +433,34 @@ export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
   async getLessonTaskForResource(input) {
     const row = await db
       .prepare(
-        `${LESSON_TASKS_WITH_WORD_SELECT} WHERE lesson_tasks.id = ? AND lesson_tasks.session_id = ? AND lesson_tasks.course_id = ?`,
+        `${D1_LESSON_TASKS_WITH_WORD_SELECT} WHERE lesson_tasks.id = ? AND lesson_tasks.session_id = ? AND lesson_tasks.course_id = ?`,
       )
       .bind(input.taskId, input.sessionId, input.courseId)
-      .first<LessonTaskRow>()
+      .first<D1LessonTaskRow>()
 
-    return row ? mapLessonTask(row) : undefined
+    return row ? mapD1LessonTask(row) : undefined
   },
 
   async getLessonTask(sessionId: string, taskId: string) {
     const row = await db
       .prepare(
-        `${LESSON_TASKS_WITH_WORD_SELECT} WHERE lesson_tasks.session_id = ? AND lesson_tasks.id = ?`,
+        `${D1_LESSON_TASKS_WITH_WORD_SELECT} WHERE lesson_tasks.session_id = ? AND lesson_tasks.id = ?`,
       )
       .bind(sessionId, taskId)
-      .first<LessonTaskRow>()
+      .first<D1LessonTaskRow>()
 
-    return row ? mapLessonTask(row) : undefined
+    return row ? mapD1LessonTask(row) : undefined
   },
 
   async getLessonTasks(sessionId: string) {
     const rows = await db
       .prepare(
-        `${LESSON_TASKS_WITH_WORD_SELECT} WHERE lesson_tasks.session_id = ? ORDER BY lesson_tasks.order_index ASC`,
+        `${D1_LESSON_TASKS_WITH_WORD_SELECT} WHERE lesson_tasks.session_id = ? ORDER BY lesson_tasks.order_index ASC`,
       )
       .bind(sessionId)
-      .all<LessonTaskRow>()
+      .all<D1LessonTaskRow>()
 
-    return rows.results.map(mapLessonTask)
+    return rows.results.map(mapD1LessonTask)
   },
 
   async getLessonSession(sessionId: string) {
@@ -473,7 +557,9 @@ export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
 
   async getWordStates(courseId: string) {
     const rows = await db
-      .prepare('SELECT * FROM user_word_states WHERE course_id = ? ORDER BY first_lesson_no ASC')
+      .prepare(
+        'SELECT user_word_states.* FROM user_word_states INNER JOIN courses ON courses.id = user_word_states.course_id WHERE user_word_states.course_id = ? AND user_word_states.learning_run_no = courses.current_learning_run_no ORDER BY user_word_states.first_lesson_no ASC',
+      )
       .bind(courseId)
       .all<UserWordStateRow>()
 
@@ -482,7 +568,9 @@ export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
 
   async getWordState(courseId: string, wordId: string) {
     const row = await db
-      .prepare('SELECT * FROM user_word_states WHERE course_id = ? AND word_id = ?')
+      .prepare(
+        'SELECT user_word_states.* FROM user_word_states INNER JOIN courses ON courses.id = user_word_states.course_id WHERE user_word_states.course_id = ? AND user_word_states.word_id = ? AND user_word_states.learning_run_no = courses.current_learning_run_no',
+      )
       .bind(courseId, wordId)
       .first<UserWordStateRow>()
 
@@ -655,7 +743,232 @@ export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
       session: toLessonSessionView(completedSession),
     }
   },
+
+  async getCourseProgressResetOperation(operationHash) {
+    const row = await db
+      .prepare(
+        'SELECT * FROM course_progress_reset_operations WHERE operation_hash = ?',
+      )
+      .bind(operationHash)
+      .first<CourseProgressResetOperationRow>()
+
+    return row ? mapCourseProgressResetOperation(row) : undefined
+  },
+
+  async resetCourseProgress(input: ResetCourseProgressInput): Promise<ResetCourseProgressOutcome> {
+    const existing = await this.getCourseProgressResetOperation(input.operationHash)
+
+    if (existing) {
+      requireMatchingProgressReset(existing, input)
+      const course = await this.getCourse(input.courseId)
+      if (!course) throw new Error('Reset course is missing')
+      return { course, operation: existing }
+    }
+
+    const course = await this.getCourse(input.courseId)
+    if (!course) throw new DomainError('not_found', 'Course is missing')
+    if (course.status !== 'active') {
+      throw new DomainError('course_unavailable', 'Course is not active')
+    }
+    if (
+      (course.currentLearningRunNo ?? 1) !== input.expectedLearningRunNo ||
+      getCourseRunLessonNo(course) !== input.expectedCurrentRunLessonNo
+    ) {
+      throw new DomainError('progress_conflict', 'Course learning progress has changed')
+    }
+
+    const runtimeStats = await db
+      .prepare(
+        "SELECT MAX(lesson_no) AS max_lesson_no, COALESCE(SUM(CASE WHEN learning_run_no = ? AND status = 'started' THEN 1 ELSE 0 END), 0) AS abandoned_session_count FROM lesson_sessions WHERE course_id = ?",
+      )
+      .bind(input.expectedLearningRunNo, input.courseId)
+      .first<CourseResetRuntimeStatsRow>()
+    const toPhysicalLessonNo =
+      Math.max(course.currentLessonNo, runtimeStats?.max_lesson_no ?? 0) + 1
+    const operation: CourseProgressResetOperationRecord = {
+      operationHash: input.operationHash,
+      courseId: course.id,
+      requestFingerprint: input.requestFingerprint,
+      fromLearningRunNo: input.expectedLearningRunNo,
+      expectedCurrentRunLessonNo: input.expectedCurrentRunLessonNo,
+      fromPhysicalLessonNo: course.currentLessonNo,
+      toLearningRunNo: input.expectedLearningRunNo + 1,
+      toPhysicalLessonNo,
+      abandonedSessionCount: runtimeStats?.abandoned_session_count ?? 0,
+      actorSource: input.actor.source,
+      actorSubject: input.actor.subject,
+      createdAt: input.createdAt,
+    }
+
+    try {
+      await db.batch([
+        insertCourseProgressResetOperation(db, operation),
+        archiveCurrentLearningRunWordStates(db, operation),
+        completeCurrentLearningRun(db, operation),
+        abandonCurrentLearningRunSessions(db, operation),
+        insertNextLearningRun(db, operation),
+        advanceCourseToNextLearningRun(db, operation),
+      ])
+    } catch (error) {
+      const committed = await this.getCourseProgressResetOperation(input.operationHash)
+
+      if (committed) {
+        requireMatchingProgressReset(committed, input)
+        const committedCourse = await this.getCourse(input.courseId)
+        if (!committedCourse) throw new Error('Reset course is missing')
+        return { course: committedCourse, operation: committed }
+      }
+
+      if (isProgressResetOperationHashConflict(error)) {
+        throw new DomainError(
+          'idempotency_conflict',
+          'Admin operation token was already used for a different request',
+        )
+      }
+
+      const latest = await this.getCourse(input.courseId)
+      if (
+        latest &&
+        ((latest.currentLearningRunNo ?? 1) !== input.expectedLearningRunNo ||
+          getCourseRunLessonNo(latest) !== input.expectedCurrentRunLessonNo)
+      ) {
+        throw new DomainError('progress_conflict', 'Course learning progress has changed')
+      }
+      throw error
+    }
+
+    const resetCourse = await this.getCourse(input.courseId)
+    const committed = await this.getCourseProgressResetOperation(input.operationHash)
+    if (!resetCourse || !committed) {
+      throw new Error('Committed course progress reset is unavailable')
+    }
+
+    return { course: resetCourse, operation: committed }
+  },
+
+  async getLearningRunWordStateSnapshots(input) {
+    const rows = await db
+      .prepare(
+        'SELECT * FROM course_learning_run_word_state_snapshots WHERE course_id = ? AND learning_run_no = ? ORDER BY first_lesson_no ASC, word_id ASC',
+      )
+      .bind(input.courseId, input.learningRunNo)
+      .all<CourseLearningRunWordStateSnapshotRow>()
+
+    return rows.results.map(mapCourseLearningRunWordStateSnapshot)
+  },
 })
+
+const insertCourseProgressResetOperation = (
+  db: D1Database,
+  operation: CourseProgressResetOperationRecord,
+): D1PreparedStatement =>
+  db
+    .prepare(
+      'INSERT INTO course_progress_reset_operations (operation_hash, course_id, request_fingerprint, from_learning_run_no, expected_current_run_lesson_no, from_physical_lesson_no, to_learning_run_no, to_physical_lesson_no, abandoned_session_count, actor_source, actor_subject, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    )
+    .bind(
+      operation.operationHash,
+      operation.courseId,
+      operation.requestFingerprint,
+      operation.fromLearningRunNo,
+      operation.expectedCurrentRunLessonNo,
+      operation.fromPhysicalLessonNo,
+      operation.toLearningRunNo,
+      operation.toPhysicalLessonNo,
+      operation.abandonedSessionCount,
+      operation.actorSource,
+      operation.actorSubject,
+      operation.createdAt,
+    )
+
+const archiveCurrentLearningRunWordStates = (
+  db: D1Database,
+  operation: CourseProgressResetOperationRecord,
+): D1PreparedStatement =>
+  db
+    .prepare(
+      'INSERT INTO course_learning_run_word_state_snapshots (course_id, learning_run_no, word_id, state_id, group_id, stage, stage_attempt_count, stage_correct_count, total_attempt_count, total_correct_count, total_wrong_count, current_streak, wrong_streak, lapse_count, ease_factor, mastery_score, first_lesson_no, last_seen_lesson_no, next_due_lesson_no, status, state_created_at, state_updated_at, archived_at, reset_operation_hash) SELECT course_id, learning_run_no, word_id, id, group_id, stage, stage_attempt_count, stage_correct_count, total_attempt_count, total_correct_count, total_wrong_count, current_streak, wrong_streak, lapse_count, ease_factor, mastery_score, first_lesson_no, last_seen_lesson_no, next_due_lesson_no, status, created_at, updated_at, ?, ? FROM user_word_states WHERE course_id = ? AND learning_run_no = ?',
+    )
+    .bind(
+      operation.createdAt,
+      operation.operationHash,
+      operation.courseId,
+      operation.fromLearningRunNo,
+    )
+
+const completeCurrentLearningRun = (
+  db: D1Database,
+  operation: CourseProgressResetOperationRecord,
+): D1PreparedStatement =>
+  db
+    .prepare(
+      "UPDATE course_learning_runs SET status = 'completed', ended_at = ?, ended_by_reset_operation_hash = ? WHERE course_id = ? AND run_no = ? AND status = 'active'",
+    )
+    .bind(
+      operation.createdAt,
+      operation.operationHash,
+      operation.courseId,
+      operation.fromLearningRunNo,
+    )
+
+const abandonCurrentLearningRunSessions = (
+  db: D1Database,
+  operation: CourseProgressResetOperationRecord,
+): D1PreparedStatement =>
+  db
+    .prepare(
+      "UPDATE lesson_sessions SET status = 'abandoned' WHERE course_id = ? AND learning_run_no = ? AND status = 'started'",
+    )
+    .bind(operation.courseId, operation.fromLearningRunNo)
+
+const insertNextLearningRun = (
+  db: D1Database,
+  operation: CourseProgressResetOperationRecord,
+): D1PreparedStatement =>
+  db
+    .prepare(
+      "INSERT INTO course_learning_runs (course_id, run_no, start_lesson_no, status, started_at, started_by_reset_operation_hash) VALUES (?, ?, ?, 'active', ?, ?)",
+    )
+    .bind(
+      operation.courseId,
+      operation.toLearningRunNo,
+      operation.toPhysicalLessonNo,
+      operation.createdAt,
+      operation.operationHash,
+    )
+
+const advanceCourseToNextLearningRun = (
+  db: D1Database,
+  operation: CourseProgressResetOperationRecord,
+): D1PreparedStatement =>
+  db
+    .prepare(
+      "UPDATE courses SET current_lesson_no = ?, current_learning_run_no = ?, current_run_start_lesson_no = ? WHERE id = ? AND status = 'active' AND current_lesson_no = ? AND current_learning_run_no = ? AND current_lesson_no - current_run_start_lesson_no + 1 = ?",
+    )
+    .bind(
+      operation.toPhysicalLessonNo,
+      operation.toLearningRunNo,
+      operation.toPhysicalLessonNo,
+      operation.courseId,
+      operation.fromPhysicalLessonNo,
+      operation.fromLearningRunNo,
+      operation.expectedCurrentRunLessonNo,
+    )
+
+const requireMatchingProgressReset = (
+  operation: CourseProgressResetOperationRecord,
+  input: ResetCourseProgressInput,
+): void => {
+  if (
+    operation.courseId !== input.courseId ||
+    operation.requestFingerprint !== input.requestFingerprint
+  ) {
+    throw new DomainError(
+      'idempotency_conflict',
+      'Admin operation token was already used for a different request',
+    )
+  }
+}
 
 const readLessonQueueSnapshot = async (
   db: D1Database,
@@ -667,7 +980,7 @@ const readLessonQueueSnapshot = async (
       .bind(input.sessionId, input.courseId),
     db
       .prepare(
-        `${LESSON_TASKS_WITH_WORD_SELECT} WHERE lesson_tasks.session_id = ? AND lesson_tasks.course_id = ? ORDER BY lesson_tasks.order_index ASC`,
+        `${D1_LESSON_TASKS_WITH_WORD_SELECT} WHERE lesson_tasks.session_id = ? AND lesson_tasks.course_id = ? ORDER BY lesson_tasks.order_index ASC`,
       )
       .bind(input.sessionId, input.courseId),
     db
@@ -684,7 +997,7 @@ const readLessonQueueSnapshot = async (
 
   return {
     session: mapLessonSession(sessionRow),
-    tasks: (taskResult?.results ?? []).map((row) => mapLessonTask(row as LessonTaskRow)),
+    tasks: (taskResult?.results ?? []).map((row) => mapD1LessonTask(row as D1LessonTaskRow)),
     reviewLogs: (reviewResult?.results ?? []).map((row) =>
       mapReviewLog(row as ReviewLogRow),
     ),
@@ -710,7 +1023,7 @@ const findCourseCredentialByAccessCode = async (
   const normalizedAccessCode = normalizeAccessCode(rawAccessCode)
   const accessCodeHash = await hashAccessCode(rawAccessCode)
   const query =
-    'SELECT learners.id AS learner_id, learners.name AS learner_name, learners.credential_version, courses.id AS course_id, courses.source_version_id, courses.current_lesson_no, courses.status FROM learners INNER JOIN courses ON courses.learner_id = learners.id WHERE learners.access_code = ? ORDER BY courses.created_at ASC LIMIT 1'
+    'SELECT learners.id AS learner_id, learners.name AS learner_name, learners.credential_version, courses.id AS course_id, courses.source_version_id, courses.current_lesson_no, courses.current_learning_run_no, courses.current_run_start_lesson_no, courses.status FROM learners INNER JOIN courses ON courses.learner_id = learners.id WHERE learners.access_code = ? ORDER BY courses.created_at ASC LIMIT 1'
   let row = await db.prepare(query).bind(accessCodeHash).first<CourseAccessIdentityRow>()
 
   if (!row) {
@@ -742,7 +1055,8 @@ const findCourseCredentialByAccessCode = async (
         id: row.course_id,
         learnerId: row.learner_id,
         sourceVersionId: row.source_version_id,
-        currentLessonNo: row.current_lesson_no,
+        currentLessonNo:
+          row.current_lesson_no - (row.current_run_start_lesson_no ?? 1) + 1,
         status: row.status,
       },
     },
@@ -756,14 +1070,14 @@ const toStartedLesson = async (
 ): Promise<StartedLesson> => {
   const rows = await db
     .prepare(
-      `${LESSON_TASKS_WITH_WORD_SELECT} WHERE lesson_tasks.session_id = ? ORDER BY lesson_tasks.order_index ASC`,
+      `${D1_LESSON_TASKS_WITH_WORD_SELECT} WHERE lesson_tasks.session_id = ? ORDER BY lesson_tasks.order_index ASC`,
     )
     .bind(session.id)
-    .all<LessonTaskRow>()
+    .all<D1LessonTaskRow>()
 
   return {
     session: toLessonSessionView(session),
-    tasks: rows.results.map(mapLessonTask).map(toLessonTaskView),
+    tasks: rows.results.map(mapD1LessonTask).map(toLessonTaskView),
   }
 }
 
@@ -803,12 +1117,14 @@ const toRecordedAnswerOutcome = (
 const insertLessonSession = (db: D1Database, session: LessonSessionRecord): D1PreparedStatement =>
   db
     .prepare(
-      "INSERT INTO lesson_sessions (id, course_id, lesson_no, status, task_count, completed_task_count, correct_count, wrong_count, queue_policy_version, flow_policy_version, started_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM courses WHERE id = ? AND status = 'active')",
+      "INSERT INTO lesson_sessions (id, course_id, lesson_no, learning_run_no, run_lesson_no, status, task_count, completed_task_count, correct_count, wrong_count, queue_policy_version, flow_policy_version, started_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM courses WHERE id = ? AND status = 'active')",
     )
     .bind(
       session.id,
       session.courseId,
       session.lessonNo,
+      session.learningRunNo ?? 1,
+      session.runLessonNo ?? session.lessonNo,
       session.status,
       session.taskCount,
       session.completedTaskCount,
@@ -962,6 +1278,7 @@ const createBulkWordStateStatements = (
     states.map((state) => ({
       id: state.id,
       courseId: state.courseId,
+      learningRunNo: state.learningRunNo ?? 1,
       wordId: state.wordId,
       groupId: state.groupId,
       stage: state.stage,
@@ -992,7 +1309,7 @@ const createBulkWordStateStatements = (
 
     return db
       .prepare(
-        `WITH rows AS (${rowsSql}) INSERT INTO user_word_states (id, course_id, word_id, group_id, stage, total_attempt_count, total_correct_count, total_wrong_count, current_streak, wrong_streak, lapse_count, ease_factor, mastery_score, first_lesson_no, last_seen_lesson_no, next_due_lesson_no, status, created_at, updated_at) SELECT json_extract(row_json, '$.id'), json_extract(row_json, '$.courseId'), json_extract(row_json, '$.wordId'), json_extract(row_json, '$.groupId'), json_extract(row_json, '$.stage'), json_extract(row_json, '$.totalAttemptCount'), json_extract(row_json, '$.totalCorrectCount'), json_extract(row_json, '$.totalWrongCount'), json_extract(row_json, '$.currentStreak'), json_extract(row_json, '$.wrongStreak'), json_extract(row_json, '$.lapseCount'), json_extract(row_json, '$.easeFactor'), json_extract(row_json, '$.masteryScore'), json_extract(row_json, '$.firstLessonNo'), json_extract(row_json, '$.lastSeenLessonNo'), json_extract(row_json, '$.nextDueLessonNo'), json_extract(row_json, '$.status'), json_extract(row_json, '$.createdAt'), json_extract(row_json, '$.updatedAt') FROM rows${lessonSessionId === undefined ? '' : " WHERE EXISTS (SELECT 1 FROM lesson_sessions INNER JOIN courses ON courses.id = lesson_sessions.course_id WHERE lesson_sessions.id = ? AND lesson_sessions.status = 'started' AND courses.status = 'active' AND lesson_sessions.course_id = json_extract(row_json, '$.courseId'))"} ORDER BY group_index ASC, row_index ASC`,
+        `WITH rows AS (${rowsSql}) INSERT INTO user_word_states (id, course_id, learning_run_no, word_id, group_id, stage, total_attempt_count, total_correct_count, total_wrong_count, current_streak, wrong_streak, lapse_count, ease_factor, mastery_score, first_lesson_no, last_seen_lesson_no, next_due_lesson_no, status, created_at, updated_at) SELECT json_extract(row_json, '$.id'), json_extract(row_json, '$.courseId'), json_extract(row_json, '$.learningRunNo'), json_extract(row_json, '$.wordId'), json_extract(row_json, '$.groupId'), json_extract(row_json, '$.stage'), json_extract(row_json, '$.totalAttemptCount'), json_extract(row_json, '$.totalCorrectCount'), json_extract(row_json, '$.totalWrongCount'), json_extract(row_json, '$.currentStreak'), json_extract(row_json, '$.wrongStreak'), json_extract(row_json, '$.lapseCount'), json_extract(row_json, '$.easeFactor'), json_extract(row_json, '$.masteryScore'), json_extract(row_json, '$.firstLessonNo'), json_extract(row_json, '$.lastSeenLessonNo'), json_extract(row_json, '$.nextDueLessonNo'), json_extract(row_json, '$.status'), json_extract(row_json, '$.createdAt'), json_extract(row_json, '$.updatedAt') FROM rows${lessonSessionId === undefined ? ' WHERE 1 = 1' : " WHERE EXISTS (SELECT 1 FROM lesson_sessions INNER JOIN courses ON courses.id = lesson_sessions.course_id WHERE lesson_sessions.id = ? AND lesson_sessions.status = 'started' AND courses.status = 'active' AND lesson_sessions.learning_run_no = courses.current_learning_run_no AND lesson_sessions.course_id = json_extract(row_json, '$.courseId') AND lesson_sessions.learning_run_no = json_extract(row_json, '$.learningRunNo'))"} ON CONFLICT(course_id, word_id) DO UPDATE SET id = excluded.id, learning_run_no = excluded.learning_run_no, group_id = excluded.group_id, stage = excluded.stage, stage_attempt_count = 0, stage_correct_count = 0, total_attempt_count = excluded.total_attempt_count, total_correct_count = excluded.total_correct_count, total_wrong_count = excluded.total_wrong_count, current_streak = excluded.current_streak, wrong_streak = excluded.wrong_streak, lapse_count = excluded.lapse_count, ease_factor = excluded.ease_factor, mastery_score = excluded.mastery_score, first_lesson_no = excluded.first_lesson_no, last_seen_lesson_no = excluded.last_seen_lesson_no, next_due_lesson_no = excluded.next_due_lesson_no, status = excluded.status, created_at = excluded.created_at, updated_at = excluded.updated_at`,
       )
       .bind(...groups, ...(lessonSessionId === undefined ? [] : [lessonSessionId]))
   })
@@ -1005,9 +1322,10 @@ const updateWordState = (
 ): D1PreparedStatement =>
   db
     .prepare(
-      `UPDATE user_word_states SET stage = ?, total_attempt_count = ?, total_correct_count = ?, total_wrong_count = ?, current_streak = ?, wrong_streak = ?, lapse_count = ?, ease_factor = ?, mastery_score = ?, last_seen_lesson_no = ?, next_due_lesson_no = ?, status = ?, updated_at = ? WHERE course_id = ? AND word_id = ?${reviewLogId === undefined ? '' : ' AND EXISTS (SELECT 1 FROM review_logs WHERE id = ?)'}`,
+      `UPDATE user_word_states SET learning_run_no = ?, stage = ?, total_attempt_count = ?, total_correct_count = ?, total_wrong_count = ?, current_streak = ?, wrong_streak = ?, lapse_count = ?, ease_factor = ?, mastery_score = ?, last_seen_lesson_no = ?, next_due_lesson_no = ?, status = ?, updated_at = ? WHERE course_id = ? AND word_id = ?${reviewLogId === undefined ? '' : ' AND EXISTS (SELECT 1 FROM review_logs WHERE id = ?)'}`,
     )
     .bind(
+      state.learningRunNo ?? 1,
       state.stage,
       state.totalAttemptCount,
       state.totalCorrectCount,
@@ -1242,11 +1560,19 @@ const chunkArray = <T>(values: T[], chunkSize: number): T[][] => {
 
 const utf8ByteLength = (value: string): number => utf8Encoder.encode(value).byteLength
 
+const isProgressResetOperationHashConflict = (error: unknown): boolean =>
+  error instanceof Error &&
+  /course_progress_reset_hash_reused|admin_operation_hash_reused_by_progress_reset/u.test(
+    error.message,
+  )
+
 const mapCourse = (row: CourseRow): CourseRecord => ({
   id: row.id,
   learnerId: row.learner_id,
   sourceVersionId: row.source_version_id,
   currentLessonNo: row.current_lesson_no,
+  currentLearningRunNo: row.current_learning_run_no ?? 1,
+  currentRunStartLessonNo: row.current_run_start_lesson_no ?? 1,
   status: row.status,
   createdAt: row.created_at,
 })
@@ -1255,6 +1581,8 @@ const mapLessonSession = (row: LessonSessionRow): LessonSessionRecord => ({
   id: row.id,
   courseId: row.course_id,
   lessonNo: row.lesson_no,
+  learningRunNo: row.learning_run_no ?? 1,
+  runLessonNo: row.run_lesson_no ?? row.lesson_no,
   status: row.status,
   taskCount: row.task_count,
   completedTaskCount: row.completed_task_count,
@@ -1266,7 +1594,7 @@ const mapLessonSession = (row: LessonSessionRow): LessonSessionRecord => ({
   ...(row.completed_at ? { completedAt: row.completed_at } : {}),
 })
 
-const mapLessonTask = (row: LessonTaskRow): LessonTaskRecord => {
+export const mapD1LessonTask = (row: D1LessonTaskRow): LessonTaskRecord => {
   const content = parsePersistedExerciseItemContent(
     {
       stage: row.stage,
@@ -1313,6 +1641,7 @@ const mapLessonTask = (row: LessonTaskRow): LessonTaskRecord => {
 const mapWordState = (row: UserWordStateRow): UserWordStateRecord => ({
   id: row.id,
   courseId: row.course_id,
+  learningRunNo: row.learning_run_no ?? 1,
   wordId: row.word_id,
   groupId: row.group_id,
   stage: row.stage,
@@ -1330,6 +1659,55 @@ const mapWordState = (row: UserWordStateRow): UserWordStateRecord => ({
   status: row.status,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
+})
+
+const mapCourseProgressResetOperation = (
+  row: CourseProgressResetOperationRow,
+): CourseProgressResetOperationRecord => ({
+  operationHash:
+    row.operation_hash as CourseProgressResetOperationRecord['operationHash'],
+  courseId: row.course_id,
+  requestFingerprint:
+    row.request_fingerprint as CourseProgressResetOperationRecord['requestFingerprint'],
+  fromLearningRunNo: row.from_learning_run_no,
+  expectedCurrentRunLessonNo: row.expected_current_run_lesson_no,
+  fromPhysicalLessonNo: row.from_physical_lesson_no,
+  toLearningRunNo: row.to_learning_run_no,
+  toPhysicalLessonNo: row.to_physical_lesson_no,
+  abandonedSessionCount: row.abandoned_session_count,
+  actorSource: row.actor_source,
+  actorSubject: row.actor_subject,
+  createdAt: row.created_at,
+})
+
+const mapCourseLearningRunWordStateSnapshot = (
+  row: CourseLearningRunWordStateSnapshotRow,
+): CourseLearningRunWordStateSnapshot => ({
+  id: row.state_id,
+  courseId: row.course_id,
+  learningRunNo: row.learning_run_no,
+  wordId: row.word_id,
+  groupId: row.group_id,
+  stage: row.stage,
+  totalAttemptCount: row.total_attempt_count,
+  totalCorrectCount: row.total_correct_count,
+  totalWrongCount: row.total_wrong_count,
+  currentStreak: row.current_streak,
+  wrongStreak: row.wrong_streak,
+  lapseCount: row.lapse_count,
+  easeFactor: row.ease_factor,
+  masteryScore: row.mastery_score,
+  firstLessonNo: row.first_lesson_no,
+  ...(row.last_seen_lesson_no === null
+    ? {}
+    : { lastSeenLessonNo: row.last_seen_lesson_no }),
+  nextDueLessonNo: row.next_due_lesson_no,
+  status: row.status,
+  createdAt: row.state_created_at,
+  updatedAt: row.state_updated_at,
+  archivedAt: row.archived_at,
+  resetOperationHash:
+    row.reset_operation_hash as CourseLearningRunWordStateSnapshot['resetOperationHash'],
 })
 
 const mapReviewLog = (row: ReviewLogRow): ReviewLogRecord => ({
@@ -1357,14 +1735,14 @@ const toCourseView = (course: CourseRecord) => ({
   id: course.id,
   learnerId: course.learnerId,
   sourceVersionId: course.sourceVersionId,
-  currentLessonNo: course.currentLessonNo,
+  currentLessonNo: getCourseRunLessonNo(course),
   status: course.status,
 })
 
 const toLessonSessionView = (session: LessonSessionRecord) => ({
   id: session.id,
   courseId: session.courseId,
-  lessonNo: session.lessonNo,
+  lessonNo: getSessionRunLessonNo(session),
   status: session.status,
   taskCount: session.taskCount,
   completedTaskCount: session.completedTaskCount,

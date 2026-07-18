@@ -24,6 +24,7 @@ describe('course query service', () => {
           learner: { id: created.learner.id, name: 'Alice' },
           course: created.course,
           credentialVersion: 1,
+          learningRunNo: 1,
         },
       ],
     })

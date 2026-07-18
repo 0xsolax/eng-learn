@@ -30,10 +30,18 @@ export type RotateAccessCodeAdminOperation = AdminOperationBase & {
   revokedSessionCount: number
 }
 
+export type ResetCourseProgressAdminOperation = AdminOperationBase & {
+  kind: 'reset_course_progress'
+  outcomeLearningRunNo: number
+  outcomePhysicalLessonNo: number
+  abandonedSessionCount: number
+}
+
 export type AdminOperationRecord =
   | SourceVersionImportAdminOperation
   | CreateCourseAdminOperation
   | RotateAccessCodeAdminOperation
+  | ResetCourseProgressAdminOperation
 
 export type AdminOperationLedgerReader = {
   get(operationHash: AdminOperationHash): Promise<AdminOperationRecord | undefined>
@@ -44,9 +52,14 @@ export type InMemoryAdminOperationLedger = AdminOperationLedgerReader & {
   insert(operation: AdminOperationRecord): void
 }
 
+type PersistedAdminOperationRecord = Exclude<
+  AdminOperationRecord,
+  ResetCourseProgressAdminOperation
+>
+
 type AdminOperationRow = {
   operation_hash: string
-  kind: AdminOperationRecord['kind']
+  kind: PersistedAdminOperationRecord['kind']
   target_id: string
   request_fingerprint: string
   outcome_source_id: string | null
@@ -55,6 +68,16 @@ type AdminOperationRow = {
   outcome_course_id: string | null
   outcome_credential_version: number | null
   revoked_session_count: number | null
+  created_at: string
+}
+
+type ProgressResetOperationRow = {
+  operation_hash: string
+  course_id: string
+  request_fingerprint: string
+  to_learning_run_no: number
+  to_physical_lesson_no: number
+  abandoned_session_count: number
   created_at: string
 }
 
@@ -94,25 +117,50 @@ export const createInMemoryAdminOperationLedger = (): InMemoryAdminOperationLedg
 
 export const createD1AdminOperationLedger = (
   db: D1Database,
+  options: { includeProgressResets?: boolean } = {},
 ): AdminOperationLedgerReader => ({
-  get: (operationHash) => getD1AdminOperation(db, operationHash),
+  get: (operationHash) =>
+    getD1AdminOperation(db, operationHash, options.includeProgressResets === true),
 })
 
 export const getD1AdminOperation = async (
   db: D1Database,
   operationHash: AdminOperationHash,
+  includeProgressResets = false,
 ): Promise<AdminOperationRecord | undefined> => {
   const row = await db
     .prepare('SELECT * FROM admin_operations WHERE operation_hash = ?')
     .bind(operationHash)
     .first<AdminOperationRow>()
 
-  return row ? mapAdminOperation(row) : undefined
+  if (row) return mapAdminOperation(row)
+  if (!includeProgressResets) return undefined
+
+  const progressReset = await db
+    .prepare(
+      'SELECT operation_hash, course_id, request_fingerprint, to_learning_run_no, to_physical_lesson_no, abandoned_session_count, created_at FROM course_progress_reset_operations WHERE operation_hash = ?',
+    )
+    .bind(operationHash)
+    .first<ProgressResetOperationRow>()
+
+  return progressReset
+    ? {
+        operationHash: progressReset.operation_hash as AdminOperationHash,
+        kind: 'reset_course_progress',
+        targetId: progressReset.course_id,
+        requestFingerprint:
+          progressReset.request_fingerprint as AdminRequestFingerprint,
+        outcomeLearningRunNo: progressReset.to_learning_run_no,
+        outcomePhysicalLessonNo: progressReset.to_physical_lesson_no,
+        abandonedSessionCount: progressReset.abandoned_session_count,
+        createdAt: progressReset.created_at,
+      }
+    : undefined
 }
 
 export const createD1AdminOperationInsert = (
   db: D1Database,
-  operation: AdminOperationRecord,
+  operation: PersistedAdminOperationRecord,
 ): D1PreparedStatement => {
   const values = toOutcomeColumns(operation)
 
@@ -135,7 +183,7 @@ export const createD1AdminOperationInsert = (
     )
 }
 
-const mapAdminOperation = (row: AdminOperationRow): AdminOperationRecord => {
+const mapAdminOperation = (row: AdminOperationRow): PersistedAdminOperationRecord => {
   const base: AdminOperationBase = {
     operationHash: row.operation_hash as AdminOperationHash,
     targetId: row.target_id,
@@ -190,7 +238,7 @@ const mapAdminOperation = (row: AdminOperationRow): AdminOperationRecord => {
   }
 }
 
-const toOutcomeColumns = (operation: AdminOperationRecord) => {
+const toOutcomeColumns = (operation: PersistedAdminOperationRecord) => {
   switch (operation.kind) {
     case 'create_source':
       return {

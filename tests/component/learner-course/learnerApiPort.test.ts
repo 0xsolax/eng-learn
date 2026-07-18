@@ -17,6 +17,12 @@ const createFallback = (): LearnerApiPort => ({
   submitAnswer: vi.fn(),
   completeLesson: vi.fn(),
   getLessonReport: vi.fn(),
+  listCompletedLessons: vi.fn(),
+  startLessonReplay: vi.fn(),
+  getLessonReplay: vi.fn(),
+  previewReplaySentenceOutput: vi.fn(),
+  submitReplayAnswer: vi.fn(),
+  completeLessonReplay: vi.fn(),
 })
 
 describe('learner API port', () => {

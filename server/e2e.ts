@@ -1,6 +1,7 @@
 import { createWorkerApp, type WorkerApp } from './app'
 import { createD1ContentRepository } from './repositories/d1ContentRepository'
 import { createD1CourseRepository } from './repositories/d1CourseRepository'
+import { createD1LessonReplayRepository } from './repositories/d1LessonReplayRepository'
 import { createD1SessionRepository } from './repositories/d1SessionRepository'
 import { createD1AdminSessionRepository } from './repositories/d1AdminSessionRepository'
 import { createContentBuilder } from './services/ContentBuilder'
@@ -8,6 +9,8 @@ import { createCourseRuntime } from './services/CourseRuntime'
 import { createCourseQueryService } from './services/CourseQueryService'
 import { createLearnerSessionService } from './services/LearnerSessionService'
 import { createAdminSessionService } from './services/AdminSessionService'
+import { createLearningProgressService } from './services/LearningProgressService'
+import { createLessonReplayService } from './services/LessonReplayService'
 import { parseAdminAuthConfig } from './security/adminCredential'
 import { createD1AdminOperationLedger } from './repositories/adminOperationLedger'
 
@@ -191,9 +194,12 @@ const readOrderedRows = async (db: D1Database, table: string) => {
 
 const createE2EApplication = (env: E2EEnv): WorkerApp => {
   const now = () => new Date()
-  const operationLedger = createD1AdminOperationLedger(env.DB)
+  const operationLedger = createD1AdminOperationLedger(env.DB, {
+    includeProgressResets: true,
+  })
   const contentRepository = createD1ContentRepository(env.DB)
   const courseRepository = createD1CourseRepository(env.DB)
+  const replayRepository = createD1LessonReplayRepository(env.DB)
   const sessionRepository = createD1SessionRepository(env.DB)
   const adminSessionRepository = createD1AdminSessionRepository(env.DB)
   const adminSessionService = createAdminSessionService({
@@ -223,6 +229,16 @@ const createE2EApplication = (env: E2EEnv): WorkerApp => {
       flowWriteMode: 'rolling_v2',
     }),
     courseRepository,
+    lessonReplayService: createLessonReplayService({
+      courseRepository,
+      replayRepository,
+      now,
+    }),
+    learningProgressService: createLearningProgressService({
+      courseRepository,
+      operationLedger,
+      now,
+    }),
     learnerSessionService: createLearnerSessionService({
       courseRepository,
       sessionRepository,

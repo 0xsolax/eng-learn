@@ -136,7 +136,7 @@ describe('remote D1 migration release gate', () => {
     }).toThrow(/LESSON_FLOW_WRITE_MODE.*rolling_v2/u)
   })
 
-  it('requires migration 0013 before any release profile can pass', () => {
+  it('requires the lesson-flow and learning-run migrations before release', () => {
     expect(() => {
       assertLessonFlowMigrationPresent(['0011_previous.sql', '0012_previous.sql'])
     }).toThrow(/0013_add_lesson_flow_policy_v2\.sql/u)
@@ -146,6 +146,15 @@ describe('remote D1 migration release gate', () => {
         '0011_previous.sql',
         '0012_previous.sql',
         '0013_add_lesson_flow_policy_v2.sql',
+      ])
+    }).toThrow(/0014_add_lesson_replay_and_learning_runs\.sql/u)
+
+    expect(() => {
+      assertLessonFlowMigrationPresent([
+        '0011_previous.sql',
+        '0012_previous.sql',
+        '0013_add_lesson_flow_policy_v2.sql',
+        '0014_add_lesson_replay_and_learning_runs.sql',
       ])
     }).not.toThrow()
   })

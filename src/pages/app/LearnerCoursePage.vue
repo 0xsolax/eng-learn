@@ -11,6 +11,10 @@ const openLesson = (sessionId: string): void => {
   void router.push({ name: 'learner-lesson', params: { sessionId } })
 }
 
+const openReplay = (replaySessionId: string): void => {
+  void router.push({ name: 'learner-lesson-replay', params: { replaySessionId } })
+}
+
 const returnToCode = (): void => {
   void router.replace({ name: 'learner-home' })
 }
@@ -21,6 +25,7 @@ const returnToCode = (): void => {
     class="page-enter"
     :api="api"
     @started="openLesson"
+    @replay-started="openReplay"
     @access-required="returnToCode"
   />
 </template>

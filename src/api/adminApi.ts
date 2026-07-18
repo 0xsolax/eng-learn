@@ -26,11 +26,13 @@ import {
 } from '@shared/api/adminAuthSchemas'
 import {
   adminCourseListSchema,
+  courseProgressResetResultSchema,
   createdCourseSchema,
   rotatedAccessCodeSchema,
 } from '@shared/api/courseSchemas'
 import {
   createCourseRequestSchema,
+  courseProgressResetRequestSchema,
   importSourceVersionCommandSchema,
   rotateAccessCodeRequestSchema,
 } from '@shared/api/schemas'
@@ -52,6 +54,7 @@ export type ApproveExerciseItemsRequest = z.input<
 >
 export type CreateCourseRequest = z.input<typeof createCourseRequestSchema>
 export type RotateAccessCodeRequest = z.input<typeof rotateAccessCodeRequestSchema>
+export type CourseProgressResetRequest = z.input<typeof courseProgressResetRequestSchema>
 export type AdminLoginRequest = z.input<typeof adminLoginRequestSchema>
 const resourceIdSchema = z.string().trim().min(1)
 
@@ -224,6 +227,16 @@ export const createAdminApi = (client: HttpClient = createHttpClient()) => {
           dataSchema: rotatedAccessCodeSchema,
           method: 'POST',
           json: rotateAccessCodeRequestSchema.parse(command),
+        },
+      )
+    },
+    resetCourseProgress(courseId: string, command: CourseProgressResetRequest) {
+      return request(
+        `/api/admin/courses/${encodePathSegment(courseId)}/learning-progress/reset`,
+        {
+          dataSchema: courseProgressResetResultSchema,
+          method: 'POST',
+          json: courseProgressResetRequestSchema.parse(command),
         },
       )
     },
