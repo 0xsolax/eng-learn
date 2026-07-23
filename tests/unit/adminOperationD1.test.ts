@@ -5,6 +5,7 @@ import { createD1AdminOperationLedger } from '../../server/repositories/adminOpe
 import { createD1ContentRepository } from '../../server/repositories/d1ContentRepository'
 import { createD1CourseRepository } from '../../server/repositories/d1CourseRepository'
 import { createD1SessionRepository } from '../../server/repositories/d1SessionRepository'
+import { createD1LearnerLoginAttemptRepository } from '../../server/repositories/d1LearnerLoginAttemptRepository'
 import { createContentBuilder } from '../../server/services/ContentBuilder'
 import { createCourseRuntime } from '../../server/services/CourseRuntime'
 import { createLearnerSessionService } from '../../server/services/LearnerSessionService'
@@ -31,6 +32,7 @@ const migrationPaths = [
   '../../migrations/0012_add_exercise_review_feedback.sql',
   '../../migrations/0013_add_lesson_flow_policy_v2.sql',
   '../../migrations/0014_add_lesson_replay_and_learning_runs.sql',
+  '../../migrations/0015_add_learner_account_login.sql',
 ]
 
 describe('D1 admin operation transactions', () => {
@@ -126,6 +128,8 @@ describe('D1 admin operation transactions', () => {
       fixture.courseRuntime.createCourseIdempotently({
         operationToken: COURSE_TOKEN,
         learnerName: 'Alice',
+        loginAccount: 'alice01',
+        pin: '123456',
         sourceVersionId: 'version-published',
       }),
     ).rejects.toThrow('Injected D1 batch failure')
@@ -136,12 +140,16 @@ describe('D1 admin operation transactions', () => {
     const created = await fixture.courseRuntime.createCourseIdempotently({
       operationToken: COURSE_TOKEN,
       learnerName: 'Alice',
+      loginAccount: 'alice01',
+      pin: '123456',
       sourceVersionId: 'version-published',
     })
     await expect(
       fixture.courseRuntime.createCourseIdempotently({
         operationToken: COURSE_TOKEN,
         learnerName: 'Alice',
+        loginAccount: 'alice01',
+        pin: '123456',
         sourceVersionId: 'version-published',
       }),
     ).resolves.toEqual(created)
@@ -149,8 +157,9 @@ describe('D1 admin operation transactions', () => {
     expect(count(fixture.database, 'courses')).toBe(1)
     expect(count(fixture.database, 'admin_operations')).toBe(2)
 
-    const established = await fixture.sessionService.exchangeAccessCode(
-      created.learner.accessCode,
+    const established = await fixture.sessionService.exchangeAccountLogin(
+      'alice01',
+      '123456',
     )
     expect(established).toBeDefined()
 
@@ -191,7 +200,7 @@ describe('D1 admin operation transactions', () => {
     expect(persisted).not.toContain(SOURCE_TOKEN)
     expect(persisted).not.toContain(COURSE_TOKEN)
     expect(persisted).not.toContain(ROTATE_TOKEN_A)
-    expect(persisted).not.toContain(created.learner.accessCode)
+    expect(persisted).not.toContain('123456')
     expect(persisted).not.toContain(rotated?.accessCode ?? 'missing')
 
     fixture.database.close()
@@ -202,9 +211,11 @@ describe('D1 admin operation transactions', () => {
     const created = await fixture.courseRuntime.createCourseIdempotently({
       operationToken: COURSE_TOKEN,
       learnerName: 'Alice',
+      loginAccount: 'alice01',
+      pin: '123456',
       sourceVersionId: 'version-published',
     })
-    await fixture.sessionService.exchangeAccessCode(created.learner.accessCode)
+    await fixture.sessionService.exchangeAccountLogin('alice01', '123456')
 
     const candidates = [
       {
@@ -397,6 +408,7 @@ const createFixture = () => {
     sessionService: createLearnerSessionService({
       courseRepository,
       sessionRepository,
+      loginAttemptRepository: createD1LearnerLoginAttemptRepository(db),
       operationLedger: ledger,
       now: () => NOW,
       generateToken: () => 'f'.repeat(64),

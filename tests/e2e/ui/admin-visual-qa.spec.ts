@@ -136,7 +136,7 @@ const draftExerciseItems = [
 
 const courseEntries = [
   {
-    learner: { id: 'learner-1', name: '小明' },
+    learner: { id: 'learner-1', name: '小明', loginAccount: 'xiaoming' },
     course: {
       id: 'course-1',
       learnerId: 'learner-1',
@@ -148,7 +148,7 @@ const courseEntries = [
     learningRunNo: 1,
   },
   {
-    learner: { id: 'learner-2', name: '小雨' },
+    learner: { id: 'learner-2', name: '小雨', loginAccount: 'xiaoyu' },
     course: {
       id: 'course-2',
       learnerId: 'learner-2',
@@ -160,7 +160,7 @@ const courseEntries = [
     learningRunNo: 1,
   },
   {
-    learner: { id: 'learner-3', name: '小杰' },
+    learner: { id: 'learner-3', name: '小杰', loginAccount: 'xiaojie' },
     course: {
       id: 'course-3',
       learnerId: 'learner-3',
@@ -255,15 +255,7 @@ const emptyReviewWindow = {
   current: undefined,
 }
 
-const createEphemeralAccessCode = (): string => {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-  const bytes = crypto.getRandomValues(new Uint8Array(10))
-  return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('')
-}
-
 const installAdminFixture = async (page: Page): Promise<void> => {
-  const ephemeralAccessCode = createEphemeralAccessCode()
-
   await page.route('**/api/admin/**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -356,7 +348,7 @@ const installAdminFixture = async (page: Page): Promise<void> => {
         learner: {
           id: 'learner-created',
           name: '小明',
-          accessCode: ephemeralAccessCode,
+          loginAccount: 'xiaoming-new',
         },
         course: {
           id: 'course-created',
@@ -405,10 +397,9 @@ type VisualScenario =
   | 'exercise-published-readonly'
   | 'course-no-published-version'
   | 'course-create-expanded'
-  | 'course-one-time-code'
-  | 'course-copy-success'
-  | 'course-copy-failure'
-  | 'course-rotate-confirmation'
+  | 'course-create-success'
+  | 'course-login-editor'
+  | 'course-reset-confirmation'
 
 const installStateMatrixFixture = async (
   page: Page,
@@ -972,15 +963,13 @@ const setSourceCsv = async (page: Page, contents: string): Promise<void> => {
   })
 }
 
-const showOneTimeCodeDialog = async (page: Page): Promise<void> => {
+const createCourseWithAccount = async (page: Page): Promise<void> => {
   await page.getByRole('button', { name: '创建课程' }).click()
   await page.getByLabel('学习者姓名').fill('小明')
-  await page.getByRole('button', { name: '创建课程并生成学习码' }).click()
-  const dialog = page.locator('[data-one-time-code]')
-  await expect(dialog).toBeVisible()
-  await dialog.locator('code').evaluate((element) => {
-    element.textContent = '•••• •••• ••'
-  })
+  await page.getByLabel('学习账号').fill('xiaoming-new')
+  await page.getByLabel('6 位 PIN').fill('123456')
+  await page.getByRole('button', { name: '创建课程', exact: true }).click()
+  await expect(page.locator('[data-action-success]')).toContainText('xiaoming-new')
 }
 
 const stateCases: VisualStateCase[] = [
@@ -1359,53 +1348,38 @@ const stateCases: VisualStateCase[] = [
   },
   {
     page: 'courses',
-    state: '一次性码对话框',
-    slug: 'courses-one-time-code',
-    scenario: 'course-one-time-code',
+    state: '创建成功',
+    slug: 'courses-create-success',
+    scenario: 'course-create-success',
     route: courseRoute,
     viewport: workspaceViewport,
     ready: (page) => page.locator('[data-scroll-region="courses"]'),
-    prepare: showOneTimeCodeDialog,
+    prepare: createCourseWithAccount,
   },
   {
     page: 'courses',
-    state: '复制成功',
-    slug: 'courses-copy-success',
-    scenario: 'course-copy-success',
+    state: '修改登录',
+    slug: 'courses-login-editor',
+    scenario: 'course-login-editor',
     route: courseRoute,
     viewport: workspaceViewport,
     ready: (page) => page.locator('[data-scroll-region="courses"]'),
     prepare: async (page) => {
-      await showOneTimeCodeDialog(page)
-      await page.locator('[data-copy-code]').click()
-      await expect(page.getByText('复制成功，请保存到安全位置。')).toBeVisible()
+      await page.locator('[data-edit-login]').first().click()
+      await expect(page.locator('[data-login-form]')).toBeVisible()
     },
   },
   {
     page: 'courses',
-    state: '复制失败',
-    slug: 'courses-copy-failure',
-    scenario: 'course-copy-failure',
+    state: '重新学习确认',
+    slug: 'courses-reset-confirmation',
+    scenario: 'course-reset-confirmation',
     route: courseRoute,
     viewport: workspaceViewport,
     ready: (page) => page.locator('[data-scroll-region="courses"]'),
     prepare: async (page) => {
-      await showOneTimeCodeDialog(page)
-      await page.locator('[data-copy-code]').click()
-      await expect(page.getByText('复制失败，请手动记录学习码。')).toBeVisible()
-    },
-  },
-  {
-    page: 'courses',
-    state: '轮换确认',
-    slug: 'courses-rotate-confirmation',
-    scenario: 'course-rotate-confirmation',
-    route: courseRoute,
-    viewport: workspaceViewport,
-    ready: (page) => page.locator('[data-scroll-region="courses"]'),
-    prepare: async (page) => {
-      await page.locator('[data-rotate-code]').first().click()
-      await expect(page.locator('[data-rotate-confirmation]')).toBeVisible()
+      await page.locator('[data-reset-progress]').first().click()
+      await expect(page.locator('[data-reset-confirmation]')).toBeVisible()
     },
   },
 ]
@@ -1445,20 +1419,6 @@ const captureProductionState = async (
   page.on('pageerror', (error) => {
     pageErrors.push(error.message)
   })
-
-  if (input.scenario === 'course-copy-success' || input.scenario === 'course-copy-failure') {
-    await page.addInitScript((copyShouldFail) => {
-      Object.defineProperty(navigator, 'clipboard', {
-        configurable: true,
-        value: {
-          writeText: () =>
-            copyShouldFail
-              ? Promise.reject(new Error('visual clipboard failure'))
-              : Promise.resolve(),
-        },
-      })
-    }, input.scenario === 'course-copy-failure')
-  }
 
   const fixture = await installStateMatrixFixture(page, input.scenario)
 
@@ -1645,7 +1605,6 @@ test('@visual-qa captures same-viewport reference and production comparisons', a
     {
       name: 'courses-1280x800',
       selector: '#courses .admin-shell',
-      dialogSelector: '#code-dialog',
       route: '/admin/courses',
       viewport: { width: 1280, height: 800 },
       ready: () => productionPage.getByRole('heading', { level: 1, name: '课程工作台' }),
@@ -1654,21 +1613,8 @@ test('@visual-qa captures same-viewport reference and production comparisons', a
           .toHaveAttribute('tabindex', '0')
         await productionPage.getByRole('button', { name: '创建课程' }).click()
         await productionPage.getByLabel('学习者姓名').fill('小明')
-        await productionPage.getByRole('button', { name: '创建课程并生成学习码' }).click()
-        const dialog = productionPage.locator('[data-one-time-code]')
-        await expect(dialog).toBeVisible()
-        await dialog.locator('code').evaluate((element) => {
-          element.textContent = '•••• •••• ••'
-        })
-        await productionPage.locator('[data-toggle-create]').evaluate((element) => {
-          ;(element as HTMLButtonElement).click()
-        })
-        await expect(productionPage.locator('#create-course-region')).toBeVisible()
-        await productionPage.getByLabel('学习者姓名').evaluate((element) => {
-          const input = element as HTMLInputElement
-          input.value = '小明'
-          input.dispatchEvent(new Event('input', { bubbles: true }))
-        })
+        await productionPage.getByLabel('学习账号').fill('xiaoming-new')
+        await productionPage.getByLabel('6 位 PIN').fill('123456')
       },
     },
   ]

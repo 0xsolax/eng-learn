@@ -39,6 +39,8 @@ describe('admin operation API', () => {
         body: {
           operationToken: SOURCE_TOKEN,
           learnerName: 'Alice',
+          loginAccount: 'alice01',
+          pin: '123456',
           sourceVersionId: first.versionId,
         },
       }),
@@ -96,55 +98,90 @@ describe('admin operation API', () => {
     await expectFailure(changedContext, 409, 'idempotency_conflict')
   })
 
-  it('replays create and rotate, exposes credential version, and rejects stale recovery', async () => {
+  it('creates account login, updates it idempotently, and revokes the old login paths', async () => {
     const app = createTestWorkerApp({ adminIdentity: { id: 'admin-1' } })
     const sourceVersionId = await createPublishedVersion(app)
     const courseCommand = {
       operationToken: COURSE_TOKEN,
       learnerName: 'Alice',
+      loginAccount: 'alice01',
+      pin: '123456',
       sourceVersionId,
     }
     const created = await postSuccess<CreatedCourse>(app, '/api/admin/courses', courseCommand)
     const replay = await postSuccess<CreatedCourse>(app, '/api/admin/courses', courseCommand)
     expect(replay).toEqual(created)
+    expect(created.learner).toMatchObject({ loginAccount: 'alice01' })
+    expect(JSON.stringify(created)).not.toMatch(/123456|accessCode|loginPinHash/u)
 
     const before = await getSuccess<AdminCourseList>(app, '/api/admin/courses')
     expect(before.courses).toHaveLength(1)
     expect(before.courses[0]?.credentialVersion).toBe(1)
 
     const sessionResponse = await app.fetch(
-      new Request(`${ORIGIN}/api/app/session/by-code`, {
+      new Request(`${ORIGIN}/api/app/session/by-account`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', origin: ORIGIN },
-        body: JSON.stringify({ accessCode: created.learner.accessCode }),
+        body: JSON.stringify({ loginAccount: 'alice01', pin: '123456' }),
       }),
     )
     expect(sessionResponse.status).toBe(200)
+    const oldCookie = sessionResponse.headers.get('set-cookie')?.split(';')[0] ?? ''
 
-    const rotatePath = `/api/admin/learners/${created.learner.id}/access-code/rotate`
-    const rotateCommand = {
+    const updatePath = `/api/admin/learners/${created.learner.id}/login-credential`
+    const updateCommand = {
       operationToken: ROTATE_TOKEN_A,
       expectedCredentialVersion: 1,
+      loginAccount: 'alice02',
+      pin: '654321',
     }
-    const rotated = await postSuccess<RotatedCode>(app, rotatePath, rotateCommand)
-    const rotateReplay = await postSuccess<RotatedCode>(app, rotatePath, rotateCommand)
-    expect(rotateReplay).toEqual(rotated)
-    expect(rotated).toMatchObject({ credentialVersion: 2, revokedSessionCount: 1 })
+    const updated = await postSuccess<UpdatedLogin>(app, updatePath, updateCommand)
+    const updateReplay = await postSuccess<UpdatedLogin>(app, updatePath, updateCommand)
+    expect(updateReplay).toEqual(updated)
+    expect(updated).toEqual({
+      loginAccount: 'alice02',
+      credentialVersion: 2,
+      revokedSessionCount: 1,
+    })
 
-    await postSuccess<RotatedCode>(app, rotatePath, {
+    const revokedSession = await app.fetch(
+      new Request(`${ORIGIN}/api/app/session`, {
+        headers: { cookie: oldCookie, origin: ORIGIN },
+      }),
+    )
+    await expectFailure(revokedSession, 401, 'learner_session_revoked')
+    const oldLogin = await app.fetch(
+      new Request(`${ORIGIN}/api/app/session/by-account`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({ loginAccount: 'alice01', pin: '123456' }),
+      }),
+    )
+    await expectFailure(oldLogin, 401, 'invalid_learner_credentials')
+    const newLogin = await app.fetch(
+      new Request(`${ORIGIN}/api/app/session/by-account`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: ORIGIN },
+        body: JSON.stringify({ loginAccount: 'alice02', pin: '654321' }),
+      }),
+    )
+    expect(newLogin.status).toBe(200)
+
+    await postSuccess<UpdatedLogin>(app, updatePath, {
       operationToken: ROTATE_TOKEN_B,
       expectedCredentialVersion: 2,
+      loginAccount: 'alice03',
     })
 
     const staleReplay = await app.fetch(
-      adminRequest(rotatePath, { method: 'POST', body: rotateCommand }),
+      adminRequest(updatePath, { method: 'POST', body: updateCommand }),
     )
     await expectFailure(staleReplay, 409, 'operation_superseded')
 
     const changedPayload = await app.fetch(
-      adminRequest(rotatePath, {
+      adminRequest(updatePath, {
         method: 'POST',
-        body: { ...rotateCommand, expectedCredentialVersion: 2 },
+        body: { ...updateCommand, loginAccount: 'other01' },
       }),
     )
     await expectFailure(changedPayload, 409, 'idempotency_conflict')
@@ -154,6 +191,31 @@ describe('admin operation API', () => {
     )
     await expectFailure(createReplayAfterRotation, 409, 'operation_superseded')
   })
+
+  it('keeps invalid account responses indistinguishable and returns a Retry-After cooldown', async () => {
+    const app = createTestWorkerApp({ adminIdentity: { id: 'admin-1' } })
+    const sourceVersionId = await createPublishedVersion(app)
+    await postSuccess<CreatedCourse>(app, '/api/admin/courses', {
+      operationToken: COURSE_TOKEN,
+      learnerName: 'Alice',
+      loginAccount: 'alice01',
+      pin: '123456',
+      sourceVersionId,
+    })
+
+    const knownWrong = await learnerLogin(app, 'alice01', '999999')
+    const unknownWrong = await learnerLogin(app, 'nobody01', '999999')
+    expect(knownWrong.status).toBe(401)
+    expect(unknownWrong.status).toBe(401)
+    expect(await knownWrong.json()).toEqual(await unknownWrong.json())
+
+    for (let attempt = 2; attempt < 5; attempt += 1) {
+      await expectFailure(await learnerLogin(app, 'nobody01', '999999'), 401, 'invalid_learner_credentials')
+    }
+    const limited = await learnerLogin(app, 'nobody01', '999999')
+    await expectFailure(limited.clone(), 429, 'learner_login_rate_limited')
+    expect(limited.headers.get('retry-after')).toBe('900')
+  })
 })
 
 type ImportedVersion = {
@@ -162,12 +224,12 @@ type ImportedVersion = {
 }
 
 type CreatedCourse = {
-  learner: { id: string; accessCode: string }
+  learner: { id: string; loginAccount: string }
   course: { id: string }
 }
 
-type RotatedCode = {
-  accessCode: string
+type UpdatedLogin = {
+  loginAccount: string
   credentialVersion: number
   revokedSessionCount: number
 }
@@ -231,6 +293,15 @@ const postSuccess = async <T = unknown>(
 
 const getSuccess = async <T>(app: WorkerApp, path: string): Promise<T> =>
   readSuccess(await app.fetch(adminRequest(path)))
+
+const learnerLogin = (app: WorkerApp, loginAccount: string, pin: string): Promise<Response> =>
+  app.fetch(
+    new Request(`${ORIGIN}/api/app/session/by-account`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin: ORIGIN },
+      body: JSON.stringify({ loginAccount, pin }),
+    }),
+  )
 
 const readSuccess = async <T>(response: Response): Promise<T> => {
   const body = await response.json<{ ok: boolean; data?: T; error?: unknown }>()

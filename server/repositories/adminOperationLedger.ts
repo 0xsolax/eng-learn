@@ -30,6 +30,14 @@ export type RotateAccessCodeAdminOperation = AdminOperationBase & {
   revokedSessionCount: number
 }
 
+export type UpdateLearnerLoginAdminOperation = AdminOperationBase & {
+  kind: 'update_learner_login'
+  outcomeLearnerId: string
+  outcomeLoginAccount: string
+  outcomeCredentialVersion: number
+  revokedSessionCount: number
+}
+
 export type ResetCourseProgressAdminOperation = AdminOperationBase & {
   kind: 'reset_course_progress'
   outcomeLearningRunNo: number
@@ -41,6 +49,7 @@ export type AdminOperationRecord =
   | SourceVersionImportAdminOperation
   | CreateCourseAdminOperation
   | RotateAccessCodeAdminOperation
+  | UpdateLearnerLoginAdminOperation
   | ResetCourseProgressAdminOperation
 
 export type AdminOperationLedgerReader = {
@@ -54,7 +63,7 @@ export type InMemoryAdminOperationLedger = AdminOperationLedgerReader & {
 
 type PersistedAdminOperationRecord = Exclude<
   AdminOperationRecord,
-  ResetCourseProgressAdminOperation
+  ResetCourseProgressAdminOperation | UpdateLearnerLoginAdminOperation
 >
 
 type AdminOperationRow = {
@@ -78,6 +87,16 @@ type ProgressResetOperationRow = {
   to_learning_run_no: number
   to_physical_lesson_no: number
   abandoned_session_count: number
+  created_at: string
+}
+
+type LearnerLoginCredentialOperationRow = {
+  operation_hash: string
+  learner_id: string
+  request_fingerprint: string
+  outcome_login_account: string
+  outcome_credential_version: number
+  revoked_session_count: number
   created_at: string
 }
 
@@ -117,16 +136,25 @@ export const createInMemoryAdminOperationLedger = (): InMemoryAdminOperationLedg
 
 export const createD1AdminOperationLedger = (
   db: D1Database,
-  options: { includeProgressResets?: boolean } = {},
+  options: {
+    includeProgressResets?: boolean
+    includeLearnerLoginUpdates?: boolean
+  } = {},
 ): AdminOperationLedgerReader => ({
   get: (operationHash) =>
-    getD1AdminOperation(db, operationHash, options.includeProgressResets === true),
+    getD1AdminOperation(db, operationHash, {
+      includeProgressResets: options.includeProgressResets === true,
+      includeLearnerLoginUpdates: options.includeLearnerLoginUpdates === true,
+    }),
 })
 
 export const getD1AdminOperation = async (
   db: D1Database,
   operationHash: AdminOperationHash,
-  includeProgressResets = false,
+  options: {
+    includeProgressResets?: boolean
+    includeLearnerLoginUpdates?: boolean
+  } = {},
 ): Promise<AdminOperationRecord | undefined> => {
   const row = await db
     .prepare('SELECT * FROM admin_operations WHERE operation_hash = ?')
@@ -134,17 +162,17 @@ export const getD1AdminOperation = async (
     .first<AdminOperationRow>()
 
   if (row) return mapAdminOperation(row)
-  if (!includeProgressResets) return undefined
 
-  const progressReset = await db
-    .prepare(
-      'SELECT operation_hash, course_id, request_fingerprint, to_learning_run_no, to_physical_lesson_no, abandoned_session_count, created_at FROM course_progress_reset_operations WHERE operation_hash = ?',
-    )
-    .bind(operationHash)
-    .first<ProgressResetOperationRow>()
+  if (options.includeProgressResets) {
+    const progressReset = await db
+      .prepare(
+        'SELECT operation_hash, course_id, request_fingerprint, to_learning_run_no, to_physical_lesson_no, abandoned_session_count, created_at FROM course_progress_reset_operations WHERE operation_hash = ?',
+      )
+      .bind(operationHash)
+      .first<ProgressResetOperationRow>()
 
-  return progressReset
-    ? {
+    if (progressReset) {
+      return {
         operationHash: progressReset.operation_hash as AdminOperationHash,
         kind: 'reset_course_progress',
         targetId: progressReset.course_id,
@@ -154,6 +182,31 @@ export const getD1AdminOperation = async (
         outcomePhysicalLessonNo: progressReset.to_physical_lesson_no,
         abandonedSessionCount: progressReset.abandoned_session_count,
         createdAt: progressReset.created_at,
+      }
+    }
+  }
+
+  if (!options.includeLearnerLoginUpdates) return undefined
+
+  const loginUpdate = await db
+    .prepare(
+      'SELECT operation_hash, learner_id, request_fingerprint, outcome_login_account, outcome_credential_version, revoked_session_count, created_at FROM learner_login_credential_operations WHERE operation_hash = ?',
+    )
+    .bind(operationHash)
+    .first<LearnerLoginCredentialOperationRow>()
+
+  return loginUpdate
+    ? {
+        operationHash: loginUpdate.operation_hash as AdminOperationHash,
+        kind: 'update_learner_login',
+        targetId: loginUpdate.learner_id,
+        requestFingerprint:
+          loginUpdate.request_fingerprint as AdminRequestFingerprint,
+        outcomeLearnerId: loginUpdate.learner_id,
+        outcomeLoginAccount: loginUpdate.outcome_login_account,
+        outcomeCredentialVersion: loginUpdate.outcome_credential_version,
+        revokedSessionCount: loginUpdate.revoked_session_count,
+        createdAt: loginUpdate.created_at,
       }
     : undefined
 }

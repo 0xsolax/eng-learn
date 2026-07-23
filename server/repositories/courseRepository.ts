@@ -22,6 +22,7 @@ import type {
 } from '../../shared/api/taskSchemas'
 import type { CreateCourseAdminOperation } from './adminOperationLedger'
 import type { AccessCodeHash } from '../security/credentialCrypto'
+import type { LearnerPinHash } from '../security/learnerPinCrypto'
 import type {
   AdminOperationHash,
   AdminRequestFingerprint,
@@ -39,6 +40,9 @@ export type LearnerRecord = {
   id: string
   name: string
   accessCode: string
+  loginAccount?: string
+  loginPinHash?: LearnerPinHash
+  legacyAccessEnabled?: boolean
   createdAt: string
 }
 
@@ -147,10 +151,15 @@ export type CourseCredentialMatch = {
   credentialVersion: number
 }
 
+export type CourseAccountCredentialMatch = CourseCredentialMatch & {
+  loginPinHash: LearnerPinHash
+}
+
 export type AdminCourseReadRecord = {
   learner: {
     id: string
     name: string
+    loginAccount?: string
   }
   course: CourseRecord
   credentialVersion: number
@@ -158,6 +167,9 @@ export type AdminCourseReadRecord = {
 
 export type AdminLearnerCredential = {
   accessCodeHash: AccessCodeHash
+  loginAccount?: string
+  loginPinHash?: LearnerPinHash
+  legacyAccessEnabled?: boolean
   credentialVersion: number
 }
 
@@ -260,6 +272,9 @@ export type CourseRepository = {
     learnerId: string
   }): Promise<CourseRecord | undefined>
   getCourseCredentialByAccessCode(accessCode: string): Promise<CourseCredentialMatch | undefined>
+  getCourseCredentialByLoginAccount(
+    loginAccount: string,
+  ): Promise<CourseAccountCredentialMatch | undefined>
   getCourseIdentityByAccessCode(accessCode: string): Promise<CourseAccessIdentity | undefined>
   getCourseByAccessCode(accessCode: string): Promise<CreatedCourse | undefined>
   getAdminLearnerCredential(learnerId: string): Promise<AdminLearnerCredential | undefined>

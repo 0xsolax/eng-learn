@@ -35,15 +35,26 @@ describe('admin operation crypto', () => {
     )
   })
 
-  it('fingerprints normalized create and rotate requests with typed domain separation', async () => {
-    await expect(
-      fingerprintAdminOperationRequest({
-        kind: 'create_course',
-        learnerName: 'Alice',
-        sourceVersionId: 'version-1',
-      }),
-    ).resolves.toBe(
-      'sha256:7df81a80b9fc817c22c7d7a10d70ceaf332483002409fdc8aa8763d1038af039',
+  it('keys PIN-bearing fingerprints by the operation token and keeps non-PIN requests stable', async () => {
+    const firstToken = parseAdminOperationToken('00'.repeat(32))
+    const secondToken = parseAdminOperationToken('11'.repeat(32))
+    if (!firstToken || !secondToken) throw new Error('Fixture operation token is invalid')
+    const createRequest = {
+      kind: 'create_course' as const,
+      learnerName: 'Alice',
+      loginAccount: 'alice01',
+      pin: '123456',
+      sourceVersionId: 'version-1',
+    }
+    const first = await fingerprintAdminOperationRequest(createRequest, firstToken)
+    const replay = await fingerprintAdminOperationRequest(createRequest, firstToken)
+    const separatelyKeyed = await fingerprintAdminOperationRequest(createRequest, secondToken)
+
+    expect(first).toMatch(/^sha256:[0-9a-f]{64}$/u)
+    expect(replay).toBe(first)
+    expect(separatelyKeyed).not.toBe(first)
+    await expect(fingerprintAdminOperationRequest(createRequest)).rejects.toThrow(
+      'Operation token is required for a PIN-bearing request fingerprint',
     )
     await expect(
       fingerprintAdminOperationRequest({

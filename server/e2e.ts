@@ -4,6 +4,7 @@ import { createD1CourseRepository } from './repositories/d1CourseRepository'
 import { createD1LessonReplayRepository } from './repositories/d1LessonReplayRepository'
 import { createD1SessionRepository } from './repositories/d1SessionRepository'
 import { createD1AdminSessionRepository } from './repositories/d1AdminSessionRepository'
+import { createD1LearnerLoginAttemptRepository } from './repositories/d1LearnerLoginAttemptRepository'
 import { createContentBuilder } from './services/ContentBuilder'
 import { createCourseRuntime } from './services/CourseRuntime'
 import { createCourseQueryService } from './services/CourseQueryService'
@@ -196,12 +197,14 @@ const createE2EApplication = (env: E2EEnv): WorkerApp => {
   const now = () => new Date()
   const operationLedger = createD1AdminOperationLedger(env.DB, {
     includeProgressResets: true,
+    includeLearnerLoginUpdates: true,
   })
   const contentRepository = createD1ContentRepository(env.DB)
   const courseRepository = createD1CourseRepository(env.DB)
   const replayRepository = createD1LessonReplayRepository(env.DB)
   const sessionRepository = createD1SessionRepository(env.DB)
   const adminSessionRepository = createD1AdminSessionRepository(env.DB)
+  const learnerLoginAttemptRepository = createD1LearnerLoginAttemptRepository(env.DB)
   const adminSessionService = createAdminSessionService({
     sessionRepository: adminSessionRepository,
     rateLimitRepository: adminSessionRepository,
@@ -242,6 +245,7 @@ const createE2EApplication = (env: E2EEnv): WorkerApp => {
     learnerSessionService: createLearnerSessionService({
       courseRepository,
       sessionRepository,
+      loginAttemptRepository: learnerLoginAttemptRepository,
       operationLedger,
       now,
     }),

@@ -22,8 +22,8 @@ describe('course read API', () => {
   it('restores course home and a completed report only through the learner principal', async () => {
     const fixture = await createFixture()
     const second = await createCourse(fixture.app, fixture.sourceVersionId, 'Bob')
-    const cookie = await exchangeCode(fixture.app, fixture.accessCode)
-    const secondCookie = await exchangeCode(fixture.app, second.learner.accessCode)
+    const cookie = await exchangeAccount(fixture.app, fixture.loginAccount)
+    const secondCookie = await exchangeAccount(fixture.app, second.learner.loginAccount)
     const initialHome = await readSuccess<{
       course: { id: string; currentLessonNo: number }
       newWordCount: number
@@ -128,7 +128,7 @@ describe('course read API', () => {
 
   it('lets a learner select and repeat a completed lesson without changing formal progress', async () => {
     const fixture = await createFixture()
-    const cookie = await exchangeCode(fixture.app, fixture.accessCode)
+    const cookie = await exchangeAccount(fixture.app, fixture.loginAccount)
     const sessionId = await completeCurrentLesson(fixture.app, fixture.courseId, cookie)
     const beforeHome = await readSuccess<{ course: { currentLessonNo: number } }>(
       await fixture.app.fetch(request('/api/app/course', { cookie })),
@@ -197,7 +197,7 @@ describe('course read API', () => {
 
   it('lets an administrator restart the same course as a new formal learning run', async () => {
     const fixture = await createFixture()
-    const cookie = await exchangeCode(fixture.app, fixture.accessCode)
+    const cookie = await exchangeAccount(fixture.app, fixture.loginAccount)
     await completeCurrentLesson(fixture.app, fixture.courseId, cookie)
     const oldLesson = await readSuccess<{
       session: { id: string }
@@ -349,13 +349,13 @@ const createFixture = async () => {
     app,
     sourceVersionId: imported.versionId,
     courseId: created.course.id,
-    accessCode: created.learner.accessCode,
+    loginAccount: created.learner.loginAccount,
   }
 }
 
 const createCourse = async (app: WorkerApp, sourceVersionId: string, learnerName: string) =>
   readSuccess<{
-    learner: { id: string; name: string; accessCode: string }
+    learner: { id: string; name: string; loginAccount: string }
     course: { id: string }
   }>(
     await app.fetch(
@@ -364,18 +364,20 @@ const createCourse = async (app: WorkerApp, sourceVersionId: string, learnerName
         body: {
           operationToken: generateAdminOperationToken(),
           learnerName,
+          loginAccount: `${learnerName.toLowerCase()}01`,
+          pin: '123456',
           sourceVersionId,
         },
       }),
     ),
   )
 
-const exchangeCode = async (app: WorkerApp, accessCode: string): Promise<string> => {
+const exchangeAccount = async (app: WorkerApp, loginAccount: string): Promise<string> => {
   const response = await app.fetch(
-    request('/api/app/session/by-code', {
+    request('/api/app/session/by-account', {
       method: 'POST',
       origin: ORIGIN,
-      body: { accessCode },
+      body: { loginAccount, pin: '123456' },
     }),
   )
   await readSuccess(response)

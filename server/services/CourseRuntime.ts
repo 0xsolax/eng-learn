@@ -60,18 +60,22 @@ import type {
   CreateCourseAdminOperation,
 } from '../repositories/adminOperationLedger'
 import { deriveAdminOperationAccessCode } from '../security/adminOperationCrypto'
-import { hashAccessCode } from '../security/credentialCrypto'
+import { hashLearnerPin, type LearnerPinHash } from '../security/learnerPinCrypto'
 import { findExactAdminOperation, prepareAdminOperation } from './adminOperation'
-import type { RawAdminOperationToken } from '../../shared/security/adminOperationToken'
+import { learnerLoginAccountSchema, learnerPinSchema } from '../../shared/api/schemas'
 
 export type CourseRuntime = {
   createCourse(input: {
     learnerName: string
+    loginAccount?: string
+    pin?: string
     sourceVersionId: string
   }): Promise<CreatedCourse>
   createCourseIdempotently(input: {
     operationToken: string
     learnerName: string
+    loginAccount: string
+    pin: string
     sourceVersionId: string
   }): Promise<CreatedCourse>
   enterCourseByAccessCode(accessCode: string): Promise<CreatedCourse>
@@ -95,6 +99,7 @@ export type CreateCourseRuntimeInput = {
   courseRepository: CourseRepository
   now: () => Date
   operationLedger?: AdminOperationLedgerReader
+  hashPin?: (pin: string) => Promise<LearnerPinHash>
   selectRefluxGap?: () => number
   queueWriteMode: LessonQueueWriteMode
   flowWriteMode: LessonFlowWriteMode
@@ -117,12 +122,15 @@ export const createCourseRuntime = ({
   courseRepository,
   now,
   operationLedger,
+  hashPin = hashLearnerPin,
   selectRefluxGap = selectDefaultRefluxGap,
   queueWriteMode,
   flowWriteMode,
 }: CreateCourseRuntimeInput): CourseRuntime => {
   const createCourse = async (input: {
     learnerName: string
+    loginAccount?: string
+    pin?: string
     sourceVersionId: string
   }): Promise<CreatedCourse> => {
     const sourceVersion = await contentRepository.getSourceVersion(input.sourceVersionId)
@@ -136,12 +144,14 @@ export const createCourseRuntime = ({
 
     const createdAt = now().toISOString()
     const learnerId = crypto.randomUUID()
+    const loginCredential = await prepareOptionalLoginCredential(input, hashPin)
 
     return courseRepository.createCourse({
       learner: {
         id: learnerId,
         name: input.learnerName,
         accessCode: createAccessCode(),
+        ...loginCredential,
         createdAt,
       },
       course: {
@@ -158,15 +168,21 @@ export const createCourseRuntime = ({
   const createCourseIdempotently = async (input: {
     operationToken: string
     learnerName: string
+    loginAccount: string
+    pin: string
     sourceVersionId: string
   }): Promise<CreatedCourse> => {
     if (!operationLedger) {
       throw new Error('Admin operation ledger is required')
     }
 
+    const loginAccount = learnerLoginAccountSchema.parse(input.loginAccount)
+    const pin = learnerPinSchema.parse(input.pin)
     const request = {
       kind: 'create_course' as const,
       learnerName: input.learnerName,
+      loginAccount,
+      pin,
       sourceVersionId: input.sourceVersionId,
     }
     const prepared = await prepareAdminOperation(input.operationToken, request)
@@ -181,7 +197,7 @@ export const createCourseRuntime = ({
         throw new Error('Matched create-course operation has an invalid kind')
       }
 
-      return replayCreatedCourse(courseRepository, prepared.token, existing)
+      return replayCreatedCourse(courseRepository, existing)
     }
 
     const sourceVersion = await contentRepository.getSourceVersion(input.sourceVersionId)
@@ -197,6 +213,7 @@ export const createCourseRuntime = ({
     const learnerId = crypto.randomUUID()
     const courseId = crypto.randomUUID()
     const accessCode = await deriveAdminOperationAccessCode('create_course', prepared.token)
+    const loginPinHash = await hashPin(pin)
     const adminOperation: CreateCourseAdminOperation = {
       operationHash: prepared.operationHash,
       kind: 'create_course',
@@ -214,6 +231,9 @@ export const createCourseRuntime = ({
           id: learnerId,
           name: input.learnerName,
           accessCode,
+          loginAccount,
+          loginPinHash,
+          legacyAccessEnabled: false,
           createdAt,
         },
         course: {
@@ -232,7 +252,7 @@ export const createCourseRuntime = ({
       const raced = await findExactAdminOperation(operationLedger, prepared, expected)
 
       if (raced?.kind === 'create_course') {
-        return replayCreatedCourse(courseRepository, prepared.token, raced)
+        return replayCreatedCourse(courseRepository, raced)
       }
 
       throw error
@@ -970,14 +990,12 @@ const hasMutableTaskColumnChange = (
 
 const replayCreatedCourse = async (
   repository: CourseRepository,
-  token: RawAdminOperationToken,
   operation: CreateCourseAdminOperation,
 ): Promise<CreatedCourse> => {
-  const [course, credential, records, accessCode] = await Promise.all([
+  const [course, credential, records] = await Promise.all([
     repository.getCourse(operation.outcomeCourseId),
     repository.getAdminLearnerCredential(operation.outcomeLearnerId),
     repository.listAdminCourses(),
-    deriveAdminOperationAccessCode('create_course', token),
   ])
 
   if (!course || course.learnerId !== operation.outcomeLearnerId || !credential) {
@@ -987,12 +1005,7 @@ const replayCreatedCourse = async (
     )
   }
 
-  const expectedAccessCodeHash = await hashAccessCode(accessCode)
-
-  if (
-    credential.credentialVersion !== operation.outcomeCredentialVersion ||
-    credential.accessCodeHash !== expectedAccessCodeHash
-  ) {
+  if (credential.credentialVersion !== operation.outcomeCredentialVersion) {
     throw new DomainError(
       'operation_superseded',
       'The committed one-time code has been superseded',
@@ -1012,11 +1025,18 @@ const replayCreatedCourse = async (
     )
   }
 
+  if (!record.learner.loginAccount) {
+    throw new DomainError(
+      'dependency_failure',
+      'Committed course creation login account is unavailable',
+    )
+  }
+
   return {
     learner: {
       id: record.learner.id,
       name: record.learner.name,
-      accessCode,
+      loginAccount: record.learner.loginAccount,
     },
     course: {
       id: course.id,
@@ -1025,6 +1045,28 @@ const replayCreatedCourse = async (
       currentLessonNo: getCourseRunLessonNo(course),
       status: course.status,
     },
+  }
+}
+
+const prepareOptionalLoginCredential = async (
+  input: { loginAccount?: string; pin?: string },
+  hashPin: (pin: string) => Promise<LearnerPinHash>,
+) => {
+  if (input.loginAccount === undefined && input.pin === undefined) {
+    return { legacyAccessEnabled: true as const }
+  }
+
+  if (input.loginAccount === undefined || input.pin === undefined) {
+    throw new DomainError('bad_request', 'Login account and PIN must be provided together')
+  }
+
+  const loginAccount = learnerLoginAccountSchema.parse(input.loginAccount)
+  const pin = learnerPinSchema.parse(input.pin)
+
+  return {
+    loginAccount,
+    loginPinHash: await hashPin(pin),
+    legacyAccessEnabled: false as const,
   }
 }
 

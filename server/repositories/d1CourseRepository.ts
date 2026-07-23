@@ -33,6 +33,7 @@ import type {
   ReviewLogRecord,
   UserWordStateRecord,
 } from './courseRepository'
+import { parseLearnerPinHash } from '../security/learnerPinCrypto'
 import {
   getCourseRunLessonNo,
   getSessionRunLessonNo,
@@ -41,6 +42,7 @@ import { requireLearnerSafeExerciseItemContent } from '../errors/PersistedConten
 import { DomainError } from '../errors/DomainError'
 import { parsePersistedExerciseItemContent } from './persistedExerciseContent'
 import { createD1AdminOperationInsert } from './adminOperationLedger'
+import { isLoginAccountUniqueConstraintError } from './d1LearnerCredentialErrors'
 
 type CourseRow = {
   id: string
@@ -65,13 +67,21 @@ type CourseAccessIdentityRow = {
   credential_version: number
 }
 
+type CourseAccountCredentialRow = CourseAccessIdentityRow & {
+  login_pin_hash: string
+}
+
 type AdminCourseRow = CourseRow & {
   learner_name: string
+  login_account: string | null
   credential_version: number
 }
 
 type AdminLearnerCredentialRow = {
   access_code: string
+  login_account: string | null
+  login_pin_hash: string | null
+  legacy_access_enabled: number
   credential_version: number
 }
 
@@ -199,38 +209,74 @@ export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
 
     const accessCodeHash = await hashAccessCode(rawAccessCode)
 
-    await db.batch([
-      ...(input.adminOperation
-        ? [createD1AdminOperationInsert(db, input.adminOperation)]
-        : []),
-      db
-        .prepare('INSERT INTO learners (id, name, access_code, created_at) VALUES (?, ?, ?, ?)')
-        .bind(
-          input.learner.id,
-          input.learner.name,
-          accessCodeHash,
-          input.learner.createdAt,
-        ),
-      db
-        .prepare(
-          'INSERT INTO courses (id, learner_id, source_version_id, current_lesson_no, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    if (
+      (input.learner.loginAccount === undefined) !==
+      (input.learner.loginPinHash === undefined)
+    ) {
+      throw new Error('Learner account and PIN credential must be stored together')
+    }
+
+    if (
+      input.learner.loginPinHash !== undefined &&
+      !parseLearnerPinHash(input.learner.loginPinHash)
+    ) {
+      throw new Error('Learner PIN hash is invalid')
+    }
+
+    try {
+      await db.batch([
+        ...(input.adminOperation
+          ? [createD1AdminOperationInsert(db, input.adminOperation)]
+          : []),
+        db
+          .prepare(
+            'INSERT INTO learners (id, name, access_code, login_account, login_pin_hash, legacy_access_enabled, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+          )
+          .bind(
+            input.learner.id,
+            input.learner.name,
+            accessCodeHash,
+            input.learner.loginAccount ?? null,
+            input.learner.loginPinHash ?? null,
+            input.learner.legacyAccessEnabled === false ? 0 : 1,
+            input.learner.createdAt,
+          ),
+        db
+          .prepare(
+            'INSERT INTO courses (id, learner_id, source_version_id, current_lesson_no, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          )
+          .bind(
+            input.course.id,
+            input.course.learnerId,
+            input.course.sourceVersionId,
+            input.course.currentLessonNo,
+            input.course.status,
+            input.course.createdAt,
+          ),
+      ])
+    } catch (error) {
+      if (isLoginAccountUniqueConstraintError(error)) {
+        throw new DomainError(
+          'login_account_unavailable',
+          'Learner login account is unavailable',
         )
-        .bind(
-          input.course.id,
-          input.course.learnerId,
-          input.course.sourceVersionId,
-          input.course.currentLessonNo,
-          input.course.status,
-          input.course.createdAt,
-        ),
-    ])
+      }
+
+      throw error
+    }
 
     return {
-      learner: {
-        id: input.learner.id,
-        name: input.learner.name,
-        accessCode: input.learner.accessCode,
-      },
+      learner: input.learner.loginAccount
+        ? {
+            id: input.learner.id,
+            name: input.learner.name,
+            loginAccount: input.learner.loginAccount,
+          }
+        : {
+            id: input.learner.id,
+            name: input.learner.name,
+            accessCode: input.learner.accessCode,
+          },
       course: toCourseView(input.course),
     }
   },
@@ -261,6 +307,37 @@ export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
     return findCourseCredentialByAccessCode(db, accessCode)
   },
 
+  async getCourseCredentialByLoginAccount(loginAccount: string) {
+    const row = await db
+      .prepare(
+        "SELECT learners.id AS learner_id, learners.name AS learner_name, learners.login_pin_hash, learners.credential_version, courses.id AS course_id, courses.source_version_id, courses.current_lesson_no, courses.current_learning_run_no, courses.current_run_start_lesson_no, courses.status FROM learners INNER JOIN courses ON courses.learner_id = learners.id WHERE learners.login_account = ? AND learners.login_pin_hash IS NOT NULL AND learners.legacy_access_enabled = 0 ORDER BY courses.created_at ASC LIMIT 1",
+      )
+      .bind(loginAccount)
+      .first<CourseAccountCredentialRow>()
+
+    if (!row) return undefined
+
+    const loginPinHash = parseLearnerPinHash(row.login_pin_hash)
+
+    if (!loginPinHash) throw new Error('Stored learner PIN hash is invalid')
+
+    return {
+      identity: {
+        learner: { id: row.learner_id, name: row.learner_name },
+        course: {
+          id: row.course_id,
+          learnerId: row.learner_id,
+          sourceVersionId: row.source_version_id,
+          currentLessonNo:
+            row.current_lesson_no - (row.current_run_start_lesson_no ?? 1) + 1,
+          status: row.status,
+        },
+      },
+      loginPinHash,
+      credentialVersion: row.credential_version,
+    }
+  },
+
   async getCourseByAccessCode(accessCode: string) {
     const match = await findCourseCredentialByAccessCode(db, accessCode)
 
@@ -281,7 +358,9 @@ export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
 
   async getAdminLearnerCredential(learnerId) {
     const row = await db
-      .prepare('SELECT access_code, credential_version FROM learners WHERE id = ?')
+      .prepare(
+        'SELECT access_code, login_account, login_pin_hash, legacy_access_enabled, credential_version FROM learners WHERE id = ?',
+      )
       .bind(learnerId)
       .first<AdminLearnerCredentialRow>()
 
@@ -293,18 +372,36 @@ export const createD1CourseRepository = (db: D1Database): CourseRepository => ({
       throw new Error('Stored learner access-code hash is invalid')
     }
 
-    return { accessCodeHash, credentialVersion: row.credential_version }
+    const loginPinHash = row.login_pin_hash
+      ? parseLearnerPinHash(row.login_pin_hash)
+      : undefined
+
+    if (row.login_pin_hash && !loginPinHash) {
+      throw new Error('Stored learner PIN hash is invalid')
+    }
+
+    return {
+      accessCodeHash,
+      ...(row.login_account ? { loginAccount: row.login_account } : {}),
+      ...(loginPinHash ? { loginPinHash } : {}),
+      legacyAccessEnabled: row.legacy_access_enabled === 1,
+      credentialVersion: row.credential_version,
+    }
   },
 
   async listAdminCourses() {
     const rows = await db
       .prepare(
-        'SELECT courses.id, courses.learner_id, courses.source_version_id, courses.current_lesson_no, courses.current_learning_run_no, courses.current_run_start_lesson_no, courses.status, courses.created_at, learners.name AS learner_name, learners.credential_version FROM courses INNER JOIN learners ON learners.id = courses.learner_id ORDER BY courses.created_at DESC, courses.id ASC',
+        'SELECT courses.id, courses.learner_id, courses.source_version_id, courses.current_lesson_no, courses.current_learning_run_no, courses.current_run_start_lesson_no, courses.status, courses.created_at, learners.name AS learner_name, learners.login_account, learners.credential_version FROM courses INNER JOIN learners ON learners.id = courses.learner_id ORDER BY courses.created_at DESC, courses.id ASC',
       )
       .all<AdminCourseRow>()
 
     return rows.results.map((row) => ({
-      learner: { id: row.learner_id, name: row.learner_name },
+      learner: {
+        id: row.learner_id,
+        name: row.learner_name,
+        ...(row.login_account ? { loginAccount: row.login_account } : {}),
+      },
       course: mapCourse(row),
       credentialVersion: row.credential_version,
     }))
@@ -1022,9 +1119,20 @@ const findCourseCredentialByAccessCode = async (
 
   const normalizedAccessCode = normalizeAccessCode(rawAccessCode)
   const accessCodeHash = await hashAccessCode(rawAccessCode)
-  const query =
+  const accountAwareQuery =
+    'SELECT learners.id AS learner_id, learners.name AS learner_name, learners.credential_version, courses.id AS course_id, courses.source_version_id, courses.current_lesson_no, courses.current_learning_run_no, courses.current_run_start_lesson_no, courses.status FROM learners INNER JOIN courses ON courses.learner_id = learners.id WHERE learners.access_code = ? AND learners.legacy_access_enabled = 1 AND learners.login_account IS NULL ORDER BY courses.created_at ASC LIMIT 1'
+  const legacyQuery =
     'SELECT learners.id AS learner_id, learners.name AS learner_name, learners.credential_version, courses.id AS course_id, courses.source_version_id, courses.current_lesson_no, courses.current_learning_run_no, courses.current_run_start_lesson_no, courses.status FROM learners INNER JOIN courses ON courses.learner_id = learners.id WHERE learners.access_code = ? ORDER BY courses.created_at ASC LIMIT 1'
-  let row = await db.prepare(query).bind(accessCodeHash).first<CourseAccessIdentityRow>()
+  let query = accountAwareQuery
+  let row: CourseAccessIdentityRow | null
+
+  try {
+    row = await db.prepare(query).bind(accessCodeHash).first<CourseAccessIdentityRow>()
+  } catch (error) {
+    if (!isLearnerLoginSchemaMissingError(error)) throw error
+    query = legacyQuery
+    row = await db.prepare(query).bind(accessCodeHash).first<CourseAccessIdentityRow>()
+  }
 
   if (!row) {
     row = await db.prepare(query).bind(normalizedAccessCode).first<CourseAccessIdentityRow>()
@@ -1799,3 +1907,9 @@ const toWordStateView = (state: UserWordStateRecord) => ({
   nextDueLessonNo: state.nextDueLessonNo,
   status: state.status,
 })
+
+const isLearnerLoginSchemaMissingError = (error: unknown): boolean =>
+  error instanceof Error &&
+  /no such column: learners\.(?:legacy_access_enabled|login_account)/u.test(
+    error.message,
+  )

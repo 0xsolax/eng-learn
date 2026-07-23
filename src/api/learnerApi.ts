@@ -8,7 +8,10 @@ import {
   lessonReplaySchema,
   startedLessonSchema,
 } from '@shared/api/courseSchemas'
-import { enterCourseByAccessCodeRequestSchema } from '@shared/api/schemas'
+import {
+  enterCourseByAccessCodeRequestSchema,
+  enterCourseByAccountRequestSchema,
+} from '@shared/api/schemas'
 import {
   previewSentenceOutputRequestSchema,
   sentenceOutputPreviewSchema,
@@ -33,6 +36,13 @@ const completedLessonPageRequestSchema = z
   .strict()
 
 export const createLearnerApi = (client: HttpClient = createHttpClient()) => ({
+  exchangeAccountLogin(loginAccount: string, pin: string) {
+    return client.request('/api/app/session/by-account', {
+      dataSchema: establishedLearnerSessionSchema,
+      method: 'POST',
+      json: enterCourseByAccountRequestSchema.parse({ loginAccount, pin }),
+    })
+  },
   exchangeAccessCode(accessCode: string) {
     return client.request('/api/app/session/by-code', {
       dataSchema: establishedLearnerSessionSchema,

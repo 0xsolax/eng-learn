@@ -24,6 +24,10 @@ export type RestoredLearnerSession = z.output<typeof restoredLearnerSessionSchem
 export type LearnerSession = EstablishedLearnerSession | RestoredLearnerSession
 
 export type LearnerApiPort = {
+  exchangeAccountLogin(
+    loginAccount: string,
+    pin: string,
+  ): Promise<EstablishedLearnerSession>
   exchangeAccessCode(accessCode: string): Promise<EstablishedLearnerSession>
   restoreSession(): Promise<RestoredLearnerSession>
   logout(): Promise<{ loggedOut: true }>

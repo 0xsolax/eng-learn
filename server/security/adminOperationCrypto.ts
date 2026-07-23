@@ -12,6 +12,7 @@ const HASH_PREFIX = 'sha256:'
 const OPERATION_HASH_DOMAIN = 'eng-learn:admin-operation-token:v1'
 const ACCESS_CODE_DOMAIN = 'eng-learn:admin-operation-access-code:v1'
 const REQUEST_FINGERPRINT_DOMAIN = 'eng-learn:admin-operation-request:v1'
+const PIN_REQUEST_FINGERPRINT_DOMAIN = 'eng-learn:admin-operation-pin-request:v2'
 const SOURCE_VERSION_IMPORT_FINGERPRINT_DOMAIN =
   'eng-learn:admin-operation-source-version-import:v2'
 
@@ -28,6 +29,8 @@ export type AdminOperationRequest =
   | {
       kind: 'create_course'
       learnerName: string
+      loginAccount: string
+      pin: string
       sourceVersionId: string
     }
   | {
@@ -44,6 +47,13 @@ export type AdminOperationRequest =
       kind: 'rotate_access_code'
       learnerId: string
       expectedCredentialVersion: number
+    }
+  | {
+      kind: 'update_learner_login'
+      learnerId: string
+      expectedCredentialVersion: number
+      loginAccount: string
+      pin?: string
     }
   | {
       kind: 'reset_course_progress'
@@ -66,12 +76,25 @@ export const hashAdminOperationToken = async (
 
 export const fingerprintAdminOperationRequest = async (
   input: AdminOperationRequest,
+  operationToken?: RawAdminOperationToken,
 ): Promise<AdminRequestFingerprint> => {
   const targetId = operationTargetId(input)
   const payload = operationPayload(input)
+  const value = `${input.kind}\0${targetId}\0${payload}`
+
+  if (requestContainsPin(input)) {
+    if (!operationToken) {
+      throw new Error('Operation token is required for a PIN-bearing request fingerprint')
+    }
+
+    return (await hmacText(
+      operationToken,
+      `${PIN_REQUEST_FINGERPRINT_DOMAIN}\0${value}`,
+    )) as AdminRequestFingerprint
+  }
 
   return (await hashText(
-    `${REQUEST_FINGERPRINT_DOMAIN}\0${input.kind}\0${targetId}\0${payload}`,
+    `${REQUEST_FINGERPRINT_DOMAIN}\0${value}`,
   )) as AdminRequestFingerprint
 }
 
@@ -90,7 +113,10 @@ export const fingerprintSourceVersionImportRequest = async (
 }
 
 export const deriveAdminOperationAccessCode = async (
-  kind: Extract<AdminOperationKind, 'create_course' | 'rotate_access_code'>,
+  kind: Extract<
+    AdminOperationKind,
+    'create_course' | 'rotate_access_code' | 'update_learner_login'
+  >,
   token: RawAdminOperationToken,
 ): Promise<RawAccessCode> => {
   const digest = await digestText(`${ACCESS_CODE_DOMAIN}\0${kind}\0${token}`)
@@ -126,6 +152,8 @@ const operationTargetId = (input: AdminOperationRequest): string => {
       return 'new-source'
     case 'rotate_access_code':
       return input.learnerId
+    case 'update_learner_login':
+      return input.learnerId
     case 'reset_course_progress':
       return input.courseId
   }
@@ -134,7 +162,12 @@ const operationTargetId = (input: AdminOperationRequest): string => {
 const operationPayload = (input: AdminOperationRequest): string => {
   switch (input.kind) {
     case 'create_course':
-      return `${lengthPrefixed(input.learnerName)}\0${lengthPrefixed(input.sourceVersionId)}`
+      return [
+        lengthPrefixed(input.learnerName),
+        lengthPrefixed(input.loginAccount),
+        lengthPrefixed(input.pin),
+        lengthPrefixed(input.sourceVersionId),
+      ].join('\0')
     case 'create_source':
       return [
         lengthPrefixed(input.sourceName),
@@ -147,10 +180,21 @@ const operationPayload = (input: AdminOperationRequest): string => {
       ].join('\0')
     case 'rotate_access_code':
       return `${lengthPrefixed(input.learnerId)}\0${String(input.expectedCredentialVersion)}`
+    case 'update_learner_login':
+      return [
+        lengthPrefixed(input.learnerId),
+        String(input.expectedCredentialVersion),
+        lengthPrefixed(input.loginAccount),
+        input.pin === undefined ? 'retain-pin' : `replace-pin:${lengthPrefixed(input.pin)}`,
+      ].join('\0')
     case 'reset_course_progress':
       return `${lengthPrefixed(input.courseId)}\0${String(input.expectedLearningRunNo)}\0${String(input.expectedCurrentLessonNo)}`
   }
 }
+
+const requestContainsPin = (input: AdminOperationRequest): boolean =>
+  input.kind === 'create_course' ||
+  (input.kind === 'update_learner_login' && input.pin !== undefined)
 
 const lengthPrefixed = (value: string): string => `${String(value.length)}:${value}`
 
@@ -167,6 +211,26 @@ const serializeSourceVersionImportWord = (word: ImportWordInput): string[] =>
 const hashText = async (value: string): Promise<string> => {
   const digest = await digestText(value)
   const hex = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('')
+
+  return `${HASH_PREFIX}${hex}`
+}
+
+const hmacText = async (
+  keyValue: string,
+  value: string,
+): Promise<string> => {
+  const encoder = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(keyValue),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const signature = new Uint8Array(
+    await crypto.subtle.sign('HMAC', key, encoder.encode(value)),
+  )
+  const hex = Array.from(signature, (byte) => byte.toString(16).padStart(2, '0')).join('')
 
   return `${HASH_PREFIX}${hex}`
 }

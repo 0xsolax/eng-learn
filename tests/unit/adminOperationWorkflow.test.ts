@@ -7,6 +7,7 @@ import { createInMemoryContentRepository } from '../../server/repositories/inMem
 import type { ContentRepository } from '../../server/repositories/contentRepository'
 import { createInMemoryCourseRepository } from '../../server/repositories/inMemoryCourseRepository'
 import { createInMemorySessionRepository } from '../../server/repositories/inMemorySessionRepository'
+import { createInMemoryLearnerLoginAttemptRepository } from '../../server/repositories/inMemoryLearnerLoginAttemptRepository'
 import { createContentBuilder } from '../../server/services/ContentBuilder'
 import { createCourseRuntime } from '../../server/services/CourseRuntime'
 import { createLearnerSessionService } from '../../server/services/LearnerSessionService'
@@ -344,12 +345,14 @@ describe('admin operation workflow', () => {
     ).rejects.toMatchObject({ code: 'idempotency_conflict' })
   })
 
-  it('replays course creation with the same one-time code and rejects cross-kind token reuse', async () => {
+  it('replays account-based course creation without returning either login secret', async () => {
     const fixture = createFixture()
     const sourceVersionId = await createPublishedVersion(fixture)
     const command = {
       operationToken: CREATE_TOKEN,
       learnerName: 'Alice',
+      loginAccount: 'alice01',
+      pin: '123456',
       sourceVersionId,
     }
 
@@ -357,6 +360,9 @@ describe('admin operation workflow', () => {
     const replay = await fixture.courseRuntime.createCourseIdempotently(command)
 
     expect(replay).toEqual(first)
+    expect(first.learner).toMatchObject({ name: 'Alice', loginAccount: 'alice01' })
+    expect(first.learner).not.toHaveProperty('accessCode')
+    expect(JSON.stringify(first)).not.toContain('123456')
     await expect(fixture.courseRepository.listAdminCourses()).resolves.toHaveLength(1)
     await expect(
       fixture.contentBuilder.importNewSourceIdempotently({
@@ -373,10 +379,13 @@ describe('admin operation workflow', () => {
     const created = await fixture.courseRuntime.createCourseIdempotently({
       operationToken: CREATE_TOKEN,
       learnerName: 'Alice',
+      loginAccount: 'alice01',
+      pin: '123456',
       sourceVersionId,
     })
-    const established = await fixture.sessionService.exchangeAccessCode(
-      created.learner.accessCode,
+    const established = await fixture.sessionService.exchangeAccountLogin(
+      'alice01',
+      '123456',
     )
     expect(established).toBeDefined()
 
@@ -408,6 +417,8 @@ describe('admin operation workflow', () => {
     const created = await fixture.courseRuntime.createCourseIdempotently({
       operationToken: CREATE_TOKEN,
       learnerName: 'Alice',
+      loginAccount: 'alice01',
+      pin: '123456',
       sourceVersionId,
     })
 
@@ -435,6 +446,8 @@ describe('admin operation workflow', () => {
     const created = await fixture.courseRuntime.createCourseIdempotently({
       operationToken: CREATE_TOKEN,
       learnerName: 'Alice',
+      loginAccount: 'alice01',
+      pin: '123456',
       sourceVersionId,
     })
     const firstCommand = {
@@ -461,6 +474,8 @@ describe('admin operation workflow', () => {
       fixture.courseRuntime.createCourseIdempotently({
         operationToken: CREATE_TOKEN,
         learnerName: 'Alice',
+        loginAccount: 'alice01',
+        pin: '123456',
         sourceVersionId,
       }),
     ).rejects.toMatchObject({ code: 'operation_superseded' })
@@ -496,6 +511,7 @@ const createFixture = () => {
     sessionService: createLearnerSessionService({
       courseRepository,
       sessionRepository,
+      loginAttemptRepository: createInMemoryLearnerLoginAttemptRepository(),
       operationLedger: ledger,
       now: () => NOW,
       generateToken: () => 'a'.repeat(64),

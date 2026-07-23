@@ -16,7 +16,7 @@ type FixtureExerciseItem = {
 }
 
 type FixtureCourse = {
-  learner: { id: string; name: string }
+  learner: { id: string; name: string; loginAccount?: string }
   course: {
     id: string
     learnerId: string
@@ -31,15 +31,6 @@ type FixtureCourse = {
 type FixtureOptions = {
   authenticated?: boolean
   withExistingCourse?: boolean
-}
-
-const ACCESS_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-
-const createTemporaryAccessCode = (): string => {
-  const bytes = crypto.getRandomValues(new Uint8Array(10))
-  return [...bytes]
-    .map((byte) => ACCESS_CODE_ALPHABET[byte % ACCESS_CODE_ALPHABET.length])
-    .join('')
 }
 
 const fulfillJson = async (route: Route, status: number, body: unknown): Promise<void> => {
@@ -71,7 +62,7 @@ export const installMockedAdminWorkspaceApiRouteFixture = async (
   const courses: FixtureCourse[] = options.withExistingCourse
     ? [
         {
-          learner: { id: 'learner-existing', name: '小明' },
+          learner: { id: 'learner-existing', name: '小明', loginAccount: 'xiaoming' },
           course: {
             id: 'course-existing',
             learnerId: 'learner-existing',
@@ -351,12 +342,13 @@ export const installMockedAdminWorkspaceApiRouteFixture = async (
     if (key === 'POST /api/admin/courses') {
       const body = request.postDataJSON() as {
         learnerName: string
+        loginAccount: string
         sourceVersionId: string
       }
       requestBodies.push({ key, body })
       const learnerId = 'learner-created'
       const course: FixtureCourse = {
-        learner: { id: learnerId, name: body.learnerName },
+        learner: { id: learnerId, name: body.learnerName, loginAccount: body.loginAccount },
         course: {
           id: 'course-created',
           learnerId,
@@ -371,10 +363,7 @@ export const installMockedAdminWorkspaceApiRouteFixture = async (
       await fulfillJson(route, 200, {
         ok: true,
         data: {
-          learner: {
-            ...course.learner,
-            accessCode: createTemporaryAccessCode(),
-          },
+          learner: course.learner,
           course: course.course,
         },
       })

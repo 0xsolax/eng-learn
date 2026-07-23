@@ -59,7 +59,7 @@ const createCourseInput = (): CreateCourseInput => ({
 })
 
 describe('D1 course repository credential storage', () => {
-  it('stores only the access-code hash while returning the one-time raw code to admin creation', async () => {
+  it('stores only the legacy access-code hash while preserving the repository return contract', async () => {
     const { db, statements } = createRecordingD1()
     const repository = createD1CourseRepository(db)
     const created = await repository.createCourse(createCourseInput())
@@ -71,6 +71,9 @@ describe('D1 course repository credential storage', () => {
       'learner-1',
       'Alice',
       'sha256:17190666e16f8d07ca35531be8ac05a695b08ec80bc1ef7303ebf76bba91be49',
+      null,
+      null,
+      1,
       '2026-07-13T00:00:00.000Z',
     ])
     expect(created.learner.accessCode).toBe('ABCDEFGH23')

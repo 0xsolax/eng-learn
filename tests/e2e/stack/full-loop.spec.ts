@@ -25,9 +25,9 @@ import {
   establishedLearnerSessionSchema,
   lessonReportSchema,
   lessonReplaySchema,
-  rotatedAccessCodeSchema,
   restoredLearnerSessionSchema,
   startedLessonSchema,
+  updatedLearnerLoginSchema,
 } from '../../../shared/api/courseSchemas'
 import { apiErrorSchema } from '../../../shared/api/schemas'
 import { taskAnswerResultSchema } from '../../../shared/api/taskSchemas'
@@ -112,7 +112,7 @@ test('establishes and revokes a real D1 administrator session without Access inj
   expect(await failureCode(replay)).toBe('admin_session_revoked')
 })
 
-test('enforces response-loss replay, token boundaries, and one-winner rotation in D1', async ({
+test('enforces response-loss replay, token boundaries, and one-winner login update in D1', async ({
   request,
   baseURL,
 }) => {
@@ -231,6 +231,8 @@ test('enforces response-loss replay, token boundaries, and one-winner rotation i
     data: {
       operationToken: importCommand.operationToken,
       learnerName: 'Cross-kind learner',
+      loginAccount: `cross-${sourceName.slice(-8).toLowerCase()}`,
+      pin: '123456',
       sourceVersionId: imported.versionId,
     },
   })
@@ -240,6 +242,8 @@ test('enforces response-loss replay, token boundaries, and one-winner rotation i
   const courseCommand = {
     operationToken: generateAdminOperationToken(),
     learnerName: `Lost learner ${sourceName.slice(-8)}`,
+    loginAccount: `lost-${sourceName.slice(-8).toLowerCase()}`,
+    pin: '123456',
     sourceVersionId: imported.versionId,
   }
   await request.post('/api/admin/courses', {
@@ -254,52 +258,60 @@ test('enforces response-loss replay, token boundaries, and one-winner rotation i
     createdCourseSchema,
   )
   await success(
-    await request.post('/api/app/session/by-code', {
+    await request.post('/api/app/session/by-account', {
       headers: originHeaders,
-      data: { accessCode: created.learner.accessCode },
+      data: { loginAccount: courseCommand.loginAccount, pin: courseCommand.pin },
     }),
     establishedLearnerSessionSchema,
   )
 
-  const rotateCommand = {
+  const updateCommand = {
     operationToken: generateAdminOperationToken(),
     expectedCredentialVersion: 1,
+    loginAccount: `${courseCommand.loginAccount}.new`,
+    pin: '654321',
   }
-  const rotatePath = `/api/admin/learners/${created.learner.id}/access-code/rotate`
-  await request.post(rotatePath, { headers: originHeaders, data: rotateCommand })
-  const rotated = await success(
-    await request.post(rotatePath, { headers: originHeaders, data: rotateCommand }),
-    rotatedAccessCodeSchema,
+  const updatePath = `/api/admin/learners/${created.learner.id}/login-credential`
+  await request.post(updatePath, { headers: originHeaders, data: updateCommand })
+  const updated = await success(
+    await request.post(updatePath, { headers: originHeaders, data: updateCommand }),
+    updatedLearnerLoginSchema,
   )
-  expect(rotated).toMatchObject({ credentialVersion: 2, revokedSessionCount: 1 })
+  expect(updated).toMatchObject({ credentialVersion: 2, revokedSessionCount: 1 })
 
-  const concurrentRotations = await Promise.all(
-    [generateAdminOperationToken(), generateAdminOperationToken()].map(
-      (operationToken) =>
-        request.post(rotatePath, {
+  const concurrentUpdates = await Promise.all(
+    [
+      { operationToken: generateAdminOperationToken(), pin: '111111' },
+      { operationToken: generateAdminOperationToken(), pin: '222222' },
+    ].map((command) =>
+      request.post(updatePath, {
           headers: originHeaders,
-          data: { operationToken, expectedCredentialVersion: 2 },
+          data: {
+            ...command,
+            expectedCredentialVersion: 2,
+            loginAccount: updateCommand.loginAccount,
+          },
         }),
     ),
   )
-  const winningRotations = concurrentRotations.filter(
+  const winningUpdates = concurrentUpdates.filter(
     (response) => response.status() === 200,
   )
-  const losingRotations = concurrentRotations.filter(
+  const losingUpdates = concurrentUpdates.filter(
     (response) => response.status() === 409,
   )
-  expect(winningRotations).toHaveLength(1)
-  expect(losingRotations).toHaveLength(1)
-  const winningRotation = winningRotations[0]
-  const losingRotation = losingRotations[0]
+  expect(winningUpdates).toHaveLength(1)
+  expect(losingUpdates).toHaveLength(1)
+  const winningUpdate = winningUpdates[0]
+  const losingUpdate = losingUpdates[0]
 
-  if (!winningRotation || !losingRotation) {
-    throw new Error('Expected exactly one credential rotation winner and loser')
+  if (!winningUpdate || !losingUpdate) {
+    throw new Error('Expected exactly one learner login update winner and loser')
   }
 
-  const concurrentWinner = await success(winningRotation, rotatedAccessCodeSchema)
+  const concurrentWinner = await success(winningUpdate, updatedLearnerLoginSchema)
   expect(concurrentWinner.credentialVersion).toBe(3)
-  expect(await failureCode(losingRotation)).toBe('credential_conflict')
+  expect(await failureCode(losingUpdate)).toBe('credential_conflict')
 
   const courses = await success(
     await request.get('/api/admin/courses'),
@@ -552,7 +564,7 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   page,
   baseURL,
 }) => {
-  test.setTimeout(60_000)
+  test.setTimeout(90_000)
   if (!baseURL) throw new Error('Expected stack base URL')
   await authenticateAdminPage(page)
   const sourceName = 'Browser stack source'
@@ -630,14 +642,11 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   await page.getByRole('button', { name: '创建课程' }).click()
   await expect(page.locator('form[data-course-form]')).toBeVisible()
   await page.getByLabel('学习者姓名').fill('Browser learner')
+  await page.getByLabel('学习账号').fill('browser-learner')
+  await page.getByLabel('6 位 PIN').fill('123456')
   await expect(page.locator('select[name="source-version-id"]')).toHaveValue(/.+/u)
-  await page.getByRole('button', { name: '创建课程并生成学习码' }).click()
-  const firstCode = page.locator('[data-one-time-code] code')
-  await expect(firstCode).toHaveText(/^[A-Z2-9]{10}$/u)
-  const accessCode = (await firstCode.textContent())?.trim()
-  if (!accessCode) throw new Error('Browser-created learning code is required')
-  await page.getByRole('button', { name: '我已安全记录' }).click()
-  await expect(page.locator('[data-one-time-code]')).toHaveCount(0)
+  await page.getByRole('button', { name: '创建课程', exact: true }).click()
+  await expect(page.locator('[data-action-success]')).toContainText('browser-learner')
   await page.getByRole('button', { name: '创建课程' }).click()
   await expect(page.locator('form[data-course-form]')).toBeVisible()
 
@@ -661,23 +670,20 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
 
     await route.continue()
   })
-  const existingCourse = page.getByRole('row').filter({ hasText: 'Browser learner' })
-  await existingCourse.getByRole('button', { name: '轮换学习码' }).click()
-  await expect(page.locator('[data-rotate-confirmation]')).toBeVisible()
   await page.getByLabel('学习者姓名').fill('Lost browser learner')
-  await page.getByRole('button', { name: '创建课程并生成学习码' }).click()
+  await page.getByLabel('学习账号').fill('lost-browser-learner')
+  await page.getByLabel('6 位 PIN').fill('234567')
+  await page.getByRole('button', { name: '创建课程', exact: true }).click()
   await expect(page.locator('[data-unknown-result]')).toContainText('课程可能已经创建')
-  await expect(page.locator('[data-rotate-confirmation]')).toHaveCount(0)
   await page.getByRole('button', { name: '安全重试同一次操作' }).click()
-  await expect(page.locator('[data-one-time-code]')).toContainText('Lost browser learner')
+  await expect(page.locator('[data-action-success]')).toContainText('lost-browser-learner')
   expect(createCommands).toHaveLength(2)
   expect(createCommands[1]).toEqual(createCommands[0])
   await page.unroute('**/api/admin/courses')
 
   await page.goto('/app')
-  const accessCodeInput = page.getByLabel('10 位学习码')
-  await expect(accessCodeInput).toBeVisible()
-  await accessCodeInput.fill(accessCode)
+  await page.getByLabel('学习账号').fill('browser-learner')
+  await page.getByLabel('6 位 PIN').fill('123456')
   await page.getByRole('button', { name: '进入课程' }).click()
   await expect(page).toHaveURL(/\/app\/course$/u)
   await expect(page.getByRole('heading', { level: 1, name: '第 1 课' })).toBeVisible()
@@ -688,7 +694,29 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   })
   await page.goto('/app')
   await expect(page).toHaveURL(/\/app\/course$/u)
-  await expect(page.getByLabel('10 位学习码')).toHaveCount(0)
+  await expect(page.getByLabel('学习账号')).toHaveCount(0)
+  await expect(page.getByRole('heading', { level: 1, name: '第 1 课' })).toBeVisible()
+
+  await page.goto('/admin/courses')
+  const credentialRow = page.getByRole('row', { name: /^Browser learner\b/u })
+  await credentialRow.getByRole('button', { name: '修改登录' }).click()
+  await credentialRow.getByLabel('学习账号').fill('browser-learner-new')
+  await credentialRow.getByLabel('新 PIN').fill('654321')
+  await credentialRow.getByRole('button', { name: '保存登录信息' }).click()
+  await expect(page.locator('[data-action-success]')).toContainText(
+    'Browser learner 的登录信息已更新',
+  )
+
+  await page.goto('/app')
+  await expect(page.getByText('学习会话已失效，请重新登录')).toBeVisible()
+  await page.getByLabel('学习账号').fill('browser-learner')
+  await page.getByLabel('6 位 PIN').fill('123456')
+  await page.getByRole('button', { name: '进入课程' }).click()
+  await expect(page.getByText('账号或 PIN 不正确')).toBeVisible()
+  await page.getByLabel('学习账号').fill('browser-learner-new')
+  await page.getByLabel('6 位 PIN').fill('654321')
+  await page.getByRole('button', { name: '进入课程' }).click()
+  await expect(page).toHaveURL(/\/app\/course$/u)
   await expect(page.getByRole('heading', { level: 1, name: '第 1 课' })).toBeVisible()
 
   await page.getByRole('button', { name: '开始第 1 课' }).click()
@@ -807,15 +835,15 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
 
   await browserCourse.getByRole('button', { name: '重新学习' }).click()
   await expect(page.locator('[data-reset-confirmation]')).toContainText(
-    '保留全部历史记录和原学习码',
+    '保留全部历史记录和登录信息',
   )
   await page.getByRole('button', { name: '确认重新学习' }).click()
   await expect(page.locator('[data-unknown-result]')).toContainText(
     '学习轮次可能已经重置',
   )
   await page.getByRole('button', { name: '安全重试同一次操作' }).click()
-  await expect(page.locator('[data-reset-success]')).toContainText(
-    '已从第 1 课重新开始；原学习记录已保留',
+  await expect(page.locator('[data-action-success]')).toContainText(
+    '已从第 1 课重新开始；原学习记录和登录账号保持不变',
   )
   expect(resetCommands).toHaveLength(2)
   expect(resetCommands[1]).toEqual(resetCommands[0])
@@ -910,6 +938,8 @@ test('runs admin lifecycle, learner isolation, capped v2 reflux, recovery, and c
       data: {
         operationToken: generateAdminOperationToken(),
         learnerName: 'Alice',
+        loginAccount: `alice-${imported.sourceId.slice(-8)}`,
+        pin: '123456',
         sourceVersionId: imported.versionId,
       },
     }),
@@ -921,15 +951,17 @@ test('runs admin lifecycle, learner isolation, capped v2 reflux, recovery, and c
       data: {
         operationToken: generateAdminOperationToken(),
         learnerName: 'Bob',
+        loginAccount: `bob-${imported.sourceId.slice(-8)}`,
+        pin: '234567',
         sourceVersionId: imported.versionId,
       },
     }),
     createdCourseSchema,
   )
   const established = await success(
-    await request.post('/api/app/session/by-code', {
+    await request.post('/api/app/session/by-account', {
       headers: originHeaders,
-      data: { accessCode: firstCourse.learner.accessCode },
+      data: { loginAccount: firstCourse.learner.loginAccount, pin: '123456' },
     }),
     establishedLearnerSessionSchema,
   )

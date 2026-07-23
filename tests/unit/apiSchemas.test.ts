@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   apiResponseSchema,
+  createCourseRequestSchema,
+  enterCourseByAccountRequestSchema,
   enterCourseByAccessCodeRequestSchema,
   importSourceVersionCommandSchema,
+  updateLearnerLoginRequestSchema,
 } from '../../shared/api/schemas'
 import { lessonTaskSchema } from '../../shared/api/taskSchemas'
 
@@ -126,6 +129,105 @@ describe('API envelope schemas', () => {
       enterCourseByAccessCodeRequestSchema.parse({ accessCode: ' abcdefgh23 ' }),
     ).toEqual({ accessCode: 'ABCDEFGH23' })
     expect(() => enterCourseByAccessCodeRequestSchema.parse({ accessCode: '1234' })).toThrow()
+  })
+
+  it('normalizes the administrator-assigned learner account and accepts only a six-digit PIN', () => {
+    expect(
+      createCourseRequestSchema.parse({
+        operationToken: OPERATION_TOKEN,
+        learnerName: '小明',
+        loginAccount: ' Xiao.Ming-01 ',
+        pin: '123456',
+        sourceVersionId: 'version-1',
+      }),
+    ).toEqual({
+      operationToken: OPERATION_TOKEN,
+      learnerName: '小明',
+      loginAccount: 'xiao.ming-01',
+      pin: '123456',
+      sourceVersionId: 'version-1',
+    })
+    expect(() =>
+      createCourseRequestSchema.parse({
+        operationToken: OPERATION_TOKEN,
+        learnerName: '小明',
+        loginAccount: 'ab',
+        pin: '123456',
+        sourceVersionId: 'version-1',
+      }),
+    ).toThrow()
+    expect(() =>
+      createCourseRequestSchema.parse({
+        operationToken: OPERATION_TOKEN,
+        learnerName: '小明',
+        loginAccount: 'xiaoming',
+        pin: '12345a',
+        sourceVersionId: 'version-1',
+      }),
+    ).toThrow()
+  })
+
+  it('uses the same strict account credential contract for learner login and administrator updates', () => {
+    expect(
+      enterCourseByAccountRequestSchema.parse({
+        loginAccount: ' Student_07 ',
+        pin: '654321',
+      }),
+    ).toEqual({ loginAccount: 'student_07', pin: '654321' })
+    expect(
+      updateLearnerLoginRequestSchema.parse({
+        operationToken: OPERATION_TOKEN,
+        expectedCredentialVersion: 2,
+        loginAccount: ' Student_08 ',
+      }),
+    ).toEqual({
+      operationToken: OPERATION_TOKEN,
+      expectedCredentialVersion: 2,
+      loginAccount: 'student_08',
+    })
+    expect(() =>
+      updateLearnerLoginRequestSchema.parse({
+        operationToken: OPERATION_TOKEN,
+        expectedCredentialVersion: 2,
+        loginAccount: 'student_08',
+        pin: '123456',
+        accessCode: 'ABCDEFGH23',
+      }),
+    ).toThrow()
+  })
+
+  it('accepts only declared learner credential errors and bounded retry details', () => {
+    const schema = apiResponseSchema(lessonTaskSchema)
+
+    expect(
+      schema.parse({
+        ok: false,
+        error: {
+          code: 'invalid_learner_credentials',
+          message: 'Invalid learner credentials',
+        },
+      }),
+    ).toBeTruthy()
+    expect(
+      schema.parse({
+        ok: false,
+        error: {
+          code: 'learner_login_rate_limited',
+          message: 'Too many attempts',
+          details: { retryAfterSeconds: 900 },
+        },
+      }),
+    ).toBeTruthy()
+    expect(() =>
+      schema.parse({
+        ok: false,
+        error: {
+          code: 'learner_login_rate_limited',
+          message: 'Too many attempts',
+          details: { retryAfterSeconds: 0 },
+        },
+      }),
+    ).toThrow()
   })
 
   it('bounds imported business fields before they can be persisted', () => {

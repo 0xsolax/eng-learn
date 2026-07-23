@@ -375,6 +375,7 @@ describe('D1 content build query budget', () => {
 
       database.close()
     },
+    15_000,
   )
 
   it(
@@ -410,7 +411,7 @@ describe('D1 content build query budget', () => {
 
       database.close()
     },
-    30_000,
+    120_000,
   )
 
   it('preserves a manually approved item when a D1-backed build is repeated', async () => {

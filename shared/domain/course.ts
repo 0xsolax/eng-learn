@@ -9,7 +9,8 @@ export type CourseStatus = 'active' | 'paused' | 'completed'
 export type LearnerRecordView = {
   id: string
   name: string
-  accessCode: string
+  accessCode?: string
+  loginAccount?: string
 }
 
 export type CourseView = {

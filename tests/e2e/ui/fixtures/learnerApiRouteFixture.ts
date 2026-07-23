@@ -101,7 +101,7 @@ export const installMockedLearnerApiRouteFixture = async (page: Page): Promise<v
           },
         })
         return
-      case 'POST /api/app/session/by-code':
+      case 'POST /api/app/session/by-account':
         await fulfill(route, 200, {
           ok: true,
           data: { learner: { id: 'learner-1', name: '小林' }, course },
@@ -324,7 +324,7 @@ export const installCappedWrongAnswerLearnerFixture = async (
               },
         )
         return
-      case 'POST /api/app/session/by-code':
+      case 'POST /api/app/session/by-account':
         sessionEstablished = true
         await fulfill(route, 200, {
           ok: true,

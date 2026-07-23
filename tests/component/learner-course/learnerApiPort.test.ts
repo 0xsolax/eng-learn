@@ -7,6 +7,7 @@ import {
 } from '@/features/learner-course/learnerApiPort'
 
 const createFallback = (): LearnerApiPort => ({
+  exchangeAccountLogin: vi.fn(),
   exchangeAccessCode: vi.fn(),
   restoreSession: vi.fn(),
   logout: vi.fn(),

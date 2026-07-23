@@ -156,7 +156,7 @@ const loadCourse = async (): Promise<void> => {
         ? '课程内容暂时不可用'
         : '无法读取课程'
     loadError.value = accessRequired.value
-      ? '学习会话已失效，请重新输入学习码'
+      ? '学习会话已失效，请重新登录'
       : legacyContentError
         ? '本课内容暂时无法使用，请联系课程管理员处理后再试'
         : '暂时无法读取课程，请检查网络后重试'
@@ -192,7 +192,7 @@ onMounted(loadCourse)
       data-action="return-to-code"
       @click="$emit('access-required')"
     >
-      重新输入学习码
+      重新登录
     </UiButton>
     <UiButton
       v-else

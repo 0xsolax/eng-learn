@@ -60,6 +60,7 @@ const simpleApiErrorSchema = z
       'lesson_not_active',
       'forbidden_resource',
       'invalid_access_code',
+      'invalid_learner_credentials',
       'not_found',
       'source_version_immutable',
       'source_draft_exists',
@@ -71,6 +72,7 @@ const simpleApiErrorSchema = z
       'course_unavailable',
       'conflict',
       'credential_conflict',
+      'login_account_unavailable',
       'progress_conflict',
       'idempotency_conflict',
       'import_reconcile_required',
@@ -91,6 +93,15 @@ export const apiErrorSchema = z.union([
   z
     .object({
       code: z.literal('admin_login_rate_limited'),
+      message: errorMessageSchema,
+      details: z
+        .object({ retryAfterSeconds: z.number().int().positive() })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      code: z.literal('learner_login_rate_limited'),
       message: errorMessageSchema,
       details: z
         .object({ retryAfterSeconds: z.number().int().positive() })
@@ -180,9 +191,21 @@ export const importSourceVersionCommandSchema = z.discriminatedUnion('mode', [
     .strict(),
 ])
 
+export const learnerLoginAccountSchema = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(3)
+  .max(32)
+  .regex(/^[a-z0-9][a-z0-9._-]*$/)
+
+export const learnerPinSchema = z.string().regex(/^\d{6}$/)
+
 export const createCourseRequestSchema = z.object({
   operationToken: z.string().regex(/^[0-9a-f]{64}$/),
   learnerName: z.string().trim().min(1).max(80),
+  loginAccount: learnerLoginAccountSchema,
+  pin: learnerPinSchema,
   sourceVersionId: z.string().trim().min(1).max(128),
 }).strict()
 
@@ -190,6 +213,15 @@ export const rotateAccessCodeRequestSchema = z
   .object({
     operationToken: z.string().regex(/^[0-9a-f]{64}$/),
     expectedCredentialVersion: z.number().int().positive(),
+  })
+  .strict()
+
+export const updateLearnerLoginRequestSchema = z
+  .object({
+    operationToken: z.string().regex(/^[0-9a-f]{64}$/),
+    expectedCredentialVersion: z.number().int().positive(),
+    loginAccount: learnerLoginAccountSchema,
+    pin: learnerPinSchema.optional(),
   })
   .strict()
 
@@ -208,6 +240,13 @@ export const enterCourseByAccessCodeRequestSchema = z
       .trim()
       .toUpperCase()
       .regex(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{10}$/),
+  })
+  .strict()
+
+export const enterCourseByAccountRequestSchema = z
+  .object({
+    loginAccount: learnerLoginAccountSchema,
+    pin: learnerPinSchema,
   })
   .strict()
 

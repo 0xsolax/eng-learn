@@ -5,13 +5,13 @@ import { generateAdminOperationToken } from '../../shared/security/adminOperatio
 const ORIGIN = 'https://eng-learn.test'
 
 describe('worker learner session security contract', () => {
-  it('exchanges a one-time learning code for an HttpOnly cookie and restores the session', async () => {
+  it('exchanges an assigned account and PIN for an HttpOnly cookie and restores the session', async () => {
     const fixture = await createPublishedCourseFixture()
     const response = await fixture.app.fetch(
-      request('/api/app/session/by-code', {
+      request('/api/app/session/by-account', {
         method: 'POST',
         origin: ORIGIN,
-        body: { accessCode: fixture.accessCode },
+        body: { loginAccount: fixture.loginAccount, pin: '123456' },
       }),
     )
     const body = await readSuccess<{
@@ -25,7 +25,7 @@ describe('worker learner session security contract', () => {
     expect(setCookie).toContain('Secure')
     expect(setCookie).toContain('SameSite=Strict')
     expect(setCookie).toContain('Path=/')
-    expect(JSON.stringify(body)).not.toContain(fixture.accessCode)
+    expect(JSON.stringify(body)).not.toContain('123456')
     expect(body).not.toHaveProperty('token')
 
     const cookie = setCookie.split(';')[0]
@@ -50,7 +50,7 @@ describe('worker learner session security contract', () => {
   it('rejects missing sessions, cross-course access, and a mismatched write origin', async () => {
     const first = await createPublishedCourseFixture()
     const secondCourse = await createCourse(first.app, first.sourceVersionId, 'Bob')
-    const firstCookie = await exchangeCode(first.app, first.accessCode)
+    const firstCookie = await exchangeAccount(first.app, first.loginAccount)
 
     const withoutSession = await first.app.fetch(
       request(`/api/app/courses/${first.courseId}/lessons/start`, {
@@ -85,8 +85,8 @@ describe('worker learner session security contract', () => {
   it('validates ownership before idempotent answer lookup and clears the current cookie on logout', async () => {
     const first = await createPublishedCourseFixture()
     const secondCourse = await createCourse(first.app, first.sourceVersionId, 'Bob')
-    const firstCookie = await exchangeCode(first.app, first.accessCode)
-    const secondCookie = await exchangeCode(first.app, secondCourse.learner.accessCode)
+    const firstCookie = await exchangeAccount(first.app, first.loginAccount)
+    const secondCookie = await exchangeAccount(first.app, secondCourse.learner.loginAccount)
     const secondLesson = await readSuccess<{
       session: { id: string }
       tasks: Array<{ id: string; taskType: string }>
@@ -135,7 +135,7 @@ describe('worker learner session security contract', () => {
 
   it('keeps v2 queue policy and disposition out of learner answer payloads', async () => {
     const fixture = await createPublishedCourseFixture()
-    const cookie = await exchangeCode(fixture.app, fixture.accessCode)
+    const cookie = await exchangeAccount(fixture.app, fixture.loginAccount)
     const lesson = await readSuccess<{
       session: { id: string }
       tasks: Array<{ id: string }>
@@ -251,13 +251,13 @@ const createPublishedCourseFixture = async () => {
     app,
     sourceVersionId: imported.versionId,
     courseId: created.course.id,
-    accessCode: created.learner.accessCode,
+    loginAccount: created.learner.loginAccount,
   }
 }
 
 const createCourse = async (app: WorkerApp, sourceVersionId: string, learnerName: string) =>
   readSuccess<{
-    learner: { id: string; name: string; accessCode: string }
+    learner: { id: string; name: string; loginAccount: string }
     course: { id: string }
   }>(
     await app.fetch(
@@ -266,18 +266,20 @@ const createCourse = async (app: WorkerApp, sourceVersionId: string, learnerName
         body: {
           operationToken: generateAdminOperationToken(),
           learnerName,
+          loginAccount: `${learnerName.toLowerCase()}01`,
+          pin: '123456',
           sourceVersionId,
         },
       }),
     ),
   )
 
-const exchangeCode = async (app: WorkerApp, accessCode: string): Promise<string> => {
+const exchangeAccount = async (app: WorkerApp, loginAccount: string): Promise<string> => {
   const response = await app.fetch(
-    request('/api/app/session/by-code', {
+    request('/api/app/session/by-account', {
       method: 'POST',
       origin: ORIGIN,
-      body: { accessCode },
+      body: { loginAccount, pin: '123456' },
     }),
   )
   await readSuccess(response)

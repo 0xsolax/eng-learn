@@ -14,6 +14,7 @@ const projectRoot = join(temporaryRoot, 'project')
 const copiedEntries = [
   'index.html',
   'package.json',
+  'public',
   'server',
   'shared',
   'src',

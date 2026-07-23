@@ -6,6 +6,7 @@ import TaskRenderer from '@/components/task-renderers/TaskRenderer.vue'
 import TaskShell from '@/components/task-renderers/TaskShell.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
+import { playAnswerFeedbackSound } from '@/features/lesson-runner/answerFeedbackSound'
 import type { LearnerApiPort } from '@/features/learner-course/learnerApiPort'
 import type { LessonReplayDto } from '@shared/api/courseSchemas'
 import type {
@@ -195,6 +196,7 @@ const submitAnswer = async (submission: SubmitTaskAnswerRequest): Promise<void> 
       currentTask.value.id,
       submission,
     )
+    playAnswerFeedbackSound(result.correct)
     await refreshAfterAnswer(result)
   } catch (error) {
     if (requireNewAccess(error)) return

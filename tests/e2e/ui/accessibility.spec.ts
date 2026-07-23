@@ -46,7 +46,8 @@ test('@learner production routes expose no serious or critical automated accessi
   await expect(page.getByRole('heading', { level: 1, name: '进入你的课程' })).toBeVisible()
   await expectNoSeriousViolations(page)
 
-  await page.getByLabel('10 位学习码').fill('ABCDEFGH23')
+  await page.getByLabel('学习账号').fill('xiaolin')
+  await page.getByLabel('6 位 PIN').fill('123456')
   await page.getByRole('button', { name: '进入课程' }).click()
   await expect(page.getByRole('heading', { level: 1, name: '第 7 课' })).toBeVisible()
   await expectNoSeriousViolations(page)

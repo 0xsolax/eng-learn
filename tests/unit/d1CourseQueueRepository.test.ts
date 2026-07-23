@@ -28,6 +28,7 @@ const migrationPaths = [
   '../../migrations/0012_add_exercise_review_feedback.sql',
   '../../migrations/0013_add_lesson_flow_policy_v2.sql',
   '../../migrations/0014_add_lesson_replay_and_learning_runs.sql',
+  '../../migrations/0015_add_learner_account_login.sql',
 ]
 
 type SqliteD1Statement = {

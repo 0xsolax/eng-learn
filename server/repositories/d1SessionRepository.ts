@@ -1,4 +1,6 @@
 import { parseSessionTokenHash } from '../security/credentialCrypto'
+import { DomainError } from '../errors/DomainError'
+import { isLoginAccountUniqueConstraintError } from './d1LearnerCredentialErrors'
 import type { LearnerSessionLookup, SessionRepository } from './sessionRepository'
 
 type LearnerSessionRow = {
@@ -151,6 +153,78 @@ export const createD1SessionRepository = (db: D1Database): SessionRepository => 
     return {
       credentialVersion: operation.outcomeCredentialVersion,
       revokedSessionCount: sessionUpdate?.meta.changes ?? 0,
+    }
+  },
+
+  async updateLearnerLoginCredentialIdempotently(input) {
+    const operation = input.adminOperation
+
+    try {
+      const [operationInsert, sessionUpdate, learnerUpdate] = await db.batch([
+        db
+          .prepare(
+            'INSERT INTO learner_login_credential_operations (operation_hash, learner_id, request_fingerprint, outcome_login_account, outcome_credential_version, revoked_session_count, created_at) SELECT ?, learners.id, ?, ?, ?, (SELECT COUNT(*) FROM learner_sessions WHERE learner_id = learners.id AND revoked_at IS NULL), ? FROM learners WHERE learners.id = ? AND learners.credential_version = ?',
+          )
+          .bind(
+            operation.operationHash,
+            operation.requestFingerprint,
+            operation.outcomeLoginAccount,
+            operation.outcomeCredentialVersion,
+            operation.createdAt,
+            input.learnerId,
+            input.expectedCredentialVersion,
+          ),
+        db
+          .prepare(
+            "UPDATE learner_sessions SET revoked_at = ? WHERE learner_id = ? AND revoked_at IS NULL AND EXISTS (SELECT 1 FROM learners WHERE id = ? AND credential_version = ?) AND EXISTS (SELECT 1 FROM learner_login_credential_operations WHERE operation_hash = ? AND learner_id = ? AND request_fingerprint = ? AND outcome_login_account = ? AND outcome_credential_version = ?)",
+          )
+          .bind(
+            input.revokedAt,
+            input.learnerId,
+            input.learnerId,
+            input.expectedCredentialVersion,
+            operation.operationHash,
+            input.learnerId,
+            operation.requestFingerprint,
+            operation.outcomeLoginAccount,
+            operation.outcomeCredentialVersion,
+          ),
+        db
+          .prepare(
+            'UPDATE learners SET access_code = ?, login_account = ?, login_pin_hash = ?, legacy_access_enabled = 0, credential_version = ? WHERE id = ? AND credential_version = ? AND EXISTS (SELECT 1 FROM learner_login_credential_operations WHERE operation_hash = ? AND learner_id = ? AND request_fingerprint = ? AND outcome_login_account = ? AND outcome_credential_version = ?)',
+          )
+          .bind(
+            input.accessCodeHash,
+            input.loginAccount,
+            input.loginPinHash,
+            operation.outcomeCredentialVersion,
+            input.learnerId,
+            input.expectedCredentialVersion,
+            operation.operationHash,
+            input.learnerId,
+            operation.requestFingerprint,
+            operation.outcomeLoginAccount,
+            operation.outcomeCredentialVersion,
+          ),
+      ])
+
+      if (operationInsert?.meta.changes !== 1 || learnerUpdate?.meta.changes !== 1) {
+        return undefined
+      }
+
+      return {
+        credentialVersion: operation.outcomeCredentialVersion,
+        revokedSessionCount: sessionUpdate?.meta.changes ?? 0,
+      }
+    } catch (error) {
+      if (isLoginAccountUniqueConstraintError(error)) {
+        throw new DomainError(
+          'login_account_unavailable',
+          'Learner login account is unavailable',
+        )
+      }
+
+      throw error
     }
   },
 })

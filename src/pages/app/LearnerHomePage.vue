@@ -25,7 +25,7 @@ const enterCourse = (): void => {
     </p>
     <h1>进入你的课程</h1>
     <p class="learner-home__intro">
-      输入老师提供的学习码，或恢复这台设备上已有的学习会话。
+      输入老师设置的学习账号和 PIN，或恢复这台设备上已有的学习会话。
     </p>
 
     <LearnerAccessEntry

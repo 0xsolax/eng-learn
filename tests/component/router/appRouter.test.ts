@@ -60,6 +60,7 @@ afterEach(() => {
 })
 
 const createLearnerApiFixture = () => ({
+  exchangeAccountLogin: vi.fn(),
   exchangeAccessCode: vi.fn(),
   restoreSession: vi.fn().mockRejectedValue(
     new ApiFailureError(401, {

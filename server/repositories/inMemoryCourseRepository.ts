@@ -32,6 +32,8 @@ import {
   type InMemoryAdminOperationLedger,
 } from './adminOperationLedger'
 import { DomainError } from '../errors/DomainError'
+import { parseLearnerPinHash } from '../security/learnerPinCrypto'
+import type { LearnerPinHash } from '../security/learnerPinCrypto'
 
 type StoredLearnerRecord = LearnerRecord & {
   credentialVersion: number
@@ -57,6 +59,13 @@ export type InMemoryLearnerCredentialPort = {
     learnerId: string
     accessCodeHash: AccessCodeHash
     expectedCredentialVersion?: number
+  }): Promise<boolean>
+  updateLearnerLoginCredential(input: {
+    learnerId: string
+    loginAccount: string
+    loginPinHash: LearnerPinHash
+    accessCodeHash: AccessCodeHash
+    expectedCredentialVersion: number
   }): Promise<boolean>
 }
 
@@ -143,7 +152,9 @@ export const createInMemoryCourseRepository = (
     const accessCodeHash = await hashAccessCode(rawAccessCode)
     const learner = Array.from(learners.values()).find(
       (candidate) =>
-        candidate.accessCode === accessCodeHash || candidate.accessCode === normalizedAccessCode,
+        candidate.legacyAccessEnabled !== false &&
+        candidate.loginAccount === undefined &&
+        (candidate.accessCode === accessCodeHash || candidate.accessCode === normalizedAccessCode),
     )
 
     if (!learner) {
@@ -176,6 +187,35 @@ export const createInMemoryCourseRepository = (
           status: course.status,
         },
       },
+      credentialVersion: learner.credentialVersion,
+    }
+  }
+
+  const findCourseCredentialByLoginAccount = async (loginAccount: string) => {
+    const learner = Array.from(learners.values()).find(
+      (candidate) => candidate.loginAccount === loginAccount,
+    )
+
+    if (!learner?.loginPinHash) return undefined
+
+    const course = Array.from(courses.values()).find(
+      (candidate) => candidate.learnerId === learner.id,
+    )
+
+    if (!course) return undefined
+
+    return {
+      identity: {
+        learner: { id: learner.id, name: learner.name },
+        course: {
+          id: course.id,
+          learnerId: course.learnerId,
+          sourceVersionId: course.sourceVersionId,
+          currentLessonNo: getCourseRunLessonNo(course),
+          status: course.status,
+        },
+      },
+      loginPinHash: learner.loginPinHash,
       credentialVersion: learner.credentialVersion,
     }
   }
@@ -248,9 +288,33 @@ export const createInMemoryCourseRepository = (
           throw new Error('Learner access code is invalid')
         }
 
+        if (
+          (input.learner.loginAccount === undefined) !==
+          (input.learner.loginPinHash === undefined)
+        ) {
+          throw new Error('Learner account and PIN credential must be stored together')
+        }
+
+        if (
+          input.learner.loginPinHash !== undefined &&
+          !parseLearnerPinHash(input.learner.loginPinHash)
+        ) {
+          throw new Error('Learner PIN hash is invalid')
+        }
+
+        if (
+          input.learner.loginAccount !== undefined &&
+          Array.from(learners.values()).some(
+            (learner) => learner.loginAccount === input.learner.loginAccount,
+          )
+        ) {
+          throw new DomainError('login_account_unavailable', 'Learner login account is unavailable')
+        }
+
         learners.set(input.learner.id, {
           ...input.learner,
           accessCode: await hashAccessCode(rawAccessCode),
+          legacyAccessEnabled: input.learner.legacyAccessEnabled ?? true,
           credentialVersion: 1,
         })
         const storedCourse = input.course
@@ -260,11 +324,17 @@ export const createInMemoryCourseRepository = (
         if (input.adminOperation) ledger.insert(input.adminOperation)
 
         return {
-          learner: {
-            id: input.learner.id,
-            name: input.learner.name,
-            accessCode: input.learner.accessCode,
-          },
+          learner: input.learner.loginAccount
+            ? {
+                id: input.learner.id,
+                name: input.learner.name,
+                loginAccount: input.learner.loginAccount,
+              }
+            : {
+                id: input.learner.id,
+                name: input.learner.name,
+                accessCode: input.learner.accessCode,
+              },
           course: {
             id: input.course.id,
             learnerId: input.course.learnerId,
@@ -296,6 +366,10 @@ export const createInMemoryCourseRepository = (
       return findCourseCredentialByAccessCode(accessCode)
     },
 
+    async getCourseCredentialByLoginAccount(loginAccount: string) {
+      return findCourseCredentialByLoginAccount(loginAccount)
+    },
+
     async getCourseByAccessCode(accessCode: string) {
       const match = await findCourseCredentialByAccessCode(accessCode)
 
@@ -320,6 +394,13 @@ export const createInMemoryCourseRepository = (
       return learner
         ? {
             accessCodeHash: learner.accessCode as AccessCodeHash,
+            ...(learner.loginAccount === undefined
+              ? {}
+              : { loginAccount: learner.loginAccount }),
+            ...(learner.loginPinHash === undefined
+              ? {}
+              : { loginPinHash: learner.loginPinHash }),
+            legacyAccessEnabled: learner.legacyAccessEnabled ?? true,
             credentialVersion: learner.credentialVersion,
           }
         : undefined
@@ -337,7 +418,13 @@ export const createInMemoryCourseRepository = (
           return learner
             ? [
                 {
-                  learner: { id: learner.id, name: learner.name },
+                  learner: {
+                    id: learner.id,
+                    name: learner.name,
+                    ...(learner.loginAccount === undefined
+                      ? {}
+                      : { loginAccount: learner.loginAccount }),
+                  },
                   course: { ...course },
                   credentialVersion: learner.credentialVersion,
                 },
@@ -379,6 +466,37 @@ export const createInMemoryCourseRepository = (
       learners.set(input.learnerId, {
         ...learner,
         accessCode: input.accessCodeHash,
+        credentialVersion: learner.credentialVersion + 1,
+      })
+      return true
+    },
+
+    async updateLearnerLoginCredential(input) {
+      const learner = learners.get(input.learnerId)
+
+      if (!learner || learner.credentialVersion !== input.expectedCredentialVersion) {
+        return false
+      }
+
+      if (
+        Array.from(learners.values()).some(
+          (candidate) =>
+            candidate.id !== input.learnerId &&
+            candidate.loginAccount === input.loginAccount,
+        )
+      ) {
+        throw new DomainError(
+          'login_account_unavailable',
+          'Learner login account is unavailable',
+        )
+      }
+
+      learners.set(input.learnerId, {
+        ...learner,
+        accessCode: input.accessCodeHash,
+        loginAccount: input.loginAccount,
+        loginPinHash: input.loginPinHash,
+        legacyAccessEnabled: false,
         credentialVersion: learner.credentialVersion + 1,
       })
       return true

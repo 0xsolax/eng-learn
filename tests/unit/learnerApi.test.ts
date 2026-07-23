@@ -24,6 +24,30 @@ const lesson = {
 } as const
 
 describe('learner API client', () => {
+  it('normalizes account login and sends the PIN only to the account session endpoint', async () => {
+    const establishedSession = {
+      learner: { id: 'learner-1', name: 'Alice' },
+      course,
+    }
+    const fetchImpl = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValue(Response.json({ ok: true, data: establishedSession }))
+    const api = createLearnerApi(createHttpClient(fetchImpl))
+
+    await expect(api.exchangeAccountLogin(' Alice01 ', '123456')).resolves.toEqual(
+      establishedSession,
+    )
+    expect(fetchImpl).toHaveBeenCalledWith('/api/app/session/by-account', {
+      credentials: 'same-origin',
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-requested-with': 'XMLHttpRequest',
+      },
+      body: JSON.stringify({ loginAccount: 'alice01', pin: '123456' }),
+    })
+  })
+
   it('exchanges an explicit learning code only through the app session endpoint', async () => {
     const establishedSession = {
       learner: { id: 'learner-1', name: 'Alice' },

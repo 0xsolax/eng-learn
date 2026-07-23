@@ -18,18 +18,21 @@ const DOMAIN_ERROR_STATUS: Record<ApiError['code'], number> = {
   forbidden_resource: 403,
   internal_error: 500,
   invalid_admin_credentials: 401,
+  invalid_learner_credentials: 401,
   invalid_access_code: 401,
   idempotency_conflict: 409,
   import_reconcile_required: 503,
   learner_session_expired: 401,
   learner_session_required: 401,
   learner_session_revoked: 401,
+  learner_login_rate_limited: 429,
   legacy_content_incompatible: 409,
   lesson_incomplete: 409,
   lesson_not_active: 409,
   not_found: 404,
   origin_forbidden: 403,
   operation_superseded: 409,
+  login_account_unavailable: 409,
   progress_conflict: 409,
   payload_too_large: 413,
   queue_invariant_violation: 409,
@@ -67,7 +70,8 @@ export const toApiErrorResponse = (error: unknown): Response => {
 
     if (parsed.success) {
       const retryAfterSeconds =
-        parsed.data.code === 'admin_login_rate_limited'
+        parsed.data.code === 'admin_login_rate_limited' ||
+        parsed.data.code === 'learner_login_rate_limited'
           ? parsed.data.details.retryAfterSeconds
           : undefined
       return apiJson(

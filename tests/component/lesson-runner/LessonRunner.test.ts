@@ -1,5 +1,5 @@
 import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiFailureError, ApiNetworkError, InvalidApiResponseError } from '@/api/errors'
 import LessonRunner from '@/features/lesson-runner/LessonRunner.vue'
 import type { LessonTaskDto } from '@shared/api/taskSchemas'
@@ -42,6 +42,16 @@ const lesson = {
 const [completedFixtureTask, currentFixtureTask, nextFixtureTask] = lesson.tasks
 if (!completedFixtureTask || !currentFixtureTask || !nextFixtureTask) {
   throw new Error('Lesson runner fixture requires three tasks')
+}
+
+const answeredLesson = {
+  ...lesson,
+  session: { ...lesson.session, completedTaskCount: 2 },
+  tasks: [
+    completedFixtureTask,
+    { ...currentFixtureTask, status: 'completed' as const },
+    nextFixtureTask,
+  ],
 }
 
 const sentenceOutputLesson = {
@@ -91,6 +101,19 @@ const expectAccessRequiredWithoutNetworkRetry = (wrapper: VueWrapper): void => {
   expect(wrapper.find('[data-action="retry"]').exists()).toBe(false)
   expect(wrapper.find('[data-action="reload-lesson"]').exists()).toBe(false)
 }
+
+const stubAudio = (play = vi.fn().mockResolvedValue(undefined)) => {
+  const AudioBoundary = vi.fn(function AudioBoundaryMock() {
+    return { play, volume: 1 }
+  })
+  vi.stubGlobal('Audio', AudioBoundary)
+
+  return { AudioBoundary, play }
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 describe('LessonRunner', () => {
   it.each(learnerSessionErrorCodes)(
@@ -210,6 +233,22 @@ describe('LessonRunner', () => {
     expect(wrapper.get('[role="progressbar"]').attributes('aria-valuemax')).toBe('3')
   })
 
+  it('does not replay feedback sound when restoring an authoritative lesson snapshot', async () => {
+    const { AudioBoundary } = stubAudio()
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi.fn().mockResolvedValue(answeredLesson),
+      submitAnswer: vi.fn(),
+    }
+
+    mount(LessonRunner, {
+      props: { api, sessionId: 'session-7' },
+    })
+    await flushPromises()
+
+    expect(AudioBoundary).not.toHaveBeenCalled()
+  })
+
   it('shows server feedback, re-gets authority, and advances only after continue', async () => {
     const refreshedLesson = {
       ...lesson,
@@ -254,6 +293,84 @@ describe('LessonRunner', () => {
     await wrapper.get('[data-action="retry"]').trigger('click')
 
     expect(wrapper.get('h2').text()).toBe('后续待答题')
+  })
+
+  it.each([
+    {
+      label: 'correct',
+      answer: 'apple',
+      score: 3 as const,
+      correct: true,
+      source: '/sounds/answer-feedback-correct.wav',
+    },
+    {
+      label: 'wrong',
+      answer: 'wrong',
+      score: 0 as const,
+      correct: false,
+      source: '/sounds/answer-feedback-wrong.wav',
+    },
+  ])('plays the selected feedback sound once after the server confirms a $label answer', async (scenario) => {
+    const { AudioBoundary, play } = stubAudio()
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi.fn().mockResolvedValueOnce(lesson).mockResolvedValueOnce(answeredLesson),
+      submitAnswer: vi.fn().mockResolvedValue({
+        taskId: 'task-2',
+        score: scenario.score,
+        correct: scenario.correct,
+        feedback: { taskType: 'recall_word', correctAnswer: 'apple' },
+      }),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-7' },
+    })
+    await flushPromises()
+
+    await wrapper.get('input').setValue(scenario.answer)
+    await wrapper.get('.task-form').trigger('submit')
+    await flushPromises()
+
+    expect(AudioBoundary).toHaveBeenCalledWith(scenario.source)
+    expect(play).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    {
+      label: 'rejects playback',
+      installAudioBoundary: () => stubAudio(vi.fn().mockRejectedValue(new Error('audio blocked'))),
+    },
+    {
+      label: 'cannot construct audio',
+      installAudioBoundary: () => {
+        vi.stubGlobal('Audio', vi.fn(() => {
+          throw new Error('audio unavailable')
+        }))
+      },
+    },
+  ])('keeps the confirmed answer feedback usable when the browser $label', async (scenario) => {
+    scenario.installAudioBoundary()
+    const api = {
+      ...runnerApiNoops(),
+      getLesson: vi.fn().mockResolvedValueOnce(lesson).mockResolvedValueOnce(answeredLesson),
+      submitAnswer: vi.fn().mockResolvedValue({
+        taskId: 'task-2',
+        score: 3,
+        correct: true,
+        feedback: { taskType: 'recall_word', correctAnswer: 'apple' },
+      }),
+    }
+    const wrapper = mount(LessonRunner, {
+      props: { api, sessionId: 'session-7' },
+    })
+    await flushPromises()
+
+    await wrapper.get('input').setValue('apple')
+    await wrapper.get('.task-form').trigger('submit')
+    await flushPromises()
+
+    expect(wrapper.get('[role="status"]').text()).toContain('答对了')
+    expect(wrapper.get('[data-action="retry"]').text()).toBe('继续')
   })
 
   it('moves focus from answer feedback to the next authoritative task', async () => {
@@ -318,6 +435,7 @@ describe('LessonRunner', () => {
       correct: true,
       feedback: { taskType: 'recall_word' as const, correctAnswer: 'apple' },
     }
+    const { AudioBoundary, play } = stubAudio()
     let rejectFirst: ((reason: unknown) => void) | undefined
     const firstAttempt = new Promise<typeof result>((_resolve, reject) => {
       rejectFirst = reject
@@ -350,6 +468,7 @@ describe('LessonRunner', () => {
     expect(wrapper.get('h2').text()).toBe('当前待答题')
     expect(wrapper.get('[role="alert"]').text()).toContain('答案和当前题目都已保留')
     expect(api.getLesson).toHaveBeenCalledTimes(1)
+    expect(AudioBoundary).not.toHaveBeenCalled()
 
     await wrapper.get('[data-action="retry"]').trigger('click')
     await flushPromises()
@@ -358,6 +477,8 @@ describe('LessonRunner', () => {
     expect(api.submitAnswer.mock.calls[1]).toEqual(api.submitAnswer.mock.calls[0])
     expect(api.getLesson).toHaveBeenCalledTimes(2)
     expect(wrapper.get('[data-action="retry"]').text()).toBe('继续')
+    expect(AudioBoundary).toHaveBeenCalledTimes(1)
+    expect(play).toHaveBeenCalledTimes(1)
   })
 
   it('retries the identical answer after a malformed success response leaves the result unknown', async () => {

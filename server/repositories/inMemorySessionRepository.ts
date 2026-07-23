@@ -151,5 +151,47 @@ export const createInMemorySessionRepository = (
         }
       })
     },
+
+    async updateLearnerLoginCredentialIdempotently(update) {
+      return ledger.runExclusive(async () => {
+        if (await ledger.get(update.adminOperation.operationHash)) {
+          throw new Error('Admin operation already exists')
+        }
+
+        if (!input.credentialPort) return undefined
+
+        const advanced = await input.credentialPort.updateLearnerLoginCredential({
+          learnerId: update.learnerId,
+          loginAccount: update.loginAccount,
+          loginPinHash: update.loginPinHash,
+          accessCodeHash: update.accessCodeHash,
+          expectedCredentialVersion: update.expectedCredentialVersion,
+        })
+
+        if (!advanced) return undefined
+
+        let revokedSessionCount = 0
+
+        for (const session of sessionsByTokenHash.values()) {
+          if (session.learnerId === update.learnerId && !session.revokedAt) {
+            sessionsByTokenHash.set(session.tokenHash, {
+              ...session,
+              revokedAt: update.revokedAt,
+            })
+            revokedSessionCount += 1
+          }
+        }
+
+        ledger.insert({
+          ...update.adminOperation,
+          revokedSessionCount,
+        })
+
+        return {
+          credentialVersion: update.adminOperation.outcomeCredentialVersion,
+          revokedSessionCount,
+        }
+      })
+    },
   }
 }

@@ -142,13 +142,16 @@ describe('worker api workflow', () => {
         postJson('/api/admin/courses', {
           operationToken: generateAdminOperationToken(),
           learnerName: 'Alice',
+          loginAccount: 'alice01',
+          pin: '123456',
           sourceVersionId: imported.versionId,
         }, { adminToken: ADMIN_TOKEN }),
       ),
     )
     const exchangeResponse = await app.fetch(
-        postJson('/api/app/session/by-code', {
-          accessCode: createdCourse.learner.accessCode,
+        postJson('/api/app/session/by-account', {
+          loginAccount: createdCourse.learner.loginAccount,
+          pin: '123456',
         }, { origin: 'https://eng-learn.test' }),
     )
     const enteredCourse = await readSuccess<Omit<CreatedCourse, 'learner'> & {

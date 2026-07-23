@@ -133,7 +133,8 @@ test('@learner [mocked route fixture] keeps one quiet focus across learner viewp
 
   await expect(page.getByRole('heading', { level: 1, name: '进入你的课程' })).toBeVisible()
   await expect(page.locator('[data-layout="learner"]')).toBeVisible()
-  await expect(page.getByLabel('10 位学习码')).toBeVisible()
+  await expect(page.getByLabel('学习账号')).toBeVisible()
+  await expect(page.getByLabel('6 位 PIN')).toBeVisible()
   await expect(page.getByRole('button', { name: '进入课程' })).toBeVisible()
   await expectNoHorizontalOverflow(page)
   expect(
@@ -156,7 +157,8 @@ test('@learner @reflow-200-learner keeps the learner entry usable with 200%-equi
   await page.goto('/app')
 
   await expect(page.getByRole('heading', { level: 1, name: '进入你的课程' })).toBeVisible()
-  await expect(page.getByLabel('10 位学习码')).toBeVisible()
+  await expect(page.getByLabel('学习账号')).toBeVisible()
+  await expect(page.getByLabel('6 位 PIN')).toBeVisible()
   await expect(page.getByRole('button', { name: '进入课程' })).toBeVisible()
   await expectTwoHundredPercentEquivalentReflow(page, 640)
 })
@@ -470,19 +472,18 @@ test('@admin verifies exercise and course mutation boundaries at 479 and 480 pix
   await expect(page.getByRole('heading', { level: 1, name: '课程工作台' })).toBeVisible()
 
   const createCourseButton = page.locator('[data-toggle-create]')
-  const rotateCodeButton = page.locator('[data-rotate-code]')
+  const editLoginButton = page.locator('[data-edit-login]')
   const resetProgressButton = page.locator('[data-reset-progress]')
   if (viewportWidth === 479) {
     await expect(page.locator('[data-mobile-readonly]')).toBeVisible()
     await expect(createCourseButton).toHaveCount(0)
-    await expect(rotateCodeButton).toHaveCount(0)
+    await expect(editLoginButton).toHaveCount(0)
     await expect(resetProgressButton).toHaveCount(0)
     await expect(page.locator('[data-course-form]')).toHaveCount(0)
-    await expect(page.locator('[data-copy-code]')).toHaveCount(0)
   } else {
     await expect(page.locator('[data-mobile-readonly]')).toHaveCount(0)
     await expect(createCourseButton).toBeVisible()
-    await expect(rotateCodeButton).toBeVisible()
+    await expect(editLoginButton).toBeVisible()
     await expect(resetProgressButton).toBeVisible()
   }
 
@@ -508,12 +509,12 @@ test('@admin restarts one learner from lesson one while keeping the course ident
   await expect(courseRow).toContainText('第 2 课 · 第 1 轮')
   await courseRow.getByRole('button', { name: '重新学习' }).click()
   await expect(page.locator('[data-reset-confirmation]')).toContainText(
-    '保留全部历史记录和原学习码',
+    '保留全部历史记录和登录信息',
   )
   await page.getByRole('button', { name: '确认重新学习' }).click()
 
-  await expect(page.locator('[data-reset-success]')).toContainText(
-    '已从第 1 课重新开始；原学习记录已保留',
+  await expect(page.locator('[data-action-success]')).toContainText(
+    '已从第 1 课重新开始；原学习记录和登录账号保持不变',
   )
   await expect(courseRow).toContainText('第 1 课 · 第 2 轮')
   const resetRequest = fixture.requestBodies.find(
@@ -648,37 +649,16 @@ test('@admin completes the content workbench with keyboard-only critical actions
   const sourceVersionSelect = page.getByLabel('已发布词库版本')
   await moveFocusWithKeyboard(page, sourceVersionSelect)
   await expect(sourceVersionSelect).toHaveValue('version-1')
-  const createCourseButton = page.getByRole('button', { name: '创建课程并生成学习码' })
+  const learnerAccountInput = page.getByLabel('学习账号')
+  await moveFocusWithKeyboard(page, learnerAccountInput)
+  await page.keyboard.type('xiaohong')
+  const learnerPinInput = page.getByLabel('6 位 PIN')
+  await moveFocusWithKeyboard(page, learnerPinInput)
+  await page.keyboard.type('123456')
+  const createCourseButton = page.getByRole('button', { name: '创建课程' })
   await moveFocusWithKeyboard(page, createCourseButton)
   await page.keyboard.press('Enter')
-
-  const oneTimeCodeDialog = page.locator('[data-one-time-code]')
-  let clipboardMatches = false
-  try {
-    await expect(oneTimeCodeDialog).toBeFocused()
-    const copyCodeButton = page.getByRole('button', { name: '复制学习码' })
-    await moveFocusWithKeyboard(page, copyCodeButton)
-    await page.keyboard.press('Enter')
-    await expect(page.locator('[data-copy-feedback]')).toHaveText(
-      '复制成功，请保存到安全位置。',
-    )
-    clipboardMatches = await page.evaluate(async () => {
-      const expected = document.querySelector('[data-one-time-code] code')?.textContent
-      return Boolean(expected) && (await navigator.clipboard.readText()) === expected
-    })
-  } finally {
-    await oneTimeCodeDialog
-      .locator('code')
-      .evaluateAll((nodes) => {
-        for (const node of nodes) node.textContent = '•••• •••• ••'
-      })
-      .catch(() => undefined)
-  }
-  expect(clipboardMatches).toBe(true)
-  const dismissCodeButton = page.getByRole('button', { name: '我已安全记录' })
-  await moveFocusWithKeyboard(page, dismissCodeButton)
-  await page.keyboard.press('Enter')
-  await expect(oneTimeCodeDialog).toHaveCount(0)
+  await expect(page.getByRole('status')).toContainText('学习账号为 xiaohong')
 
   const logoutButton = page.getByRole('button', { name: '退出' })
   await moveFocusWithKeyboard(page, logoutButton, 'backward')

@@ -5,8 +5,10 @@ import {
 import {
   createCourseRequestSchema,
   courseProgressResetRequestSchema,
+  enterCourseByAccountRequestSchema,
   enterCourseByAccessCodeRequestSchema,
   rotateAccessCodeRequestSchema,
+  updateLearnerLoginRequestSchema,
 } from '../shared/api/schemas'
 import {
   previewSentenceOutputRequestSchema,
@@ -18,11 +20,13 @@ import { createD1CourseRepository } from './repositories/d1CourseRepository'
 import { createD1LessonReplayRepository } from './repositories/d1LessonReplayRepository'
 import { createD1SessionRepository } from './repositories/d1SessionRepository'
 import { createD1AdminSessionRepository } from './repositories/d1AdminSessionRepository'
+import { createD1LearnerLoginAttemptRepository } from './repositories/d1LearnerLoginAttemptRepository'
 import { createInMemoryContentRepository } from './repositories/inMemoryContentRepository'
 import { createInMemoryCourseRepository } from './repositories/inMemoryCourseRepository'
 import { createInMemoryLessonReplayRepository } from './repositories/inMemoryLessonReplayRepository'
 import { createInMemorySessionRepository } from './repositories/inMemorySessionRepository'
 import { createInMemoryAdminSessionRepository } from './repositories/inMemoryAdminSessionRepository'
+import { createInMemoryLearnerLoginAttemptRepository } from './repositories/inMemoryLearnerLoginAttemptRepository'
 import type { CourseRecord, CourseRepository } from './repositories/courseRepository'
 import { getCourseRunLessonNo } from './repositories/courseRepository'
 import {
@@ -153,6 +157,7 @@ export const createTestWorkerApp = (
     ledger: operationLedger,
   })
   const adminSessionRepository = createInMemoryAdminSessionRepository()
+  const learnerLoginAttemptRepository = createInMemoryLearnerLoginAttemptRepository()
   const adminSessionService =
     input.adminSessionService ??
     (input.adminAuthConfig
@@ -208,6 +213,7 @@ export const createTestWorkerApp = (
     learnerSessionService: createLearnerSessionService({
       courseRepository,
       sessionRepository,
+      loginAttemptRepository: learnerLoginAttemptRepository,
       operationLedger,
       now,
     }),
@@ -234,12 +240,14 @@ export const createDefaultWorkerApp = (env: WorkerEnv): WorkerApp => {
   const now = () => new Date()
   const operationLedger = createD1AdminOperationLedger(env.DB, {
     includeProgressResets: true,
+    includeLearnerLoginUpdates: true,
   })
   const contentRepository = createD1ContentRepository(env.DB)
   const courseRepository = createD1CourseRepository(env.DB)
   const replayRepository = createD1LessonReplayRepository(env.DB)
   const sessionRepository = createD1SessionRepository(env.DB)
   const adminSessionRepository = createD1AdminSessionRepository(env.DB)
+  const learnerLoginAttemptRepository = createD1LearnerLoginAttemptRepository(env.DB)
   const adminAuthConfig = readAdminAuthConfig(env.ADMIN_AUTH_CONFIG)
   const adminSessionService = adminAuthConfig
     ? createAdminSessionService({
@@ -290,6 +298,7 @@ export const createDefaultWorkerApp = (env: WorkerEnv): WorkerApp => {
     learnerSessionService: createLearnerSessionService({
       courseRepository,
       sessionRepository,
+      loginAttemptRepository: learnerLoginAttemptRepository,
       operationLedger,
       now,
     }),
@@ -428,6 +437,29 @@ const routeRequest = async (
 
     if (
       request.method === 'POST' &&
+      path.length === 5 &&
+      path[2] === 'learners' &&
+      path[4] === 'login-credential'
+    ) {
+      const learnerId = requirePathSegment(path, 3)
+      const command = await parseJsonRequest(request, updateLearnerLoginRequestSchema)
+      const updated = await input.learnerSessionService.updateLoginCredentialIdempotently(
+        learnerId,
+        {
+          operationToken: command.operationToken,
+          expectedCredentialVersion: command.expectedCredentialVersion,
+          loginAccount: command.loginAccount,
+          ...(command.pin === undefined ? {} : { pin: command.pin }),
+        },
+      )
+
+      if (!updated) throw new DomainError('not_found', 'Learner is missing')
+
+      return apiOk(updated)
+    }
+
+    if (
+      request.method === 'POST' &&
       path.length === 6 &&
       path[2] === 'courses' &&
       path[4] === 'learning-progress' &&
@@ -469,6 +501,25 @@ const routeRequest = async (
 
   if (path[0] === 'api' && path[1] === 'app') {
     requireExactWriteOrigin(request, input.adminAuthentication.allowedOrigin)
+
+    if (request.method === 'POST' && url.pathname === '/api/app/session/by-account') {
+      const command = await parseJsonRequest(request, enterCourseByAccountRequestSchema)
+      const established = await input.learnerSessionService.exchangeAccountLogin(
+        command.loginAccount,
+        command.pin,
+      )
+
+      if (!established) {
+        throw new DomainError(
+          'invalid_learner_credentials',
+          'Learning account or PIN is invalid',
+        )
+      }
+
+      return apiOk(established.identity, 200, {
+        'set-cookie': createLearnerSessionCookie(established.token),
+      })
+    }
 
     if (request.method === 'POST' && url.pathname === '/api/app/session/by-code') {
       const command = await parseJsonRequest(request, enterCourseByAccessCodeRequestSchema)

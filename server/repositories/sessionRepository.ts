@@ -1,5 +1,9 @@
 import type { AccessCodeHash, SessionTokenHash } from '../security/credentialCrypto'
-import type { RotateAccessCodeAdminOperation } from './adminOperationLedger'
+import type { LearnerPinHash } from '../security/learnerPinCrypto'
+import type {
+  RotateAccessCodeAdminOperation,
+  UpdateLearnerLoginAdminOperation,
+} from './adminOperationLedger'
 
 export type LearnerSessionRecord = {
   id: string
@@ -32,6 +36,21 @@ export type SessionRepository = {
     expectedCredentialVersion: number
     revokedAt: string
     adminOperation: Omit<RotateAccessCodeAdminOperation, 'revokedSessionCount'>
+  }): Promise<
+    | {
+        credentialVersion: number
+        revokedSessionCount: number
+      }
+    | undefined
+  >
+  updateLearnerLoginCredentialIdempotently(input: {
+    learnerId: string
+    loginAccount: string
+    loginPinHash: LearnerPinHash
+    accessCodeHash: AccessCodeHash
+    expectedCredentialVersion: number
+    revokedAt: string
+    adminOperation: Omit<UpdateLearnerLoginAdminOperation, 'revokedSessionCount'>
   }): Promise<
     | {
         credentialVersion: number

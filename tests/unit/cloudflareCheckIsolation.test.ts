@@ -12,6 +12,10 @@ const secretIsolatedScripts = [
   '../../scripts/generate-cloudflare-types-isolated.mjs',
   '../../scripts/run-stack-e2e.mjs',
 ]
+const clientAssetBuildScripts = [
+  '../../scripts/build-release-isolated.mjs',
+  '../../scripts/run-stack-e2e.mjs',
+]
 
 const runCheck = (args: string[]) =>
   spawnSync(process.execPath, [scriptPath, ...args], {
@@ -28,6 +32,12 @@ describe('isolated Cloudflare check command policy', () => {
 
     expect(source).toContain('createSecretFreeEnvironment(process.env)')
     expect(source).not.toContain('const environment = { ...process.env }')
+  })
+
+  it.each(clientAssetBuildScripts)('%s carries public client assets into its isolated build', (path) => {
+    const source = readFileSync(new URL(path, import.meta.url), 'utf8')
+
+    expect(source).toContain("'public'")
   })
 
   it('rejects unknown Wrangler commands before invoking Wrangler', () => {

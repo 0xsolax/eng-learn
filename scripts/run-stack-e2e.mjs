@@ -47,6 +47,7 @@ const copiedEntries = [
   'migrations',
   'package.json',
   'playwright.stack.config.ts',
+  'public',
   'server',
   'shared',
   'src',

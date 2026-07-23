@@ -19,13 +19,30 @@ const course = {
 } as const
 
 describe('course API schemas', () => {
-  it('separates the one-time admin learning code from learner session restoration', () => {
+  it('returns the assigned account without either login secret and keeps session restoration separate', () => {
     expect(
       createdCourseSchema.parse({
-        learner: { id: 'learner-1', name: 'Alice', accessCode: 'ABCDEFGH23' },
+        learner: { id: 'learner-1', name: 'Alice', loginAccount: 'alice01' },
         course,
       }),
     ).toBeTruthy()
+    expect(() =>
+      createdCourseSchema.parse({
+        learner: {
+          id: 'learner-1',
+          name: 'Alice',
+          loginAccount: 'alice01',
+          accessCode: 'ABCDEFGH23',
+        },
+        course,
+      }),
+    ).toThrow()
+    expect(() =>
+      createdCourseSchema.parse({
+        learner: { id: 'learner-1', name: 'Alice', loginAccount: 'alice account' },
+        course,
+      }),
+    ).toThrow()
     expect(
       establishedLearnerSessionSchema.parse({
         learner: { id: 'learner-1', name: 'Alice' },

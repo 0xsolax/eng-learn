@@ -36,7 +36,7 @@ export const prepareAdminOperation = async (
 
   const [operationHash, requestFingerprint] = await Promise.all([
     hashAdminOperationToken(token),
-    fingerprintAdminOperationRequest(request),
+    fingerprintAdminOperationRequest(request, token),
   ])
 
   return {

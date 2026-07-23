@@ -6,6 +6,7 @@ import TaskRenderer from '@/components/task-renderers/TaskRenderer.vue'
 import TaskShell from '@/components/task-renderers/TaskShell.vue'
 import UiButton from '@/components/ui/UiButton.vue'
 import UiStatusMessage from '@/components/ui/UiStatusMessage.vue'
+import { playAnswerFeedbackSound } from '@/features/lesson-runner/answerFeedbackSound'
 import type {
   CompletedLessonDto,
   LessonReplayDto,
@@ -420,6 +421,7 @@ const submitAnswer = async (submission: SubmitTaskAnswerRequest): Promise<void> 
       submission,
     )
     pendingResult.value = result
+    playAnswerFeedbackSound(result.correct)
     await reloadAfterAnswer(result)
   } catch (error) {
     if (requireNewAccess(error)) return

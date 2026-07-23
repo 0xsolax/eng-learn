@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { lessonTaskSchema } from './taskSchemas'
+import { learnerLoginAccountSchema } from './schemas'
 
 const nonEmptyText = z.string().trim().min(1)
 
@@ -27,7 +28,7 @@ export const createdCourseSchema = z
   .object({
     learner: learnerIdentitySchema
       .extend({
-        accessCode: z.string().regex(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{10}$/),
+        loginAccount: learnerLoginAccountSchema,
       })
       .strict(),
     course: courseViewSchema,
@@ -85,12 +86,22 @@ export const rotatedAccessCodeSchema = z
   })
   .strict()
 
+export const updatedLearnerLoginSchema = z
+  .object({
+    loginAccount: learnerLoginAccountSchema,
+    credentialVersion: z.number().int().positive(),
+    revokedSessionCount: z.number().int().nonnegative(),
+  })
+  .strict()
+
 export const adminCourseListSchema = z
   .object({
     courses: z.array(
       z
         .object({
-          learner: learnerIdentitySchema,
+          learner: learnerIdentitySchema
+            .extend({ loginAccount: learnerLoginAccountSchema.optional() })
+            .strict(),
           course: courseViewSchema,
           credentialVersion: z.number().int().positive(),
           learningRunNo: z.number().int().positive(),

@@ -29,12 +29,14 @@ import {
   courseProgressResetResultSchema,
   createdCourseSchema,
   rotatedAccessCodeSchema,
+  updatedLearnerLoginSchema,
 } from '@shared/api/courseSchemas'
 import {
   createCourseRequestSchema,
   courseProgressResetRequestSchema,
   importSourceVersionCommandSchema,
   rotateAccessCodeRequestSchema,
+  updateLearnerLoginRequestSchema,
 } from '@shared/api/schemas'
 import { z } from 'zod'
 import {
@@ -54,6 +56,7 @@ export type ApproveExerciseItemsRequest = z.input<
 >
 export type CreateCourseRequest = z.input<typeof createCourseRequestSchema>
 export type RotateAccessCodeRequest = z.input<typeof rotateAccessCodeRequestSchema>
+export type UpdateLearnerLoginRequest = z.input<typeof updateLearnerLoginRequestSchema>
 export type CourseProgressResetRequest = z.input<typeof courseProgressResetRequestSchema>
 export type AdminLoginRequest = z.input<typeof adminLoginRequestSchema>
 const resourceIdSchema = z.string().trim().min(1)
@@ -227,6 +230,19 @@ export const createAdminApi = (client: HttpClient = createHttpClient()) => {
           dataSchema: rotatedAccessCodeSchema,
           method: 'POST',
           json: rotateAccessCodeRequestSchema.parse(command),
+        },
+      )
+    },
+    updateLearnerLogin(
+      learnerId: string,
+      command: UpdateLearnerLoginRequest,
+    ) {
+      return request(
+        `/api/admin/learners/${encodePathSegment(learnerId)}/login-credential`,
+        {
+          dataSchema: updatedLearnerLoginSchema,
+          method: 'POST',
+          json: updateLearnerLoginRequestSchema.parse(command),
         },
       )
     },

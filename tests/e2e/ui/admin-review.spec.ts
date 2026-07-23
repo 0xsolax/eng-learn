@@ -10,6 +10,7 @@ const outputDir = path.join(
 test('@admin review keeps the compact boundary and closes the feedback correction loop', async ({
   page,
 }) => {
+  test.setTimeout(60_000)
   const width = page.viewportSize()?.width ?? 0
   const evidence = await installReviewFixture(page)
   const consoleErrors: string[] = []

@@ -10,6 +10,7 @@ export type AdminOperationKind =
   | 'create_source'
   | 'reset_course_progress'
   | 'rotate_access_code'
+  | 'update_learner_login'
 
 export const parseAdminOperationToken = (
   value: string,

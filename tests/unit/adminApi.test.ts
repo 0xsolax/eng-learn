@@ -553,12 +553,12 @@ describe('admin API client', () => {
     )
   })
 
-  it('creates a course and exposes the one-time learning code only in the response', async () => {
+  it('creates a course with an assigned account without returning either login secret', async () => {
     const created = {
       learner: {
         id: 'learner-1',
         name: 'Alice',
-        accessCode: 'ABCDEFGH23',
+        loginAccount: 'alice01',
       },
       course: {
         id: 'course-1',
@@ -577,6 +577,8 @@ describe('admin API client', () => {
       api.createCourse({
         operationToken: OPERATION_TOKEN,
         learnerName: ' Alice ',
+        loginAccount: ' Alice01 ',
+        pin: '123456',
         sourceVersionId: ' version-1 ',
       }),
     ).resolves.toEqual(created)
@@ -590,9 +592,12 @@ describe('admin API client', () => {
       body: JSON.stringify({
         operationToken: OPERATION_TOKEN,
         learnerName: 'Alice',
+        loginAccount: 'alice01',
+        pin: '123456',
         sourceVersionId: 'version-1',
       }),
     })
+    expect(JSON.stringify(created)).not.toMatch(/123456|accessCode|loginPinHash/u)
   })
 
   it('lists courses without accepting a learning code in the persisted view', async () => {
@@ -703,6 +708,44 @@ describe('admin API client', () => {
     )
   })
 
+  it('updates a learner account with an optional PIN reset', async () => {
+    const updated = {
+      loginAccount: 'alice02',
+      credentialVersion: 2,
+      revokedSessionCount: 1,
+    } as const
+    const fetchImpl = vi
+      .fn<FetchImplementation>()
+      .mockResolvedValue(Response.json({ ok: true, data: updated }))
+    const api = createAdminApi(createHttpClient(fetchImpl))
+
+    await expect(
+      api.updateLearnerLogin('learner/1', {
+        operationToken: OPERATION_TOKEN,
+        expectedCredentialVersion: 1,
+        loginAccount: ' Alice02 ',
+        pin: '654321',
+      }),
+    ).resolves.toEqual(updated)
+    expect(fetchImpl).toHaveBeenCalledWith(
+      '/api/admin/learners/learner%2F1/login-credential',
+      {
+        credentials: 'same-origin',
+        headers: {
+          'content-type': 'application/json',
+          'x-requested-with': 'XMLHttpRequest',
+        },
+        method: 'POST',
+        body: JSON.stringify({
+          operationToken: OPERATION_TOKEN,
+          expectedCredentialVersion: 1,
+          loginAccount: 'alice02',
+          pin: '654321',
+        }),
+      },
+    )
+  })
+
   it('rejects invalid admin resource ids and commands before any network request', () => {
     const fetchImpl = vi.fn<FetchImplementation>()
     const api = createAdminApi(createHttpClient(fetchImpl))
@@ -724,6 +767,8 @@ describe('admin API client', () => {
       api.createCourse({
         operationToken: OPERATION_TOKEN,
         learnerName: '   ',
+        loginAccount: 'alice01',
+        pin: '123456',
         sourceVersionId: 'version-1',
       }),
     ).toThrow()
@@ -809,12 +854,19 @@ describe('admin API client', () => {
       api.createCourse({
         operationToken: OPERATION_TOKEN,
         learnerName: 'Alice',
+        loginAccount: 'alice01',
+        pin: '123456',
         sourceVersionId: 'version-1',
       }),
       api.listCourses(),
       api.rotateAccessCode('learner-1', {
         operationToken: OPERATION_TOKEN,
         expectedCredentialVersion: 1,
+      }),
+      api.updateLearnerLogin('learner-1', {
+        operationToken: OPERATION_TOKEN,
+        expectedCredentialVersion: 1,
+        loginAccount: 'alice02',
       }),
       api.resetCourseProgress('course-1', {
         operationToken: OPERATION_TOKEN,
@@ -824,7 +876,7 @@ describe('admin API client', () => {
     ])
 
     const paths = fetchImpl.mock.calls.map(([path]) => requestPath(path))
-    expect(paths).toHaveLength(18)
+    expect(paths).toHaveLength(19)
     expect(paths.every((path) => path.startsWith('/api/admin/'))).toBe(true)
     expect(paths.some((path) => path.startsWith('/api/app/'))).toBe(false)
   })
