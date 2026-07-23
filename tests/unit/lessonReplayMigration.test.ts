@@ -104,12 +104,14 @@ describe('migration 0014 lesson replay and learning runs', () => {
     reverseDatabase.prepare(
       "INSERT INTO admin_operations (operation_hash, kind, target_id, request_fingerprint, outcome_source_id, outcome_source_version_id, outcome_learner_id, outcome_course_id, outcome_credential_version, revoked_session_count, created_at) VALUES (?, 'create_course', 'course-other', ?, NULL, NULL, 'learner-other', 'course-other', 1, NULL, ?)",
     ).run(HASH_B, HASH_A, '2026-07-18T00:00:00.000Z')
-    expect(() => {
-      insertResetOperation(reverseDatabase, {
-        operationHash: HASH_B,
-        expectedCurrentLessonNo: 3,
-      })
-    }).toThrow(/course_progress_reset_hash_reused/u)
+    for (const expectedCurrentLessonNo of [2, 3]) {
+      expect(() => {
+        insertResetOperation(reverseDatabase, {
+          operationHash: HASH_B,
+          expectedCurrentLessonNo,
+        })
+      }).toThrow(/course_progress_reset_hash_reused/u)
+    }
 
     reverseDatabase.close()
   })
