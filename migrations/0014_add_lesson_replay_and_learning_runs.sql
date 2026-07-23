@@ -136,16 +136,28 @@ CREATE TABLE course_progress_reset_operations (
 CREATE INDEX idx_course_progress_reset_operations_course
   ON course_progress_reset_operations (course_id, to_learning_run_no);
 
+CREATE TRIGGER course_progress_reset_operation_hash_guard
+BEFORE INSERT ON course_progress_reset_operations
+FOR EACH ROW
+WHEN EXISTS (
+  SELECT 1
+  FROM admin_operations
+  WHERE operation_hash = NEW.operation_hash
+)
+BEGIN
+  SELECT RAISE(ABORT, 'course_progress_reset_hash_reused');
+END;
+
 CREATE TRIGGER course_progress_reset_operation_validate
 BEFORE INSERT ON course_progress_reset_operations
 FOR EACH ROW
 WHEN
-  EXISTS (
+  NOT EXISTS (
     SELECT 1
     FROM admin_operations
     WHERE operation_hash = NEW.operation_hash
   )
-  OR NOT EXISTS (
+  AND NOT EXISTS (
     SELECT 1
     FROM courses
     INNER JOIN course_learning_runs
@@ -176,12 +188,7 @@ WHEN
       )
   )
 BEGIN
-  SELECT CASE
-    WHEN EXISTS (
-      SELECT 1 FROM admin_operations WHERE operation_hash = NEW.operation_hash
-    ) THEN RAISE(ABORT, 'course_progress_reset_hash_reused')
-    ELSE RAISE(ABORT, 'course_progress_reset_conflict')
-  END;
+  SELECT RAISE(ABORT, 'course_progress_reset_conflict');
 END;
 
 CREATE TRIGGER admin_operations_progress_reset_hash_guard
@@ -277,10 +284,11 @@ CREATE TRIGGER courses_learning_run_reset_guard
 BEFORE UPDATE OF current_learning_run_no, current_run_start_lesson_no ON courses
 FOR EACH ROW
 WHEN
-  NEW.current_learning_run_no IS NOT OLD.current_learning_run_no
-  OR NEW.current_run_start_lesson_no IS NOT OLD.current_run_start_lesson_no
-BEGIN
-  SELECT CASE WHEN NOT EXISTS (
+  (
+    NEW.current_learning_run_no IS NOT OLD.current_learning_run_no
+    OR NEW.current_run_start_lesson_no IS NOT OLD.current_run_start_lesson_no
+  )
+  AND NOT EXISTS (
     SELECT 1
     FROM course_progress_reset_operations
     WHERE course_id = OLD.id
@@ -289,7 +297,9 @@ BEGIN
       AND to_learning_run_no = NEW.current_learning_run_no
       AND to_physical_lesson_no = NEW.current_lesson_no
       AND to_physical_lesson_no = NEW.current_run_start_lesson_no
-  ) THEN RAISE(ABORT, 'course_learning_run_reset_mismatch') END;
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'course_learning_run_reset_mismatch');
 END;
 
 CREATE TRIGGER courses_physical_lesson_monotonic
