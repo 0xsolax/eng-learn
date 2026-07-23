@@ -320,7 +320,7 @@ describe('application router', () => {
     await renderRoute('/app/course', api)
 
     expect(api.getCourseHome).toHaveBeenCalledTimes(1)
-    expect(wrapper?.get('h1').text()).toBe('第 4 课')
+    expect(wrapper?.get('h1').text()).toBe('选择课时')
     expect(wrapper?.text()).toContain('5 个新词')
     expect(wrapper?.text()).not.toMatch(/日期|连续学习/)
   })
@@ -335,7 +335,9 @@ describe('application router', () => {
     )
     const router = await renderRoute('/app/course', api)
 
-    await wrapper?.get('[data-action="start-lesson"]').trigger('click')
+    await wrapper
+      ?.get('[data-lesson-choice][data-status="current"]')
+      .trigger('click')
     await flushPromises()
 
     expect(router.currentRoute.value.fullPath).toBe('/app')
@@ -394,7 +396,8 @@ describe('application router', () => {
     })
 
     const router = await renderRoute('/app/replay/replay-1', api)
-    expect(wrapper?.text()).toContain('重复练习')
+    expect(wrapper?.get('h1').text()).toBe('第 1 课')
+    expect(wrapper?.text()).not.toMatch(/再练一次|重复练习/u)
     await wrapper?.get('[data-action="complete-replay"]').trigger('click')
     await flushPromises()
 

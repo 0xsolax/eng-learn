@@ -45,10 +45,10 @@ test('@learner [mocked route fixture] closes account → course → lesson → r
 
   await enterCourse(page)
   await expect(page).toHaveURL(/\/app\/course$/u)
-  await expect(page.getByRole('heading', { level: 1, name: '第 7 课' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: '选择课时' })).toBeVisible()
   await expect(page.getByText('1 个新词 · 0 个复习词')).toBeVisible()
 
-  await page.getByRole('button', { name: '继续第 7 课' }).click()
+  await page.getByRole('button', { name: '第 7 课，继续' }).click()
   await expect(page).toHaveURL(/\/app\/lesson\/session-7$/u)
   await page.getByLabel('apple').check()
   const correctSoundResponse = page.waitForResponse(
@@ -88,11 +88,13 @@ test('@learner [mocked route fixture] reselects a completed lesson without movin
   await page.goto('/app')
 
   await enterCourse(page)
-  await expect(page.getByRole('heading', { level: 2, name: '选择已完成课时重新练习' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: '选择课时' })).toBeVisible()
+  await expect(page.getByText(/再练一次|重复练习/u)).toHaveCount(0)
 
-  await page.getByRole('button', { name: '第 6 课，再练一次' }).click()
+  await page.getByRole('button', { name: '第 6 课，已完成' }).click()
   await expect(page).toHaveURL(/\/app\/replay\/replay-6$/u)
-  await expect(page.getByText('重复练习', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: '第 6 课' })).toBeVisible()
+  await expect(page.getByText(/再练一次|重复练习/u)).toHaveCount(0)
   await page.getByLabel('apple').check()
   const replayCorrectSoundResponse = page.waitForResponse(
     (response) => new URL(response.url()).pathname === '/sounds/answer-feedback-correct.wav',
@@ -103,14 +105,39 @@ test('@learner [mocked route fixture] reselects a completed lesson without movin
   expect(replayCorrectSound.headers()['content-type']).toContain('audio')
   await expect(page.getByRole('status')).toContainText('参考答案：apple')
   await page.getByRole('button', { name: '继续' }).click()
-  await page.getByRole('button', { name: '完成重复练习' }).click()
+  await page.getByRole('button', { name: '完成第 6 课' }).click()
   await expect(page.getByText('本次答对 1 / 1 道')).toBeVisible()
   await page.getByRole('button', { name: '返回课程' }).click()
 
   await expect(page).toHaveURL(/\/app\/course$/u)
-  await expect(page.getByRole('heading', { level: 1, name: '第 7 课' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '第 6 课，再练一次' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: '选择课时' })).toBeVisible()
+  await expect(page.getByText('当前学习到第 7 课。')).toBeVisible()
+  await expect(page.getByRole('button', { name: '第 6 课，已完成' })).toBeVisible()
   expectNoPageErrors()
+})
+
+test('@learner [mocked route fixture] keeps the unified lesson picker inside a 390 × 844 viewport', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await installMockedLearnerApiRouteFixture(page)
+  await page.goto('/app')
+
+  await enterCourse(page)
+  await expect(page.getByRole('heading', { level: 1, name: '选择课时' })).toBeVisible()
+
+  const layout = await page.evaluate(() => ({
+    innerWidth: window.innerWidth,
+    innerHeight: window.innerHeight,
+    scrollWidth: document.documentElement.scrollWidth,
+    scrollHeight: document.documentElement.scrollHeight,
+  }))
+  expect(layout).toEqual({
+    innerWidth: 390,
+    innerHeight: 844,
+    scrollWidth: 390,
+    scrollHeight: 844,
+  })
 })
 
 test('@learner [mocked route fixture] finishes fifteen capped wrong answers across refresh', async ({
@@ -121,7 +148,7 @@ test('@learner [mocked route fixture] finishes fifteen capped wrong answers acro
   await page.goto('/app')
 
   await enterCourse(page)
-  await page.getByRole('button', { name: '继续第 7 课' }).click()
+  await page.getByRole('button', { name: '第 7 课，继续' }).click()
   await expect(page).toHaveURL(/\/app\/lesson\/session-cap$/u)
   const wrongSoundResponse = page.waitForResponse(
     (response) => new URL(response.url()).pathname === '/sounds/answer-feedback-wrong.wav',

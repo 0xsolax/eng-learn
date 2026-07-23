@@ -143,13 +143,17 @@ describe('LessonReplayRunner', () => {
     await flushPromises()
 
     expect(api.getLessonReplay).toHaveBeenCalledWith('replay-1')
-    expect(wrapper.text()).toContain('重复练习')
-    expect(wrapper.text()).toContain('第 1 课')
+    expect(wrapper.get('h1').text()).toBe('第 1 课')
+    expect(wrapper.text()).not.toMatch(/重复练习|再练一次/u)
+    expect(wrapper.text()).toContain('本次结果不会改变当前课程进度')
+    expect(wrapper.get('[data-action="complete-replay"]').text()).toBe('完成第 1 课')
     await wrapper.get('[data-action="complete-replay"]').trigger('click')
     await flushPromises()
 
     expect(api.completeLessonReplay).toHaveBeenCalledWith('replay-1')
     expect(wrapper.text()).toContain('本次答对 1 / 1 道')
+    expect(wrapper.get('h1').text()).toBe('第 1 课')
+    expect(wrapper.text()).not.toMatch(/重复练习|再练一次/u)
     expect(wrapper.emitted('completed')).toBeUndefined()
 
     await wrapper.get('[data-action="return-to-course"]').trigger('click')

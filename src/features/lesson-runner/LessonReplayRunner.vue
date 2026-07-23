@@ -130,7 +130,7 @@ const loadReplay = async (): Promise<void> => {
       emit('exit')
       return
     }
-    loadError.value = '暂时无法读取重复练习，请检查网络后重试'
+    loadError.value = '暂时无法读取课时，请检查网络后重试'
   } finally {
     loading.value = false
     await focusCurrentAction()
@@ -168,7 +168,7 @@ const refreshAfterAnswer = async (result: TaskAnswerResult): Promise<void> => {
     if (!isUnknownResult(error)) {
       feedback.value = {
         tone: 'error',
-        title: '无法同步重复练习',
+        title: '无法同步课时',
         message: '答案已返回，但下一题状态无法确认。请返回课程后重新进入。',
       }
       return
@@ -177,7 +177,7 @@ const refreshAfterAnswer = async (result: TaskAnswerResult): Promise<void> => {
     feedback.value = {
       tone: 'error',
       title: '答案已记录，下一题尚未同步',
-      message: '请安全地重新同步本次重复练习，不要再次提交答案。',
+      message: '请安全地重新同步本课状态，不要再次提交答案。',
     }
     retryKind.value = 'sync'
     retryLabel.value = '重新同步'
@@ -273,7 +273,7 @@ const completeReplay = async (): Promise<void> => {
     }
     completionIssue.value = isUnknownResult(error)
       ? '完成结果尚未确认，请安全重试同一次完成操作。'
-      : '服务端确认仍有任务未完成，请重新读取重复练习。'
+      : '服务端确认仍有任务未完成，请重新读取课时。'
     retryKind.value = isUnknownResult(error) ? 'complete' : undefined
   } finally {
     busy.value = false
@@ -315,7 +315,7 @@ onMounted(loadReplay)
     <UiStatusMessage
       v-if="loading"
       tone="info"
-      title="正在读取重复练习"
+      title="正在读取课时"
     >
       请稍候。
     </UiStatusMessage>
@@ -325,7 +325,7 @@ onMounted(loadReplay)
     >
       <UiStatusMessage
         tone="error"
-        title="无法读取重复练习"
+        title="无法读取课时"
       >
         {{ loadError }}
       </UiStatusMessage>
@@ -353,16 +353,16 @@ onMounted(loadReplay)
       aria-labelledby="replay-summary-title"
     >
       <p class="lesson-replay-runner__label">
-        重复练习完成
+        本课完成
       </p>
       <h1 id="replay-summary-title">
-        第 {{ completedReplay.session.lessonNo }} 课 · 再练一次
+        第 {{ completedReplay.session.lessonNo }} 课
       </h1>
-      <p>第 {{ completedReplay.session.learningRunNo }} 轮原课时</p>
+      <p>第 {{ completedReplay.session.learningRunNo }} 轮课时</p>
       <strong>
         本次答对 {{ completedReplay.session.correctCount }} / {{ completedReplay.session.taskCount }} 道
       </strong>
-      <p>本次结果不会改变正式课程进度。</p>
+      <p>本次结果不会改变当前课程进度。</p>
       <UiButton
         context="learner"
         data-action="return-to-course"
@@ -374,10 +374,10 @@ onMounted(loadReplay)
     <template v-else-if="replay">
       <header class="lesson-replay-runner__heading">
         <p class="lesson-replay-runner__label">
-          重复练习
+          课程学习
         </p>
-        <h1>第 {{ replay.session.lessonNo }} 课 · 再练一次</h1>
-        <p>第 {{ replay.session.learningRunNo }} 轮原课时 · 本次结果不计入正式进度</p>
+        <h1>第 {{ replay.session.lessonNo }} 课</h1>
+        <p>第 {{ replay.session.learningRunNo }} 轮课时 · 本次结果不会改变当前课程进度</p>
       </header>
       <TaskShell
         v-if="currentTask"
@@ -413,9 +413,9 @@ onMounted(loadReplay)
         <div class="lesson-replay-runner__completion">
           <UiStatusMessage
             :tone="completionIssue ? 'error' : 'success'"
-            :title="completionIssue ? '暂时不能完成重复练习' : '本次任务已答完'"
+            :title="completionIssue ? '暂时不能完成本课' : '本课任务已答完'"
           >
-            {{ completionIssue ?? '请让服务端确认本次重复练习结果。' }}
+            {{ completionIssue ?? '请让服务端确认本课结果。' }}
           </UiStatusMessage>
           <UiButton
             context="learner"
@@ -423,7 +423,9 @@ onMounted(loadReplay)
             :loading="busy"
             @click="completeReplay"
           >
-            {{ retryKind === 'complete' ? '安全重试完成' : '完成重复练习' }}
+            {{ retryKind === 'complete'
+              ? '安全重试完成'
+              : `完成第 ${replay.session.lessonNo} 课` }}
           </UiButton>
           <UiButton
             v-if="completionIssue && retryKind !== 'complete'"
@@ -432,7 +434,7 @@ onMounted(loadReplay)
             data-action="reload-replay"
             @click="loadReplay"
           >
-            重新读取重复练习
+            重新读取课时
           </UiButton>
         </div>
       </TaskShell>

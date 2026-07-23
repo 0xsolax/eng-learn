@@ -686,7 +686,7 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   await page.getByLabel('6 位 PIN').fill('123456')
   await page.getByRole('button', { name: '进入课程' }).click()
   await expect(page).toHaveURL(/\/app\/course$/u)
-  await expect(page.getByRole('heading', { level: 1, name: '第 1 课' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: '选择课时' })).toBeVisible()
 
   await page.evaluate(() => {
     localStorage.clear()
@@ -695,7 +695,7 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   await page.goto('/app')
   await expect(page).toHaveURL(/\/app\/course$/u)
   await expect(page.getByLabel('学习账号')).toHaveCount(0)
-  await expect(page.getByRole('heading', { level: 1, name: '第 1 课' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: '选择课时' })).toBeVisible()
 
   await page.goto('/admin/courses')
   const credentialRow = page.getByRole('row', { name: /^Browser learner\b/u })
@@ -717,9 +717,9 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   await page.getByLabel('6 位 PIN').fill('654321')
   await page.getByRole('button', { name: '进入课程' }).click()
   await expect(page).toHaveURL(/\/app\/course$/u)
-  await expect(page.getByRole('heading', { level: 1, name: '第 1 课' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: '选择课时' })).toBeVisible()
 
-  await page.getByRole('button', { name: '开始第 1 课' }).click()
+  await page.getByRole('button', { name: '第 1 课，当前' }).click()
   await expect(page).toHaveURL(/\/app\/lesson\/[^/]+$/u)
   const answeredWords: string[] = []
 
@@ -775,11 +775,12 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
   expect(practiceWords.sort()).toEqual(distinctWords.sort())
 
   await page.goto('/app/course')
-  await expect(page.getByRole('heading', { level: 1, name: '第 2 课' })).toBeVisible()
-  await expect(page.getByText('当前轮次 · 第 1 轮')).toBeVisible()
-  await page.getByRole('button', { name: '第 1 课，再练一次' }).click()
+  await expect(page.getByRole('heading', { level: 1, name: '选择课时' })).toBeVisible()
+  await expect(page.getByText('当前学习到第 2 课。')).toBeVisible()
+  await page.getByRole('button', { name: '第 1 课，已完成' }).click()
   await expect(page).toHaveURL(/\/app\/replay\/[^/]+$/u)
-  await expect(page.getByText('重复练习', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: '第 1 课' })).toBeVisible()
+  await expect(page.getByText(/再练一次|重复练习/u)).toHaveCount(0)
 
   for (let replayAnswerIndex = 0; replayAnswerIndex < 15; replayAnswerIndex += 1) {
     const currentWord = (await page.locator('#recognize-word').textContent())?.trim()
@@ -798,14 +799,14 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
     }
   }
 
-  await expect(page.getByText('本次任务已答完')).toBeVisible()
-  await page.getByRole('button', { name: '完成重复练习' }).click()
+  await expect(page.getByText('本课任务已答完')).toBeVisible()
+  await page.getByRole('button', { name: '完成第 1 课' }).click()
   await expect(page.getByText('本次答对 15 / 15 道')).toBeVisible()
   await page.getByRole('button', { name: '返回课程' }).click()
   await expect(page).toHaveURL(/\/app\/course$/u)
-  await expect(page.getByRole('heading', { level: 1, name: '第 2 课' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 1, name: '选择课时' })).toBeVisible()
 
-  await page.getByRole('button', { name: '开始第 2 课' }).click()
+  await page.getByRole('button', { name: '第 2 课，当前' }).click()
   await expect(page).toHaveURL(/\/app\/lesson\/[^/]+$/u)
   const oldLessonUrl = page.url()
   const oldLessonSessionId = new URL(oldLessonUrl).pathname.split('/').at(-1)
@@ -852,8 +853,8 @@ test('production Vue browser closes admin lifecycle and a capped all-wrong learn
 
   await page.goto(oldLessonUrl)
   await expect(page).toHaveURL(/\/app\/course$/u)
-  await expect(page.getByRole('heading', { level: 1, name: '第 1 课' })).toBeVisible()
-  await page.getByRole('button', { name: '开始第 1 课' }).click()
+  await expect(page.getByRole('heading', { level: 1, name: '选择课时' })).toBeVisible()
+  await page.getByRole('button', { name: '第 1 课，当前' }).click()
   await expect(page).toHaveURL(/\/app\/lesson\/[^/]+$/u)
   const newLessonSessionId = new URL(page.url()).pathname.split('/').at(-1)
   if (!newLessonSessionId) throw new Error('Expected the new lesson session id')

@@ -15,6 +15,12 @@ type CourseApi = Pick<LearnerApiPort, 'getCourseHome' | 'startLesson'> &
 
 const props = defineProps<{ api: CourseApi }>()
 type CompletedLessonSummaryDto = CompletedLessonPageDto['lessons'][number]
+type LessonChoice = {
+  learningRunNo: number
+  lessonNo: number
+  status: 'completed' | 'current' | 'locked'
+  sourceSessionId?: string
+}
 const emit = defineEmits<{
   started: [sessionId: string]
   'replay-started': [replaySessionId: string]
@@ -36,24 +42,58 @@ const completedLessonsNextCursor = ref<string>()
 const replayingSourceSessionId = ref<string>()
 const replayError = ref<string>()
 
-const completedLessonGroups = computed(() => {
-  const groups = new Map<number, CompletedLessonSummaryDto[]>()
+const lessonChoiceGroups = computed(() => {
+  if (!home.value) return []
+
+  const currentLearningRunNo = completedLessonsCurrentRunNo.value ?? 1
+  const groups = new Map<number, Map<number, LessonChoice>>()
   for (const lesson of completedLessons.value) {
-    const lessons = groups.get(lesson.learningRunNo) ?? []
-    lessons.push(lesson)
+    const lessons = groups.get(lesson.learningRunNo) ?? new Map<number, LessonChoice>()
+    lessons.set(lesson.lessonNo, {
+      learningRunNo: lesson.learningRunNo,
+      lessonNo: lesson.lessonNo,
+      status: 'completed',
+      sourceSessionId: lesson.sourceSessionId,
+    })
     groups.set(lesson.learningRunNo, lessons)
   }
-  return [...groups.entries()].map(([learningRunNo, lessons]) => ({
-    learningRunNo,
-    lessons,
-  }))
+
+  const currentChoices =
+    groups.get(currentLearningRunNo) ?? new Map<number, LessonChoice>()
+  for (const node of home.value.lessonPath) {
+    const existing = currentChoices.get(node.lessonNo)
+    if (node.status !== 'completed' || !existing?.sourceSessionId) {
+      currentChoices.set(node.lessonNo, {
+        learningRunNo: currentLearningRunNo,
+        lessonNo: node.lessonNo,
+        status: node.status,
+        ...(existing?.sourceSessionId
+          ? { sourceSessionId: existing.sourceSessionId }
+          : {}),
+      })
+    }
+  }
+  groups.set(currentLearningRunNo, currentChoices)
+
+  return [...groups.entries()]
+    .sort(([leftRunNo], [rightRunNo]) => {
+      if (leftRunNo === currentLearningRunNo) return -1
+      if (rightRunNo === currentLearningRunNo) return 1
+      return rightRunNo - leftRunNo
+    })
+    .map(([learningRunNo, lessons]) => ({
+      learningRunNo,
+      lessons: [...lessons.values()].sort(
+        (left, right) => left.lessonNo - right.lessonNo,
+      ),
+    }))
 })
 
 const isLegacyContentError = (error: unknown): boolean =>
   error instanceof ApiFailureError && error.code === 'legacy_content_incompatible'
 
 const startLesson = async (): Promise<void> => {
-  if (!home.value || starting.value) return
+  if (!home.value || starting.value || replayingSourceSessionId.value) return
 
   starting.value = true
   startError.value = undefined
@@ -113,25 +153,51 @@ const loadCompletedLessons = async (append = false): Promise<void> => {
   }
 }
 
-const startReplay = async (lesson: CompletedLessonSummaryDto): Promise<void> => {
-  if (!props.api.startLessonReplay || replayingSourceSessionId.value) return
+const startReplay = async (sourceSessionId: string): Promise<void> => {
+  if (!props.api.startLessonReplay || replayingSourceSessionId.value || starting.value) return
 
-  replayingSourceSessionId.value = lesson.sourceSessionId
+  replayingSourceSessionId.value = sourceSessionId
   replayError.value = undefined
   try {
-    const replay = await props.api.startLessonReplay(lesson.sourceSessionId)
+    const replay = await props.api.startLessonReplay(sourceSessionId)
     emit('replay-started', replay.session.id)
   } catch (error) {
     if (isLearnerSessionAccessError(error)) {
       home.value = undefined
       emit('access-required')
     } else if (error instanceof ApiNetworkError) {
-      replayError.value = '暂时无法开始重复练习，请检查网络后重试'
+      replayError.value = '暂时无法进入该课，请检查网络后重试'
     } else {
-      replayError.value = '暂时无法开始重复练习，请稍后重试'
+      replayError.value = '暂时无法进入该课，请稍后重试'
     }
   } finally {
     replayingSourceSessionId.value = undefined
+  }
+}
+
+const lessonChoiceStatus = (choice: LessonChoice): string => {
+  if (choice.status === 'completed') return '已完成'
+  if (choice.status === 'locked') return '未开放'
+  return home.value?.action === 'continue' ? '继续' : '当前'
+}
+
+const isLessonChoiceLoading = (choice: LessonChoice): boolean =>
+  (choice.status === 'current' && starting.value) ||
+  (choice.status === 'completed' &&
+    choice.sourceSessionId !== undefined &&
+    replayingSourceSessionId.value === choice.sourceSessionId)
+
+const isLessonChoiceDisabled = (choice: LessonChoice): boolean =>
+  choice.status === 'locked' ||
+  starting.value ||
+  replayingSourceSessionId.value !== undefined ||
+  (choice.status === 'completed' && !choice.sourceSessionId)
+
+const selectLesson = async (choice: LessonChoice): Promise<void> => {
+  if (choice.status === 'current') {
+    await startLesson()
+  } else if (choice.status === 'completed' && choice.sourceSessionId) {
+    await startReplay(choice.sourceSessionId)
   }
 }
 
@@ -208,30 +274,12 @@ onMounted(loadCourse)
     class="course-home"
   >
     <p class="course-home__eyebrow">
-      当前课时
+      课程进度
     </p>
-    <h1>第 {{ home.course.currentLessonNo }} 课</h1>
-    <p>按自己的节奏完成这一课。</p>
-    <ul
-      class="course-home__path"
-      aria-label="课时路径"
-    >
-      <li
-        v-for="node in home.lessonPath"
-        :key="node.lessonNo"
-        data-lesson-path
-        :data-status="node.status"
-      >
-        <span>第 {{ node.lessonNo }} 课</span>
-        <small>{{ node.status === 'completed'
-          ? '已完成'
-          : node.status === 'current'
-            ? '当前'
-            : '未开放' }}</small>
-      </li>
-    </ul>
+    <h1>选择课时</h1>
+    <p>当前学习到第 {{ home.course.currentLessonNo }} 课。</p>
     <p class="course-home__summary">
-      {{ home.newWordCount }} 个新词 · {{ home.reviewWordCount }} 个复习词
+      当前课：{{ home.newWordCount }} 个新词 · {{ home.reviewWordCount }} 个复习词
     </p>
     <UiStatusMessage
       v-if="startError"
@@ -240,79 +288,61 @@ onMounted(loadCourse)
     >
       {{ startError }}
     </UiStatusMessage>
-    <UiButton
-      context="learner"
-      data-action="start-lesson"
-      :loading="starting"
-      loading-label="正在进入"
-      @click="startLesson"
+    <UiStatusMessage
+      v-if="replayError"
+      tone="error"
+      title="未能进入课时"
     >
-      {{ home.action === 'continue' ? '继续' : '开始' }}第 {{ home.course.currentLessonNo }} 课
-    </UiButton>
+      {{ replayError }}
+    </UiStatusMessage>
     <section
-      v-if="props.api.listCompletedLessons && props.api.startLessonReplay"
-      data-completed-lessons
-      class="completed-lessons"
-      aria-labelledby="completed-lessons-title"
+      data-lesson-picker
+      class="lesson-picker"
+      aria-label="课时选择"
     >
-      <header>
-        <div>
-          <h2 id="completed-lessons-title">
-            选择已完成课时重新练习
-          </h2>
-          <p>重复练习不会改变当前课程进度。</p>
-        </div>
-      </header>
-      <UiStatusMessage
-        v-if="replayError"
-        tone="error"
-        title="未能开始重复练习"
-      >
-        {{ replayError }}
-      </UiStatusMessage>
       <UiStatusMessage
         v-if="completedLessonsError"
         tone="error"
-        title="无法读取已完成课时"
+        title="无法读取完整课时列表"
       >
-        {{ completedLessonsError }}
+        当前课仍可进入；其他课时暂时无法读取。
       </UiStatusMessage>
-      <div
-        v-if="completedLessons.length > 0"
-        class="completed-lessons__groups"
+      <section
+        v-for="group in lessonChoiceGroups"
+        :key="group.learningRunNo"
+        class="lesson-picker__group"
+        :aria-label="group.learningRunNo === completedLessonsCurrentRunNo
+          ? `当前学习，第 ${group.learningRunNo} 轮`
+          : `第 ${group.learningRunNo} 轮`"
       >
-        <section
-          v-for="group in completedLessonGroups"
-          :key="group.learningRunNo"
-          class="completed-lessons__group"
-          :aria-labelledby="`completed-run-${group.learningRunNo}`"
+        <h2
+          v-if="lessonChoiceGroups.length > 1 || group.learningRunNo > 1"
         >
-          <h3 :id="`completed-run-${group.learningRunNo}`">
-            {{ group.learningRunNo === completedLessonsCurrentRunNo ? '当前轮次' : '历史轮次' }}
-            · 第 {{ group.learningRunNo }} 轮
-          </h3>
-          <div class="completed-lessons__choices">
-            <UiButton
-              v-for="lesson in group.lessons"
-              :key="lesson.sourceSessionId"
-              context="learner"
-              variant="secondary"
-              data-action="repeat-lesson"
-              :loading="replayingSourceSessionId === lesson.sourceSessionId"
-              :disabled="replayingSourceSessionId !== undefined"
-              @click="startReplay(lesson)"
-            >
-              第 {{ lesson.lessonNo }} 课，再练一次
-            </UiButton>
-          </div>
-        </section>
-      </div>
-      <p
-        v-else-if="!completedLessonsLoading && !completedLessonsError"
-        class="completed-lessons__empty"
-      >
-        完成一课后，可在这里再次选择练习。
-      </p>
+          {{ group.learningRunNo === completedLessonsCurrentRunNo ? '当前学习 · ' : '' }}第
+          {{ group.learningRunNo }} 轮
+        </h2>
+        <div class="lesson-picker__choices">
+          <button
+            v-for="lesson in group.lessons"
+            :key="`${lesson.learningRunNo}:${lesson.lessonNo}`"
+            type="button"
+            class="lesson-picker__choice"
+            data-lesson-choice
+            :data-learning-run-no="lesson.learningRunNo"
+            :data-lesson-no="lesson.lessonNo"
+            :data-status="lesson.status"
+            :aria-label="`第 ${lesson.lessonNo} 课，${lessonChoiceStatus(lesson)}`"
+            :aria-busy="isLessonChoiceLoading(lesson)"
+            :disabled="isLessonChoiceDisabled(lesson)"
+            @click="selectLesson(lesson)"
+          >
+            <span>第 {{ lesson.lessonNo }} 课</span>
+            <small>
+              {{ isLessonChoiceLoading(lesson) ? '正在进入' : lessonChoiceStatus(lesson) }}
+            </small>
+          </button>
+        </div>
+      </section>
       <UiButton
         v-if="completedLessonsError"
         context="learner"
@@ -330,7 +360,7 @@ onMounted(loadCourse)
         :loading="completedLessonsLoading"
         @click="loadCompletedLessons(true)"
       >
-        读取更多课时
+        显示更多课时
       </UiButton>
     </section>
   </section>
@@ -348,35 +378,52 @@ onMounted(loadCourse)
   margin: 0;
 }
 
-.course-home__path {
+.lesson-picker__choices {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-2);
   padding: 0;
-  margin: var(--space-4) 0 0;
+  margin: 0;
   list-style: none;
 }
 
-.course-home__path li {
+.lesson-picker__choice {
+  appearance: none;
   display: grid;
   gap: var(--space-1);
   padding: var(--space-3);
   border: 1px solid var(--color-line);
   border-radius: var(--radius-sm);
   background: var(--color-surface);
+  color: var(--color-ink);
+  font: inherit;
   text-align: center;
+  cursor: pointer;
 }
 
-.course-home__path li[data-status='current'] {
+.lesson-picker__choice[data-status='current'] {
   border-color: var(--color-brand-strong);
   background: var(--color-brand-soft);
 }
 
-.course-home__path span {
+.lesson-picker__choice:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--color-brand) 36%, transparent);
+  outline-offset: 2px;
+}
+
+.lesson-picker__choice:disabled {
+  cursor: not-allowed;
+}
+
+.lesson-picker__choice[data-status='locked'] {
+  opacity: 0.58;
+}
+
+.lesson-picker__choice span {
   font-weight: 750;
 }
 
-.course-home__path small {
+.lesson-picker__choice small {
   color: var(--color-muted);
 }
 
@@ -384,50 +431,30 @@ onMounted(loadCourse)
   font-weight: 700;
 }
 
-.completed-lessons {
+.lesson-picker {
   display: grid;
   gap: var(--space-3);
-  margin-top: var(--space-6);
-  padding-top: var(--space-5);
-  border-top: 1px solid var(--color-line);
+  margin-top: var(--space-2);
 }
 
-.completed-lessons h2,
-.completed-lessons p {
+.lesson-picker h2,
+.lesson-picker p {
   margin: 0;
 }
 
-.completed-lessons h2 {
-  font-size: 18px;
-}
-
-.completed-lessons__choices {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
-}
-
-.completed-lessons__groups,
-.completed-lessons__group {
+.lesson-picker__group {
   display: grid;
   gap: var(--space-3);
 }
 
-.completed-lessons__group h3 {
+.lesson-picker__group h2 {
   margin: 0;
   color: var(--color-muted);
   font-size: 14px;
 }
 
-.completed-lessons__choices :deep(.ui-button),
-.completed-lessons > :deep(.ui-button) {
+.lesson-picker > :deep(.ui-button) {
   margin-top: 0;
-}
-
-.completed-lessons__empty {
-  padding: var(--space-3);
-  border: 1px dashed var(--color-line-strong);
-  border-radius: var(--radius-sm);
 }
 
 .course-home__eyebrow {
@@ -450,9 +477,4 @@ onMounted(loadCourse)
   margin-top: var(--space-4);
 }
 
-@media (max-width: 479px) {
-  .completed-lessons__choices {
-    grid-template-columns: 1fr;
-  }
-}
 </style>

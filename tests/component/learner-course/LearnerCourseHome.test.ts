@@ -28,7 +28,7 @@ const courseHome = {
 }
 
 describe('LearnerCourseHome', () => {
-  it('renders completed lessons as repeatable choices and starts one replay once', async () => {
+  it('selects a completed lesson directly from one lesson picker and starts it once', async () => {
     const replay = {
       session: {
         id: 'replay-1',
@@ -82,17 +82,19 @@ describe('LearnerCourseHome', () => {
     const wrapper = mount(LearnerCourseHome, { props: { api } })
     await flushPromises()
 
-    expect(wrapper.get('[data-completed-lessons]').text()).toContain('选择已完成课时重新练习')
-    expect(wrapper.get('[data-completed-lessons]').text()).toContain('当前轮次 · 第 2 轮')
-    expect(wrapper.get('[data-completed-lessons]').text()).toContain('历史轮次 · 第 1 轮')
-    const choices = wrapper.findAll('[data-action="repeat-lesson"]')
-    expect(choices.map((choice) => choice.text())).toEqual([
-      '第 1 课，再练一次',
-      '第 1 课，再练一次',
-      '第 3 课，再练一次',
-    ])
-    await choices[2]?.trigger('click')
-    await choices[2]?.trigger('click')
+    const picker = wrapper.get('[data-lesson-picker]')
+    expect(wrapper.find('[data-completed-lessons]').exists()).toBe(false)
+    expect(picker.text()).not.toMatch(/再练一次|重复练习|选择已完成课时/u)
+    expect(picker.text()).toContain('当前学习 · 第 2 轮')
+    expect(picker.text()).toContain('第 1 轮')
+    const choice = picker.get(
+      '[data-lesson-choice][data-learning-run-no="1"][data-lesson-no="3"]',
+    )
+    expect(choice.element.tagName).toBe('BUTTON')
+    expect(choice.text()).toContain('第 3 课')
+    expect(choice.text()).toContain('已完成')
+    await choice.trigger('click')
+    await choice.trigger('click')
     expect(api.startLessonReplay).toHaveBeenCalledTimes(1)
     expect(api.startLessonReplay).toHaveBeenCalledWith('session-3')
 
@@ -101,7 +103,7 @@ describe('LearnerCourseHome', () => {
     expect(wrapper.emitted('replay-started')).toEqual([['replay-1']])
   })
 
-  it('renders only the server lesson number and one start-or-continue primary action', async () => {
+  it('renders one selectable current lesson and keeps the future lesson disabled', async () => {
     const api = {
       getCourseHome: vi.fn().mockResolvedValue(courseHome),
       startLesson: vi.fn(),
@@ -110,12 +112,17 @@ describe('LearnerCourseHome', () => {
 
     await flushPromises()
 
-    expect(wrapper.get('h1').text()).toBe('第 7 课')
-    expect(wrapper.get('[data-action="start-lesson"]').text()).toBe('继续第 7 课')
-    expect(wrapper.findAll('[data-action="start-lesson"]')).toHaveLength(1)
+    expect(wrapper.get('h1').text()).toBe('选择课时')
+    const current = wrapper.get('[data-lesson-choice][data-status="current"]')
+    expect(current.text()).toContain('第 7 课')
+    expect(current.text()).toContain('继续')
+    expect(wrapper.findAll('[data-lesson-choice][data-status="current"]')).toHaveLength(1)
+    expect(
+      wrapper.get('[data-lesson-choice][data-status="locked"]').attributes('disabled'),
+    ).toBeDefined()
     expect(wrapper.text()).toContain('5 个新词')
     expect(wrapper.text()).toContain('2 个复习词')
-    expect(wrapper.findAll('[data-lesson-path]')).toHaveLength(3)
+    expect(wrapper.findAll('[data-lesson-choice]')).toHaveLength(3)
     expect(wrapper.text()).not.toMatch(/连续|排名|金币|预计|日期/)
   })
 
@@ -142,7 +149,7 @@ describe('LearnerCourseHome', () => {
     const wrapper = mount(LearnerCourseHome, { props: { api } })
     await flushPromises()
 
-    const action = wrapper.get('[data-action="start-lesson"]')
+    const action = wrapper.get('[data-lesson-choice][data-status="current"]')
     await action.trigger('click')
     await action.trigger('click')
 
@@ -173,12 +180,12 @@ describe('LearnerCourseHome', () => {
     const wrapper = mount(LearnerCourseHome, { props: { api } })
     await flushPromises()
 
-    await wrapper.get('[data-action="start-lesson"]').trigger('click')
+    await wrapper.get('[data-lesson-choice][data-status="current"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.emitted('access-required')).toHaveLength(1)
     expect(wrapper.find('[role="alert"]').exists()).toBe(false)
-    expect(wrapper.find('[data-action="start-lesson"]').exists()).toBe(false)
+    expect(wrapper.find('[data-lesson-choice][data-status="current"]').exists()).toBe(false)
   })
 
   it('returns to access entry when lesson start receives a non-JSON 401', async () => {
@@ -189,7 +196,7 @@ describe('LearnerCourseHome', () => {
     const wrapper = mount(LearnerCourseHome, { props: { api } })
     await flushPromises()
 
-    await wrapper.get('[data-action="start-lesson"]').trigger('click')
+    await wrapper.get('[data-lesson-choice][data-status="current"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.emitted('access-required')).toHaveLength(1)
@@ -209,7 +216,7 @@ describe('LearnerCourseHome', () => {
     const wrapper = mount(LearnerCourseHome, { props: { api } })
     await flushPromises()
 
-    await wrapper.get('[data-action="start-lesson"]').trigger('click')
+    await wrapper.get('[data-lesson-choice][data-status="current"]').trigger('click')
     await flushPromises()
 
     const alert = wrapper.get('[role="alert"]').text()
@@ -233,7 +240,7 @@ describe('LearnerCourseHome', () => {
     const wrapper = mount(LearnerCourseHome, { props: { api } })
     await flushPromises()
 
-    await wrapper.get('[data-action="start-lesson"]').trigger('click')
+    await wrapper.get('[data-lesson-choice][data-status="current"]').trigger('click')
     await flushPromises()
 
     const alert = wrapper.get('[role="alert"]').text()
@@ -263,7 +270,7 @@ describe('LearnerCourseHome', () => {
     const wrapper = mount(LearnerCourseHome, { props: { api } })
     await flushPromises()
 
-    await wrapper.get('[data-action="start-lesson"]').trigger('click')
+    await wrapper.get('[data-lesson-choice][data-status="current"]').trigger('click')
     await flushPromises()
 
     const alert = wrapper.get('[role="alert"]').text()
@@ -308,6 +315,6 @@ describe('LearnerCourseHome', () => {
     await flushPromises()
 
     expect(api.getCourseHome).toHaveBeenCalledTimes(2)
-    expect(wrapper.get('h1').text()).toBe('第 7 课')
+    expect(wrapper.get('h1').text()).toBe('选择课时')
   })
 })
